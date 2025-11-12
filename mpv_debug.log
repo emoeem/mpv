@@ -1,0 +1,45 @@
+[   0.001][v][cplayer] mpv v0.40.0 Copyright © 2000-2025 mpv/MPlayer/mplayer2 projects
+[   0.001][v][cplayer] libplacebo version: v7.351.0
+[   0.001][v][cplayer] FFmpeg version: n8.0 (runtime 8.0)
+[   0.001][v][cplayer] FFmpeg library versions:
+[   0.001][v][cplayer]    libavcodec      62.11.100
+[   0.001][v][cplayer]    libavdevice     62.1.100
+[   0.001][v][cplayer]    libavfilter     11.4.100
+[   0.001][v][cplayer]    libavformat     62.3.100
+[   0.001][v][cplayer]    libavutil       60.8.100
+[   0.001][v][cplayer]    libswresample   6.1.100
+[   0.001][v][cplayer]    libswscale      9.1.100
+[   0.001][v][cplayer] Configuration: -Db_pie=true -Dpython.bytecompile=1 -Dgpl=true -Dcplayer=true -Dlibmpv=true -Dbuild-date=false -Dtests=true -Dfuzzers=false -Dcdda=enabled -Dcplugins=enabled -Ddvbin=enabled -Ddvdnav=enabled -Diconv=enabled -Djavascript=enabled -Dlcms2=enabled -Dlibarchive=enabled -Dlibavdevice=enabled -Dlibbluray=enabled -Dlua=auto -Dpthread-debug=disabled -Drubberband=enabled -Dsdl2=enabled -Dsdl2-gamepad=enabled -Duchardet=enabled -Duwp=disabled -Dvapoursynth=enabled -Dvector=enabled -Dwin32-threads=disabled -Dzimg=enabled -Dzlib=enabled -Dalsa=enabled -Daudiounit=disabled -Dcoreaudio=disabled -Davfoundation=disabled -Djack=enabled -Dopenal=enabled -Dopensles=disabled -Doss-audio=disabled -Dpipewire=enabled -Dpulse=enabled -Dsdl2-audio=enabled -Dsndio=enabled -Dwasapi=disabled -Dcaca=enabled -Dcocoa=disabled -Dd3d11=disabled -Ddirect3d=disabled -Ddmabuf-wayland=enabled -Ddrm=enabled -Degl=enabled -Degl-android=disabled -Degl-angle=disabled -Degl-angle-lib=disabled -Degl-angle-win32=disabled -Degl-drm=enabled -Degl-wayland=enabled -Degl-x11=enabled -Dgbm=enabled -Dgl=enabled -Dgl-cocoa=disabled -Dgl-dxinterop=disabled -Dgl-win32=disabled -Dgl-x11=enabled -Djpeg=enabled -Dsdl2-video=enabled -Dshaderc=disabled -Dsixel=enabled -Dspirv-cross=disabled -Dplain-gl=enabled -Dvdpau=enabled -Dvdpau-gl-x11=enabled -Dvaapi=enabled -Dvaapi-drm=enabled -Dvaapi-wayland=enabled -Dvaapi-win32=disabled -Dvaapi-x11=enabled -Dvulkan=enabled -Dwayland=enabled -Dx11=enabled -Dxv=enabled -Dandroid-media-ndk=disabled -Dcuda-hwaccel=enabled -Dcuda-interop=enabled -Dd3d-hwaccel=disabled -Dd3d9-hwaccel=disabled -Dgl-dxinterop-d3d9=disabled -Dios-gl=disabled -Dvideotoolbox-gl=disabled -Dvideotoolbox-pl=disabled -Dmacos-10-15-4-features=disabled -Dmacos-11-features=disabled -Dmacos-11-3-features=disabled -Dmacos-12-features=disabled -Dmacos-cocoa-cb=disabled -Dmacos-media-player=disabled -Dmacos-touchbar=disabled -Dswift-build=disabled -Dswift-flags=disabled -Dhtml-build=disabled -Dmanpage-build=enabled -Dpdf-build=disabled -Dprefix=/usr -Dlibexecdir=lib -Dsbindir=bin -Dauto_features=enabled -Dbuildtype=plain -Dwrap_mode=nodownload
+[   0.001][v][cplayer] List of enabled features: alsa caca cdda cplugins cuda-hwaccel cuda-interop dmabuf-interop-gl dmabuf-wayland drm dvbin dvdnav egl egl-drm egl-wayland egl-x11 ffmpeg ffnvcodec gbm gl gl-x11 glibc-thread-name glob glob-posix gpl iconv jack javascript jpeg lcms2 libarchive libass libavdevice libbluray libdl libplacebo linux-fstatfs lua52 memfd-create memrchr openal pipewire posix posix-shm ppoll pthread-condattr-setclock pulse rubberband rubberband-3 sdl2 sdl2-audio sdl2-gamepad sdl2-video sixel sndio sndio-1-9 uchardet vaapi vaapi-drm vaapi-wayland vaapi-x11 vapoursynth vdpau vdpau-gl-x11 vector vk-khr-display vt.h vulkan wayland wayland-protocols-1-32 wayland-protocols-1-38 wayland-protocols-1-39 wayland-protocols-1-41 x11 xv zimg zimg-st428 zlib
+[   0.001][v][cplayer] Command line options: '--no-config' '--msg-level=all=v' '--log-file=mpv_debug.log' '--version'
+[   0.001][v][cplayer] mpv v0.40.0 Copyright © 2000-2025 mpv/MPlayer/mplayer2 projects
+[   0.001][v][cplayer] libplacebo version: v7.351.0
+[   0.001][v][cplayer] FFmpeg version: n8.0 (runtime 8.0)
+[   0.001][v][cplayer] FFmpeg library versions:
+[   0.001][v][cplayer]    libavcodec      62.11.100
+[   0.001][v][cplayer]    libavdevice     62.1.100
+[   0.001][v][cplayer]    libavfilter     11.4.100
+[   0.001][v][cplayer]    libavformat     62.3.100
+[   0.001][v][cplayer]    libavutil       60.8.100
+[   0.001][v][cplayer]    libswresample   6.1.100
+[   0.001][v][cplayer]    libswscale      9.1.100
+[   0.001][v][cplayer] Configuration: -Db_pie=true -Dpython.bytecompile=1 -Dgpl=true -Dcplayer=true -Dlibmpv=true -Dbuild-date=false -Dtests=true -Dfuzzers=false -Dcdda=enabled -Dcplugins=enabled -Ddvbin=enabled -Ddvdnav=enabled -Diconv=enabled -Djavascript=enabled -Dlcms2=enabled -Dlibarchive=enabled -Dlibavdevice=enabled -Dlibbluray=enabled -Dlua=auto -Dpthread-debug=disabled -Drubberband=enabled -Dsdl2=enabled -Dsdl2-gamepad=enabled -Duchardet=enabled -Duwp=disabled -Dvapoursynth=enabled -Dvector=enabled -Dwin32-threads=disabled -Dzimg=enabled -Dzlib=enabled -Dalsa=enabled -Daudiounit=disabled -Dcoreaudio=disabled -Davfoundation=disabled -Djack=enabled -Dopenal=enabled -Dopensles=disabled -Doss-audio=disabled -Dpipewire=enabled -Dpulse=enabled -Dsdl2-audio=enabled -Dsndio=enabled -Dwasapi=disabled -Dcaca=enabled -Dcocoa=disabled -Dd3d11=disabled -Ddirect3d=disabled -Ddmabuf-wayland=enabled -Ddrm=enabled -Degl=enabled -Degl-android=disabled -Degl-angle=disabled -Degl-angle-lib=disabled -Degl-angle-win32=disabled -Degl-drm=enabled -Degl-wayland=enabled -Degl-x11=enabled -Dgbm=enabled -Dgl=enabled -Dgl-cocoa=disabled -Dgl-dxinterop=disabled -Dgl-win32=disabled -Dgl-x11=enabled -Djpeg=enabled -Dsdl2-video=enabled -Dshaderc=disabled -Dsixel=enabled -Dspirv-cross=disabled -Dplain-gl=enabled -Dvdpau=enabled -Dvdpau-gl-x11=enabled -Dvaapi=enabled -Dvaapi-drm=enabled -Dvaapi-wayland=enabled -Dvaapi-win32=disabled -Dvaapi-x11=enabled -Dvulkan=enabled -Dwayland=enabled -Dx11=enabled -Dxv=enabled -Dandroid-media-ndk=disabled -Dcuda-hwaccel=enabled -Dcuda-interop=enabled -Dd3d-hwaccel=disabled -Dd3d9-hwaccel=disabled -Dgl-dxinterop-d3d9=disabled -Dios-gl=disabled -Dvideotoolbox-gl=disabled -Dvideotoolbox-pl=disabled -Dmacos-10-15-4-features=disabled -Dmacos-11-features=disabled -Dmacos-11-3-features=disabled -Dmacos-12-features=disabled -Dmacos-cocoa-cb=disabled -Dmacos-media-player=disabled -Dmacos-touchbar=disabled -Dswift-build=disabled -Dswift-flags=disabled -Dhtml-build=disabled -Dmanpage-build=enabled -Dpdf-build=disabled -Dprefix=/usr -Dlibexecdir=lib -Dsbindir=bin -Dauto_features=enabled -Dbuildtype=plain -Dwrap_mode=nodownload
+[   0.001][v][cplayer] List of enabled features: alsa caca cdda cplugins cuda-hwaccel cuda-interop dmabuf-interop-gl dmabuf-wayland drm dvbin dvdnav egl egl-drm egl-wayland egl-x11 ffmpeg ffnvcodec gbm gl gl-x11 glibc-thread-name glob glob-posix gpl iconv jack javascript jpeg lcms2 libarchive libass libavdevice libbluray libdl libplacebo linux-fstatfs lua52 memfd-create memrchr openal pipewire posix posix-shm ppoll pthread-condattr-setclock pulse rubberband rubberband-3 sdl2 sdl2-audio sdl2-gamepad sdl2-video sixel sndio sndio-1-9 uchardet vaapi vaapi-drm vaapi-wayland vaapi-x11 vapoursynth vdpau vdpau-gl-x11 vector vk-khr-display vt.h vulkan wayland wayland-protocols-1-32 wayland-protocols-1-38 wayland-protocols-1-39 wayland-protocols-1-41 x11 xv zimg zimg-st428 zlib
+[   0.001][d][global] home path: '' -> '-'
+[   0.001][d][global] user path: '~~home/' -> ''
+[   0.001][d][global] user path: '~~old_home/' -> ''
+[   0.001][v][cplayer] Setting option 'config' = 'no' (flags = 8)
+[   0.001][v][cplayer] Setting option 'msg-level' = 'all=v' (flags = 8)
+[   0.001][v][cplayer] Setting option 'log-file' = 'mpv_debug.log' (flags = 8)
+[   0.001][v][cplayer] Setting option 'version' = '' (flags = 8)
+[   0.001][i][cplayer] mpv v0.40.0 Copyright © 2000-2025 mpv/MPlayer/mplayer2 projects
+[   0.001][i][cplayer] libplacebo version: v7.351.0
+[   0.001][i][cplayer] FFmpeg version: n8.0 (runtime 8.0)
+[   0.001][i][cplayer] FFmpeg library versions:
+[   0.001][i][cplayer]    libavcodec      62.11.100
+[   0.001][i][cplayer]    libavdevice     62.1.100
+[   0.001][i][cplayer]    libavfilter     11.4.100
+[   0.001][i][cplayer]    libavformat     62.3.100
+[   0.001][i][cplayer]    libavutil       60.8.100
+[   0.001][i][cplayer]    libswresample   6.1.100
+[   0.001][i][cplayer]    libswscale      9.1.100
