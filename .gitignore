@@ -1,2 +1,8 @@
 cache/
 watch_later/
+
+files/*.log
+files/*.json
+files/*.jsonl
+files/historybookmarks/*.mpv.history
+
