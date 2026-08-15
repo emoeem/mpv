@@ -1,0 +1,2310 @@
+{
+  "version": 23,
+  "source_scale": 2,
+  "opacity_levels": [
+    18,
+    36,
+    54,
+    72,
+    86,
+    100
+  ],
+  "base_layout": {
+    "double": {
+      "w": 156,
+      "h": 140,
+      "top_center_y": 32,
+      "bottom_center_y": 108
+    },
+    "single": {
+      "w": 156,
+      "h": 64,
+      "center_y": 32
+    },
+    "logo_max_w": 156,
+    "logo_max_h": 64
+  },
+  "backgrounds": {
+    "double": {
+      "visible": false
+    },
+    "single": {
+      "visible": false
+    }
+  },
+  "logos": {
+    "dolby-vision": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#8B5CFF",
+        "#00C9FF",
+        "#28E094",
+        "#F0D44C",
+        "#FF6C68"
+      ],
+      "files": {
+        "18": "logo-dolby-vision-018.bgra",
+        "36": "logo-dolby-vision-036.bgra",
+        "54": "logo-dolby-vision-054.bgra",
+        "72": "logo-dolby-vision-072.bgra",
+        "86": "logo-dolby-vision-086.bgra",
+        "100": "logo-dolby-vision-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dolby-vision-018-1x.bgra",
+            "36": "logo-dolby-vision-036-1x.bgra",
+            "54": "logo-dolby-vision-054-1x.bgra",
+            "72": "logo-dolby-vision-072-1x.bgra",
+            "86": "logo-dolby-vision-086-1x.bgra",
+            "100": "logo-dolby-vision-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dolby-vision-018.bgra",
+            "36": "logo-dolby-vision-036.bgra",
+            "54": "logo-dolby-vision-054.bgra",
+            "72": "logo-dolby-vision-072.bgra",
+            "86": "logo-dolby-vision-086.bgra",
+            "100": "logo-dolby-vision-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-dolby-vision-white-018.bgra",
+        "36": "logo-dolby-vision-white-036.bgra",
+        "54": "logo-dolby-vision-white-054.bgra",
+        "72": "logo-dolby-vision-white-072.bgra",
+        "86": "logo-dolby-vision-white-086.bgra",
+        "100": "logo-dolby-vision-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dolby-vision-white-018-1x.bgra",
+            "36": "logo-dolby-vision-white-036-1x.bgra",
+            "54": "logo-dolby-vision-white-054-1x.bgra",
+            "72": "logo-dolby-vision-white-072-1x.bgra",
+            "86": "logo-dolby-vision-white-086-1x.bgra",
+            "100": "logo-dolby-vision-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dolby-vision-white-018.bgra",
+            "36": "logo-dolby-vision-white-036.bgra",
+            "54": "logo-dolby-vision-white-054.bgra",
+            "72": "logo-dolby-vision-white-072.bgra",
+            "86": "logo-dolby-vision-white-086.bgra",
+            "100": "logo-dolby-vision-white-100.bgra"
+          }
+        }
+      }
+    },
+    "hdr-vivid": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#7A5CFF",
+        "#C34DFF",
+        "#FF557A",
+        "#FF9D42"
+      ],
+      "files": {
+        "18": "logo-hdr-vivid-018.bgra",
+        "36": "logo-hdr-vivid-036.bgra",
+        "54": "logo-hdr-vivid-054.bgra",
+        "72": "logo-hdr-vivid-072.bgra",
+        "86": "logo-hdr-vivid-086.bgra",
+        "100": "logo-hdr-vivid-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-hdr-vivid-018-1x.bgra",
+            "36": "logo-hdr-vivid-036-1x.bgra",
+            "54": "logo-hdr-vivid-054-1x.bgra",
+            "72": "logo-hdr-vivid-072-1x.bgra",
+            "86": "logo-hdr-vivid-086-1x.bgra",
+            "100": "logo-hdr-vivid-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-hdr-vivid-018.bgra",
+            "36": "logo-hdr-vivid-036.bgra",
+            "54": "logo-hdr-vivid-054.bgra",
+            "72": "logo-hdr-vivid-072.bgra",
+            "86": "logo-hdr-vivid-086.bgra",
+            "100": "logo-hdr-vivid-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-hdr-vivid-white-018.bgra",
+        "36": "logo-hdr-vivid-white-036.bgra",
+        "54": "logo-hdr-vivid-white-054.bgra",
+        "72": "logo-hdr-vivid-white-072.bgra",
+        "86": "logo-hdr-vivid-white-086.bgra",
+        "100": "logo-hdr-vivid-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-hdr-vivid-white-018-1x.bgra",
+            "36": "logo-hdr-vivid-white-036-1x.bgra",
+            "54": "logo-hdr-vivid-white-054-1x.bgra",
+            "72": "logo-hdr-vivid-white-072-1x.bgra",
+            "86": "logo-hdr-vivid-white-086-1x.bgra",
+            "100": "logo-hdr-vivid-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-hdr-vivid-white-018.bgra",
+            "36": "logo-hdr-vivid-white-036.bgra",
+            "54": "logo-hdr-vivid-white-054.bgra",
+            "72": "logo-hdr-vivid-white-072.bgra",
+            "86": "logo-hdr-vivid-white-086.bgra",
+            "100": "logo-hdr-vivid-white-100.bgra"
+          }
+        }
+      }
+    },
+    "hdr10-plus": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "source-color",
+      "palette": [
+        "#00C9FF",
+        "#655BFF",
+        "#D34DFF",
+        "#FF557A",
+        "#FFC34A"
+      ],
+      "files": {
+        "18": "logo-hdr10-plus-018.bgra",
+        "36": "logo-hdr10-plus-036.bgra",
+        "54": "logo-hdr10-plus-054.bgra",
+        "72": "logo-hdr10-plus-072.bgra",
+        "86": "logo-hdr10-plus-086.bgra",
+        "100": "logo-hdr10-plus-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-hdr10-plus-018-1x.bgra",
+            "36": "logo-hdr10-plus-036-1x.bgra",
+            "54": "logo-hdr10-plus-054-1x.bgra",
+            "72": "logo-hdr10-plus-072-1x.bgra",
+            "86": "logo-hdr10-plus-086-1x.bgra",
+            "100": "logo-hdr10-plus-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-hdr10-plus-018.bgra",
+            "36": "logo-hdr10-plus-036.bgra",
+            "54": "logo-hdr10-plus-054.bgra",
+            "72": "logo-hdr10-plus-072.bgra",
+            "86": "logo-hdr10-plus-086.bgra",
+            "100": "logo-hdr10-plus-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-hdr10-plus-white-018.bgra",
+        "36": "logo-hdr10-plus-white-036.bgra",
+        "54": "logo-hdr10-plus-white-054.bgra",
+        "72": "logo-hdr10-plus-white-072.bgra",
+        "86": "logo-hdr10-plus-white-086.bgra",
+        "100": "logo-hdr10-plus-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-hdr10-plus-white-018-1x.bgra",
+            "36": "logo-hdr10-plus-white-036-1x.bgra",
+            "54": "logo-hdr10-plus-white-054-1x.bgra",
+            "72": "logo-hdr10-plus-white-072-1x.bgra",
+            "86": "logo-hdr10-plus-white-086-1x.bgra",
+            "100": "logo-hdr10-plus-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-hdr10-plus-white-018.bgra",
+            "36": "logo-hdr10-plus-white-036.bgra",
+            "54": "logo-hdr10-plus-white-054.bgra",
+            "72": "logo-hdr10-plus-white-072.bgra",
+            "86": "logo-hdr10-plus-white-086.bgra",
+            "100": "logo-hdr10-plus-white-100.bgra"
+          }
+        }
+      }
+    },
+    "hdr10": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "source-color",
+      "palette": [
+        "#00C8FF",
+        "#32D99A",
+        "#E8DB4A",
+        "#FFB544"
+      ],
+      "files": {
+        "18": "logo-hdr10-018.bgra",
+        "36": "logo-hdr10-036.bgra",
+        "54": "logo-hdr10-054.bgra",
+        "72": "logo-hdr10-072.bgra",
+        "86": "logo-hdr10-086.bgra",
+        "100": "logo-hdr10-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-hdr10-018-1x.bgra",
+            "36": "logo-hdr10-036-1x.bgra",
+            "54": "logo-hdr10-054-1x.bgra",
+            "72": "logo-hdr10-072-1x.bgra",
+            "86": "logo-hdr10-086-1x.bgra",
+            "100": "logo-hdr10-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-hdr10-018.bgra",
+            "36": "logo-hdr10-036.bgra",
+            "54": "logo-hdr10-054.bgra",
+            "72": "logo-hdr10-072.bgra",
+            "86": "logo-hdr10-086.bgra",
+            "100": "logo-hdr10-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-hdr10-white-018.bgra",
+        "36": "logo-hdr10-white-036.bgra",
+        "54": "logo-hdr10-white-054.bgra",
+        "72": "logo-hdr10-white-072.bgra",
+        "86": "logo-hdr10-white-086.bgra",
+        "100": "logo-hdr10-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-hdr10-white-018-1x.bgra",
+            "36": "logo-hdr10-white-036-1x.bgra",
+            "54": "logo-hdr10-white-054-1x.bgra",
+            "72": "logo-hdr10-white-072-1x.bgra",
+            "86": "logo-hdr10-white-086-1x.bgra",
+            "100": "logo-hdr10-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-hdr10-white-018.bgra",
+            "36": "logo-hdr10-white-036.bgra",
+            "54": "logo-hdr10-white-054.bgra",
+            "72": "logo-hdr10-white-072.bgra",
+            "86": "logo-hdr10-white-086.bgra",
+            "100": "logo-hdr10-white-100.bgra"
+          }
+        }
+      }
+    },
+    "hlg": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#00D1FF",
+        "#21D6A1",
+        "#D8DF4B",
+        "#FFB547"
+      ],
+      "files": {
+        "18": "logo-hlg-018.bgra",
+        "36": "logo-hlg-036.bgra",
+        "54": "logo-hlg-054.bgra",
+        "72": "logo-hlg-072.bgra",
+        "86": "logo-hlg-086.bgra",
+        "100": "logo-hlg-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-hlg-018-1x.bgra",
+            "36": "logo-hlg-036-1x.bgra",
+            "54": "logo-hlg-054-1x.bgra",
+            "72": "logo-hlg-072-1x.bgra",
+            "86": "logo-hlg-086-1x.bgra",
+            "100": "logo-hlg-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-hlg-018.bgra",
+            "36": "logo-hlg-036.bgra",
+            "54": "logo-hlg-054.bgra",
+            "72": "logo-hlg-072.bgra",
+            "86": "logo-hlg-086.bgra",
+            "100": "logo-hlg-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-hlg-white-018.bgra",
+        "36": "logo-hlg-white-036.bgra",
+        "54": "logo-hlg-white-054.bgra",
+        "72": "logo-hlg-white-072.bgra",
+        "86": "logo-hlg-white-086.bgra",
+        "100": "logo-hlg-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-hlg-white-018-1x.bgra",
+            "36": "logo-hlg-white-036-1x.bgra",
+            "54": "logo-hlg-white-054-1x.bgra",
+            "72": "logo-hlg-white-072-1x.bgra",
+            "86": "logo-hlg-white-086-1x.bgra",
+            "100": "logo-hlg-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-hlg-white-018.bgra",
+            "36": "logo-hlg-white-036.bgra",
+            "54": "logo-hlg-white-054.bgra",
+            "72": "logo-hlg-white-072.bgra",
+            "86": "logo-hlg-white-086.bgra",
+            "100": "logo-hlg-white-100.bgra"
+          }
+        }
+      }
+    },
+    "sdr": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "source-color",
+      "palette": [
+        "#F7372C",
+        "#FF8919",
+        "#F8D326",
+        "#4DCF5B",
+        "#16C4D3",
+        "#2085E1",
+        "#9137D2"
+      ],
+      "files": {
+        "18": "logo-sdr-018.bgra",
+        "36": "logo-sdr-036.bgra",
+        "54": "logo-sdr-054.bgra",
+        "72": "logo-sdr-072.bgra",
+        "86": "logo-sdr-086.bgra",
+        "100": "logo-sdr-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-sdr-018-1x.bgra",
+            "36": "logo-sdr-036-1x.bgra",
+            "54": "logo-sdr-054-1x.bgra",
+            "72": "logo-sdr-072-1x.bgra",
+            "86": "logo-sdr-086-1x.bgra",
+            "100": "logo-sdr-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-sdr-018.bgra",
+            "36": "logo-sdr-036.bgra",
+            "54": "logo-sdr-054.bgra",
+            "72": "logo-sdr-072.bgra",
+            "86": "logo-sdr-086.bgra",
+            "100": "logo-sdr-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-sdr-white-018.bgra",
+        "36": "logo-sdr-white-036.bgra",
+        "54": "logo-sdr-white-054.bgra",
+        "72": "logo-sdr-white-072.bgra",
+        "86": "logo-sdr-white-086.bgra",
+        "100": "logo-sdr-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-sdr-white-018-1x.bgra",
+            "36": "logo-sdr-white-036-1x.bgra",
+            "54": "logo-sdr-white-054-1x.bgra",
+            "72": "logo-sdr-white-072-1x.bgra",
+            "86": "logo-sdr-white-086-1x.bgra",
+            "100": "logo-sdr-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-sdr-white-018.bgra",
+            "36": "logo-sdr-white-036.bgra",
+            "54": "logo-sdr-white-054.bgra",
+            "72": "logo-sdr-white-072.bgra",
+            "86": "logo-sdr-white-086.bgra",
+            "100": "logo-sdr-white-100.bgra"
+          }
+        }
+      }
+    },
+    "dolby-atmos": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#24C8FF",
+        "#477DFF",
+        "#9D5CFF",
+        "#D354FF"
+      ],
+      "files": {
+        "18": "logo-dolby-atmos-018.bgra",
+        "36": "logo-dolby-atmos-036.bgra",
+        "54": "logo-dolby-atmos-054.bgra",
+        "72": "logo-dolby-atmos-072.bgra",
+        "86": "logo-dolby-atmos-086.bgra",
+        "100": "logo-dolby-atmos-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dolby-atmos-018-1x.bgra",
+            "36": "logo-dolby-atmos-036-1x.bgra",
+            "54": "logo-dolby-atmos-054-1x.bgra",
+            "72": "logo-dolby-atmos-072-1x.bgra",
+            "86": "logo-dolby-atmos-086-1x.bgra",
+            "100": "logo-dolby-atmos-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dolby-atmos-018.bgra",
+            "36": "logo-dolby-atmos-036.bgra",
+            "54": "logo-dolby-atmos-054.bgra",
+            "72": "logo-dolby-atmos-072.bgra",
+            "86": "logo-dolby-atmos-086.bgra",
+            "100": "logo-dolby-atmos-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-dolby-atmos-white-018.bgra",
+        "36": "logo-dolby-atmos-white-036.bgra",
+        "54": "logo-dolby-atmos-white-054.bgra",
+        "72": "logo-dolby-atmos-white-072.bgra",
+        "86": "logo-dolby-atmos-white-086.bgra",
+        "100": "logo-dolby-atmos-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dolby-atmos-white-018-1x.bgra",
+            "36": "logo-dolby-atmos-white-036-1x.bgra",
+            "54": "logo-dolby-atmos-white-054-1x.bgra",
+            "72": "logo-dolby-atmos-white-072-1x.bgra",
+            "86": "logo-dolby-atmos-white-086-1x.bgra",
+            "100": "logo-dolby-atmos-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dolby-atmos-white-018.bgra",
+            "36": "logo-dolby-atmos-white-036.bgra",
+            "54": "logo-dolby-atmos-white-054.bgra",
+            "72": "logo-dolby-atmos-white-072.bgra",
+            "86": "logo-dolby-atmos-white-086.bgra",
+            "100": "logo-dolby-atmos-white-100.bgra"
+          }
+        }
+      }
+    },
+    "dts-x": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#00D5FF",
+        "#3D83FF",
+        "#895DFF",
+        "#D94DFF"
+      ],
+      "files": {
+        "18": "logo-dts-x-018.bgra",
+        "36": "logo-dts-x-036.bgra",
+        "54": "logo-dts-x-054.bgra",
+        "72": "logo-dts-x-072.bgra",
+        "86": "logo-dts-x-086.bgra",
+        "100": "logo-dts-x-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dts-x-018-1x.bgra",
+            "36": "logo-dts-x-036-1x.bgra",
+            "54": "logo-dts-x-054-1x.bgra",
+            "72": "logo-dts-x-072-1x.bgra",
+            "86": "logo-dts-x-086-1x.bgra",
+            "100": "logo-dts-x-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dts-x-018.bgra",
+            "36": "logo-dts-x-036.bgra",
+            "54": "logo-dts-x-054.bgra",
+            "72": "logo-dts-x-072.bgra",
+            "86": "logo-dts-x-086.bgra",
+            "100": "logo-dts-x-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-dts-x-white-018.bgra",
+        "36": "logo-dts-x-white-036.bgra",
+        "54": "logo-dts-x-white-054.bgra",
+        "72": "logo-dts-x-white-072.bgra",
+        "86": "logo-dts-x-white-086.bgra",
+        "100": "logo-dts-x-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dts-x-white-018-1x.bgra",
+            "36": "logo-dts-x-white-036-1x.bgra",
+            "54": "logo-dts-x-white-054-1x.bgra",
+            "72": "logo-dts-x-white-072-1x.bgra",
+            "86": "logo-dts-x-white-086-1x.bgra",
+            "100": "logo-dts-x-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dts-x-white-018.bgra",
+            "36": "logo-dts-x-white-036.bgra",
+            "54": "logo-dts-x-white-054.bgra",
+            "72": "logo-dts-x-white-072.bgra",
+            "86": "logo-dts-x-white-086.bgra",
+            "100": "logo-dts-x-white-100.bgra"
+          }
+        }
+      }
+    },
+    "audio-vivid": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#00D1F0",
+        "#2D95FF",
+        "#705FFF",
+        "#C653FF"
+      ],
+      "files": {
+        "18": "logo-audio-vivid-018.bgra",
+        "36": "logo-audio-vivid-036.bgra",
+        "54": "logo-audio-vivid-054.bgra",
+        "72": "logo-audio-vivid-072.bgra",
+        "86": "logo-audio-vivid-086.bgra",
+        "100": "logo-audio-vivid-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-audio-vivid-018-1x.bgra",
+            "36": "logo-audio-vivid-036-1x.bgra",
+            "54": "logo-audio-vivid-054-1x.bgra",
+            "72": "logo-audio-vivid-072-1x.bgra",
+            "86": "logo-audio-vivid-086-1x.bgra",
+            "100": "logo-audio-vivid-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-audio-vivid-018.bgra",
+            "36": "logo-audio-vivid-036.bgra",
+            "54": "logo-audio-vivid-054.bgra",
+            "72": "logo-audio-vivid-072.bgra",
+            "86": "logo-audio-vivid-086.bgra",
+            "100": "logo-audio-vivid-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-audio-vivid-white-018.bgra",
+        "36": "logo-audio-vivid-white-036.bgra",
+        "54": "logo-audio-vivid-white-054.bgra",
+        "72": "logo-audio-vivid-white-072.bgra",
+        "86": "logo-audio-vivid-white-086.bgra",
+        "100": "logo-audio-vivid-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-audio-vivid-white-018-1x.bgra",
+            "36": "logo-audio-vivid-white-036-1x.bgra",
+            "54": "logo-audio-vivid-white-054-1x.bgra",
+            "72": "logo-audio-vivid-white-072-1x.bgra",
+            "86": "logo-audio-vivid-white-086-1x.bgra",
+            "100": "logo-audio-vivid-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-audio-vivid-white-018.bgra",
+            "36": "logo-audio-vivid-white-036.bgra",
+            "54": "logo-audio-vivid-white-054.bgra",
+            "72": "logo-audio-vivid-white-072.bgra",
+            "86": "logo-audio-vivid-white-086.bgra",
+            "100": "logo-audio-vivid-white-100.bgra"
+          }
+        }
+      }
+    },
+    "dolby-truehd": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#4FC8FF",
+        "#4877FF",
+        "#8A5DFF"
+      ],
+      "files": {
+        "18": "logo-dolby-truehd-018.bgra",
+        "36": "logo-dolby-truehd-036.bgra",
+        "54": "logo-dolby-truehd-054.bgra",
+        "72": "logo-dolby-truehd-072.bgra",
+        "86": "logo-dolby-truehd-086.bgra",
+        "100": "logo-dolby-truehd-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dolby-truehd-018-1x.bgra",
+            "36": "logo-dolby-truehd-036-1x.bgra",
+            "54": "logo-dolby-truehd-054-1x.bgra",
+            "72": "logo-dolby-truehd-072-1x.bgra",
+            "86": "logo-dolby-truehd-086-1x.bgra",
+            "100": "logo-dolby-truehd-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dolby-truehd-018.bgra",
+            "36": "logo-dolby-truehd-036.bgra",
+            "54": "logo-dolby-truehd-054.bgra",
+            "72": "logo-dolby-truehd-072.bgra",
+            "86": "logo-dolby-truehd-086.bgra",
+            "100": "logo-dolby-truehd-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-dolby-truehd-white-018.bgra",
+        "36": "logo-dolby-truehd-white-036.bgra",
+        "54": "logo-dolby-truehd-white-054.bgra",
+        "72": "logo-dolby-truehd-white-072.bgra",
+        "86": "logo-dolby-truehd-white-086.bgra",
+        "100": "logo-dolby-truehd-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dolby-truehd-white-018-1x.bgra",
+            "36": "logo-dolby-truehd-white-036-1x.bgra",
+            "54": "logo-dolby-truehd-white-054-1x.bgra",
+            "72": "logo-dolby-truehd-white-072-1x.bgra",
+            "86": "logo-dolby-truehd-white-086-1x.bgra",
+            "100": "logo-dolby-truehd-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dolby-truehd-white-018.bgra",
+            "36": "logo-dolby-truehd-white-036.bgra",
+            "54": "logo-dolby-truehd-white-054.bgra",
+            "72": "logo-dolby-truehd-white-072.bgra",
+            "86": "logo-dolby-truehd-white-086.bgra",
+            "100": "logo-dolby-truehd-white-100.bgra"
+          }
+        }
+      }
+    },
+    "dts-hd-ma": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#00D4FF",
+        "#2B9AFF",
+        "#566AFF",
+        "#9A5CFF"
+      ],
+      "files": {
+        "18": "logo-dts-hd-ma-018.bgra",
+        "36": "logo-dts-hd-ma-036.bgra",
+        "54": "logo-dts-hd-ma-054.bgra",
+        "72": "logo-dts-hd-ma-072.bgra",
+        "86": "logo-dts-hd-ma-086.bgra",
+        "100": "logo-dts-hd-ma-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dts-hd-ma-018-1x.bgra",
+            "36": "logo-dts-hd-ma-036-1x.bgra",
+            "54": "logo-dts-hd-ma-054-1x.bgra",
+            "72": "logo-dts-hd-ma-072-1x.bgra",
+            "86": "logo-dts-hd-ma-086-1x.bgra",
+            "100": "logo-dts-hd-ma-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dts-hd-ma-018.bgra",
+            "36": "logo-dts-hd-ma-036.bgra",
+            "54": "logo-dts-hd-ma-054.bgra",
+            "72": "logo-dts-hd-ma-072.bgra",
+            "86": "logo-dts-hd-ma-086.bgra",
+            "100": "logo-dts-hd-ma-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-dts-hd-ma-white-018.bgra",
+        "36": "logo-dts-hd-ma-white-036.bgra",
+        "54": "logo-dts-hd-ma-white-054.bgra",
+        "72": "logo-dts-hd-ma-white-072.bgra",
+        "86": "logo-dts-hd-ma-white-086.bgra",
+        "100": "logo-dts-hd-ma-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dts-hd-ma-white-018-1x.bgra",
+            "36": "logo-dts-hd-ma-white-036-1x.bgra",
+            "54": "logo-dts-hd-ma-white-054-1x.bgra",
+            "72": "logo-dts-hd-ma-white-072-1x.bgra",
+            "86": "logo-dts-hd-ma-white-086-1x.bgra",
+            "100": "logo-dts-hd-ma-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dts-hd-ma-white-018.bgra",
+            "36": "logo-dts-hd-ma-white-036.bgra",
+            "54": "logo-dts-hd-ma-white-054.bgra",
+            "72": "logo-dts-hd-ma-white-072.bgra",
+            "86": "logo-dts-hd-ma-white-086.bgra",
+            "100": "logo-dts-hd-ma-white-100.bgra"
+          }
+        }
+      }
+    },
+    "dts-hd-hra": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#00CFFF",
+        "#347FFF",
+        "#765FFF",
+        "#C355FF"
+      ],
+      "files": {
+        "18": "logo-dts-hd-hra-018.bgra",
+        "36": "logo-dts-hd-hra-036.bgra",
+        "54": "logo-dts-hd-hra-054.bgra",
+        "72": "logo-dts-hd-hra-072.bgra",
+        "86": "logo-dts-hd-hra-086.bgra",
+        "100": "logo-dts-hd-hra-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dts-hd-hra-018-1x.bgra",
+            "36": "logo-dts-hd-hra-036-1x.bgra",
+            "54": "logo-dts-hd-hra-054-1x.bgra",
+            "72": "logo-dts-hd-hra-072-1x.bgra",
+            "86": "logo-dts-hd-hra-086-1x.bgra",
+            "100": "logo-dts-hd-hra-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dts-hd-hra-018.bgra",
+            "36": "logo-dts-hd-hra-036.bgra",
+            "54": "logo-dts-hd-hra-054.bgra",
+            "72": "logo-dts-hd-hra-072.bgra",
+            "86": "logo-dts-hd-hra-086.bgra",
+            "100": "logo-dts-hd-hra-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-dts-hd-hra-white-018.bgra",
+        "36": "logo-dts-hd-hra-white-036.bgra",
+        "54": "logo-dts-hd-hra-white-054.bgra",
+        "72": "logo-dts-hd-hra-white-072.bgra",
+        "86": "logo-dts-hd-hra-white-086.bgra",
+        "100": "logo-dts-hd-hra-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dts-hd-hra-white-018-1x.bgra",
+            "36": "logo-dts-hd-hra-white-036-1x.bgra",
+            "54": "logo-dts-hd-hra-white-054-1x.bgra",
+            "72": "logo-dts-hd-hra-white-072-1x.bgra",
+            "86": "logo-dts-hd-hra-white-086-1x.bgra",
+            "100": "logo-dts-hd-hra-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dts-hd-hra-white-018.bgra",
+            "36": "logo-dts-hd-hra-white-036.bgra",
+            "54": "logo-dts-hd-hra-white-054.bgra",
+            "72": "logo-dts-hd-hra-white-072.bgra",
+            "86": "logo-dts-hd-hra-white-086.bgra",
+            "100": "logo-dts-hd-hra-white-100.bgra"
+          }
+        }
+      }
+    },
+    "dolby-digital-plus": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#20D2E8",
+        "#2D9BFF",
+        "#5869FF",
+        "#995CFF"
+      ],
+      "files": {
+        "18": "logo-dolby-digital-plus-018.bgra",
+        "36": "logo-dolby-digital-plus-036.bgra",
+        "54": "logo-dolby-digital-plus-054.bgra",
+        "72": "logo-dolby-digital-plus-072.bgra",
+        "86": "logo-dolby-digital-plus-086.bgra",
+        "100": "logo-dolby-digital-plus-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dolby-digital-plus-018-1x.bgra",
+            "36": "logo-dolby-digital-plus-036-1x.bgra",
+            "54": "logo-dolby-digital-plus-054-1x.bgra",
+            "72": "logo-dolby-digital-plus-072-1x.bgra",
+            "86": "logo-dolby-digital-plus-086-1x.bgra",
+            "100": "logo-dolby-digital-plus-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dolby-digital-plus-018.bgra",
+            "36": "logo-dolby-digital-plus-036.bgra",
+            "54": "logo-dolby-digital-plus-054.bgra",
+            "72": "logo-dolby-digital-plus-072.bgra",
+            "86": "logo-dolby-digital-plus-086.bgra",
+            "100": "logo-dolby-digital-plus-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-dolby-digital-plus-white-018.bgra",
+        "36": "logo-dolby-digital-plus-white-036.bgra",
+        "54": "logo-dolby-digital-plus-white-054.bgra",
+        "72": "logo-dolby-digital-plus-white-072.bgra",
+        "86": "logo-dolby-digital-plus-white-086.bgra",
+        "100": "logo-dolby-digital-plus-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dolby-digital-plus-white-018-1x.bgra",
+            "36": "logo-dolby-digital-plus-white-036-1x.bgra",
+            "54": "logo-dolby-digital-plus-white-054-1x.bgra",
+            "72": "logo-dolby-digital-plus-white-072-1x.bgra",
+            "86": "logo-dolby-digital-plus-white-086-1x.bgra",
+            "100": "logo-dolby-digital-plus-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dolby-digital-plus-white-018.bgra",
+            "36": "logo-dolby-digital-plus-white-036.bgra",
+            "54": "logo-dolby-digital-plus-white-054.bgra",
+            "72": "logo-dolby-digital-plus-white-072.bgra",
+            "86": "logo-dolby-digital-plus-white-086.bgra",
+            "100": "logo-dolby-digital-plus-white-100.bgra"
+          }
+        }
+      }
+    },
+    "dolby-digital": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#1BD0F0",
+        "#318CFF",
+        "#6B63FF",
+        "#B65CFF"
+      ],
+      "files": {
+        "18": "logo-dolby-digital-018.bgra",
+        "36": "logo-dolby-digital-036.bgra",
+        "54": "logo-dolby-digital-054.bgra",
+        "72": "logo-dolby-digital-072.bgra",
+        "86": "logo-dolby-digital-086.bgra",
+        "100": "logo-dolby-digital-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dolby-digital-018-1x.bgra",
+            "36": "logo-dolby-digital-036-1x.bgra",
+            "54": "logo-dolby-digital-054-1x.bgra",
+            "72": "logo-dolby-digital-072-1x.bgra",
+            "86": "logo-dolby-digital-086-1x.bgra",
+            "100": "logo-dolby-digital-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dolby-digital-018.bgra",
+            "36": "logo-dolby-digital-036.bgra",
+            "54": "logo-dolby-digital-054.bgra",
+            "72": "logo-dolby-digital-072.bgra",
+            "86": "logo-dolby-digital-086.bgra",
+            "100": "logo-dolby-digital-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-dolby-digital-white-018.bgra",
+        "36": "logo-dolby-digital-white-036.bgra",
+        "54": "logo-dolby-digital-white-054.bgra",
+        "72": "logo-dolby-digital-white-072.bgra",
+        "86": "logo-dolby-digital-white-086.bgra",
+        "100": "logo-dolby-digital-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dolby-digital-white-018-1x.bgra",
+            "36": "logo-dolby-digital-white-036-1x.bgra",
+            "54": "logo-dolby-digital-white-054-1x.bgra",
+            "72": "logo-dolby-digital-white-072-1x.bgra",
+            "86": "logo-dolby-digital-white-086-1x.bgra",
+            "100": "logo-dolby-digital-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dolby-digital-white-018.bgra",
+            "36": "logo-dolby-digital-white-036.bgra",
+            "54": "logo-dolby-digital-white-054.bgra",
+            "72": "logo-dolby-digital-white-072.bgra",
+            "86": "logo-dolby-digital-white-086.bgra",
+            "100": "logo-dolby-digital-white-100.bgra"
+          }
+        }
+      }
+    },
+    "dts": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#00CFFF",
+        "#3D86FF",
+        "#7A61FF",
+        "#C653FF"
+      ],
+      "files": {
+        "18": "logo-dts-018.bgra",
+        "36": "logo-dts-036.bgra",
+        "54": "logo-dts-054.bgra",
+        "72": "logo-dts-072.bgra",
+        "86": "logo-dts-086.bgra",
+        "100": "logo-dts-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dts-018-1x.bgra",
+            "36": "logo-dts-036-1x.bgra",
+            "54": "logo-dts-054-1x.bgra",
+            "72": "logo-dts-072-1x.bgra",
+            "86": "logo-dts-086-1x.bgra",
+            "100": "logo-dts-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dts-018.bgra",
+            "36": "logo-dts-036.bgra",
+            "54": "logo-dts-054.bgra",
+            "72": "logo-dts-072.bgra",
+            "86": "logo-dts-086.bgra",
+            "100": "logo-dts-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-dts-white-018.bgra",
+        "36": "logo-dts-white-036.bgra",
+        "54": "logo-dts-white-054.bgra",
+        "72": "logo-dts-white-072.bgra",
+        "86": "logo-dts-white-086.bgra",
+        "100": "logo-dts-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-dts-white-018-1x.bgra",
+            "36": "logo-dts-white-036-1x.bgra",
+            "54": "logo-dts-white-054-1x.bgra",
+            "72": "logo-dts-white-072-1x.bgra",
+            "86": "logo-dts-white-086-1x.bgra",
+            "100": "logo-dts-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-dts-white-018.bgra",
+            "36": "logo-dts-white-036.bgra",
+            "54": "logo-dts-white-054.bgra",
+            "72": "logo-dts-white-072.bgra",
+            "86": "logo-dts-white-086.bgra",
+            "100": "logo-dts-white-100.bgra"
+          }
+        }
+      }
+    },
+    "ac4": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#28C9F0",
+        "#3A83FF",
+        "#7B60FF",
+        "#BE56FF"
+      ],
+      "files": {
+        "18": "logo-ac4-018.bgra",
+        "36": "logo-ac4-036.bgra",
+        "54": "logo-ac4-054.bgra",
+        "72": "logo-ac4-072.bgra",
+        "86": "logo-ac4-086.bgra",
+        "100": "logo-ac4-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-ac4-018-1x.bgra",
+            "36": "logo-ac4-036-1x.bgra",
+            "54": "logo-ac4-054-1x.bgra",
+            "72": "logo-ac4-072-1x.bgra",
+            "86": "logo-ac4-086-1x.bgra",
+            "100": "logo-ac4-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-ac4-018.bgra",
+            "36": "logo-ac4-036.bgra",
+            "54": "logo-ac4-054.bgra",
+            "72": "logo-ac4-072.bgra",
+            "86": "logo-ac4-086.bgra",
+            "100": "logo-ac4-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-ac4-white-018.bgra",
+        "36": "logo-ac4-white-036.bgra",
+        "54": "logo-ac4-white-054.bgra",
+        "72": "logo-ac4-white-072.bgra",
+        "86": "logo-ac4-white-086.bgra",
+        "100": "logo-ac4-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-ac4-white-018-1x.bgra",
+            "36": "logo-ac4-white-036-1x.bgra",
+            "54": "logo-ac4-white-054-1x.bgra",
+            "72": "logo-ac4-white-072-1x.bgra",
+            "86": "logo-ac4-white-086-1x.bgra",
+            "100": "logo-ac4-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-ac4-white-018.bgra",
+            "36": "logo-ac4-white-036.bgra",
+            "54": "logo-ac4-white-054.bgra",
+            "72": "logo-ac4-white-072.bgra",
+            "86": "logo-ac4-white-086.bgra",
+            "100": "logo-ac4-white-100.bgra"
+          }
+        }
+      }
+    },
+    "mpeg-h": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#F3D34C",
+        "#FF9D42",
+        "#FA665B",
+        "#C759A5"
+      ],
+      "files": {
+        "18": "logo-mpeg-h-018.bgra",
+        "36": "logo-mpeg-h-036.bgra",
+        "54": "logo-mpeg-h-054.bgra",
+        "72": "logo-mpeg-h-072.bgra",
+        "86": "logo-mpeg-h-086.bgra",
+        "100": "logo-mpeg-h-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-mpeg-h-018-1x.bgra",
+            "36": "logo-mpeg-h-036-1x.bgra",
+            "54": "logo-mpeg-h-054-1x.bgra",
+            "72": "logo-mpeg-h-072-1x.bgra",
+            "86": "logo-mpeg-h-086-1x.bgra",
+            "100": "logo-mpeg-h-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-mpeg-h-018.bgra",
+            "36": "logo-mpeg-h-036.bgra",
+            "54": "logo-mpeg-h-054.bgra",
+            "72": "logo-mpeg-h-072.bgra",
+            "86": "logo-mpeg-h-086.bgra",
+            "100": "logo-mpeg-h-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-mpeg-h-white-018.bgra",
+        "36": "logo-mpeg-h-white-036.bgra",
+        "54": "logo-mpeg-h-white-054.bgra",
+        "72": "logo-mpeg-h-white-072.bgra",
+        "86": "logo-mpeg-h-white-086.bgra",
+        "100": "logo-mpeg-h-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-mpeg-h-white-018-1x.bgra",
+            "36": "logo-mpeg-h-white-036-1x.bgra",
+            "54": "logo-mpeg-h-white-054-1x.bgra",
+            "72": "logo-mpeg-h-white-072-1x.bgra",
+            "86": "logo-mpeg-h-white-086-1x.bgra",
+            "100": "logo-mpeg-h-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-mpeg-h-white-018.bgra",
+            "36": "logo-mpeg-h-white-036.bgra",
+            "54": "logo-mpeg-h-white-054.bgra",
+            "72": "logo-mpeg-h-white-072.bgra",
+            "86": "logo-mpeg-h-white-086.bgra",
+            "100": "logo-mpeg-h-white-100.bgra"
+          }
+        }
+      }
+    },
+    "flac": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#36D875",
+        "#18CDB2",
+        "#19A8ED",
+        "#5B7CFF"
+      ],
+      "files": {
+        "18": "logo-flac-018.bgra",
+        "36": "logo-flac-036.bgra",
+        "54": "logo-flac-054.bgra",
+        "72": "logo-flac-072.bgra",
+        "86": "logo-flac-086.bgra",
+        "100": "logo-flac-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-flac-018-1x.bgra",
+            "36": "logo-flac-036-1x.bgra",
+            "54": "logo-flac-054-1x.bgra",
+            "72": "logo-flac-072-1x.bgra",
+            "86": "logo-flac-086-1x.bgra",
+            "100": "logo-flac-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-flac-018.bgra",
+            "36": "logo-flac-036.bgra",
+            "54": "logo-flac-054.bgra",
+            "72": "logo-flac-072.bgra",
+            "86": "logo-flac-086.bgra",
+            "100": "logo-flac-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-flac-white-018.bgra",
+        "36": "logo-flac-white-036.bgra",
+        "54": "logo-flac-white-054.bgra",
+        "72": "logo-flac-white-072.bgra",
+        "86": "logo-flac-white-086.bgra",
+        "100": "logo-flac-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-flac-white-018-1x.bgra",
+            "36": "logo-flac-white-036-1x.bgra",
+            "54": "logo-flac-white-054-1x.bgra",
+            "72": "logo-flac-white-072-1x.bgra",
+            "86": "logo-flac-white-086-1x.bgra",
+            "100": "logo-flac-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-flac-white-018.bgra",
+            "36": "logo-flac-white-036.bgra",
+            "54": "logo-flac-white-054.bgra",
+            "72": "logo-flac-white-072.bgra",
+            "86": "logo-flac-white-086.bgra",
+            "100": "logo-flac-white-100.bgra"
+          }
+        }
+      }
+    },
+    "alac": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#31D5A0",
+        "#1EBEE7",
+        "#397FFF",
+        "#8162FF"
+      ],
+      "files": {
+        "18": "logo-alac-018.bgra",
+        "36": "logo-alac-036.bgra",
+        "54": "logo-alac-054.bgra",
+        "72": "logo-alac-072.bgra",
+        "86": "logo-alac-086.bgra",
+        "100": "logo-alac-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-alac-018-1x.bgra",
+            "36": "logo-alac-036-1x.bgra",
+            "54": "logo-alac-054-1x.bgra",
+            "72": "logo-alac-072-1x.bgra",
+            "86": "logo-alac-086-1x.bgra",
+            "100": "logo-alac-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-alac-018.bgra",
+            "36": "logo-alac-036.bgra",
+            "54": "logo-alac-054.bgra",
+            "72": "logo-alac-072.bgra",
+            "86": "logo-alac-086.bgra",
+            "100": "logo-alac-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-alac-white-018.bgra",
+        "36": "logo-alac-white-036.bgra",
+        "54": "logo-alac-white-054.bgra",
+        "72": "logo-alac-white-072.bgra",
+        "86": "logo-alac-white-086.bgra",
+        "100": "logo-alac-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-alac-white-018-1x.bgra",
+            "36": "logo-alac-white-036-1x.bgra",
+            "54": "logo-alac-white-054-1x.bgra",
+            "72": "logo-alac-white-072-1x.bgra",
+            "86": "logo-alac-white-086-1x.bgra",
+            "100": "logo-alac-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-alac-white-018.bgra",
+            "36": "logo-alac-white-036.bgra",
+            "54": "logo-alac-white-054.bgra",
+            "72": "logo-alac-white-072.bgra",
+            "86": "logo-alac-white-086.bgra",
+            "100": "logo-alac-white-100.bgra"
+          }
+        }
+      }
+    },
+    "pcm": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "source-color",
+      "palette": [
+        "#21CDE8",
+        "#3DDA9A",
+        "#B8DD3D",
+        "#F0C844"
+      ],
+      "files": {
+        "18": "logo-pcm-018.bgra",
+        "36": "logo-pcm-036.bgra",
+        "54": "logo-pcm-054.bgra",
+        "72": "logo-pcm-072.bgra",
+        "86": "logo-pcm-086.bgra",
+        "100": "logo-pcm-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-pcm-018-1x.bgra",
+            "36": "logo-pcm-036-1x.bgra",
+            "54": "logo-pcm-054-1x.bgra",
+            "72": "logo-pcm-072-1x.bgra",
+            "86": "logo-pcm-086-1x.bgra",
+            "100": "logo-pcm-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-pcm-018.bgra",
+            "36": "logo-pcm-036.bgra",
+            "54": "logo-pcm-054.bgra",
+            "72": "logo-pcm-072.bgra",
+            "86": "logo-pcm-086.bgra",
+            "100": "logo-pcm-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-pcm-white-018.bgra",
+        "36": "logo-pcm-white-036.bgra",
+        "54": "logo-pcm-white-054.bgra",
+        "72": "logo-pcm-white-072.bgra",
+        "86": "logo-pcm-white-086.bgra",
+        "100": "logo-pcm-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-pcm-white-018-1x.bgra",
+            "36": "logo-pcm-white-036-1x.bgra",
+            "54": "logo-pcm-white-054-1x.bgra",
+            "72": "logo-pcm-white-072-1x.bgra",
+            "86": "logo-pcm-white-086-1x.bgra",
+            "100": "logo-pcm-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-pcm-white-018.bgra",
+            "36": "logo-pcm-white-036.bgra",
+            "54": "logo-pcm-white-054.bgra",
+            "72": "logo-pcm-white-072.bgra",
+            "86": "logo-pcm-white-086.bgra",
+            "100": "logo-pcm-white-100.bgra"
+          }
+        }
+      }
+    },
+    "mlp": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#2ACAF0",
+        "#348CFF",
+        "#7364FF",
+        "#A65AFF"
+      ],
+      "files": {
+        "18": "logo-mlp-018.bgra",
+        "36": "logo-mlp-036.bgra",
+        "54": "logo-mlp-054.bgra",
+        "72": "logo-mlp-072.bgra",
+        "86": "logo-mlp-086.bgra",
+        "100": "logo-mlp-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-mlp-018-1x.bgra",
+            "36": "logo-mlp-036-1x.bgra",
+            "54": "logo-mlp-054-1x.bgra",
+            "72": "logo-mlp-072-1x.bgra",
+            "86": "logo-mlp-086-1x.bgra",
+            "100": "logo-mlp-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-mlp-018.bgra",
+            "36": "logo-mlp-036.bgra",
+            "54": "logo-mlp-054.bgra",
+            "72": "logo-mlp-072.bgra",
+            "86": "logo-mlp-086.bgra",
+            "100": "logo-mlp-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-mlp-white-018.bgra",
+        "36": "logo-mlp-white-036.bgra",
+        "54": "logo-mlp-white-054.bgra",
+        "72": "logo-mlp-white-072.bgra",
+        "86": "logo-mlp-white-086.bgra",
+        "100": "logo-mlp-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-mlp-white-018-1x.bgra",
+            "36": "logo-mlp-white-036-1x.bgra",
+            "54": "logo-mlp-white-054-1x.bgra",
+            "72": "logo-mlp-white-072-1x.bgra",
+            "86": "logo-mlp-white-086-1x.bgra",
+            "100": "logo-mlp-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-mlp-white-018.bgra",
+            "36": "logo-mlp-white-036.bgra",
+            "54": "logo-mlp-white-054.bgra",
+            "72": "logo-mlp-white-072.bgra",
+            "86": "logo-mlp-white-086.bgra",
+            "100": "logo-mlp-white-100.bgra"
+          }
+        }
+      }
+    },
+    "wavpack": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#38C8EF",
+        "#378BFF",
+        "#5C6FFF",
+        "#9560FF"
+      ],
+      "files": {
+        "18": "logo-wavpack-018.bgra",
+        "36": "logo-wavpack-036.bgra",
+        "54": "logo-wavpack-054.bgra",
+        "72": "logo-wavpack-072.bgra",
+        "86": "logo-wavpack-086.bgra",
+        "100": "logo-wavpack-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-wavpack-018-1x.bgra",
+            "36": "logo-wavpack-036-1x.bgra",
+            "54": "logo-wavpack-054-1x.bgra",
+            "72": "logo-wavpack-072-1x.bgra",
+            "86": "logo-wavpack-086-1x.bgra",
+            "100": "logo-wavpack-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-wavpack-018.bgra",
+            "36": "logo-wavpack-036.bgra",
+            "54": "logo-wavpack-054.bgra",
+            "72": "logo-wavpack-072.bgra",
+            "86": "logo-wavpack-086.bgra",
+            "100": "logo-wavpack-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-wavpack-white-018.bgra",
+        "36": "logo-wavpack-white-036.bgra",
+        "54": "logo-wavpack-white-054.bgra",
+        "72": "logo-wavpack-white-072.bgra",
+        "86": "logo-wavpack-white-086.bgra",
+        "100": "logo-wavpack-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-wavpack-white-018-1x.bgra",
+            "36": "logo-wavpack-white-036-1x.bgra",
+            "54": "logo-wavpack-white-054-1x.bgra",
+            "72": "logo-wavpack-white-072-1x.bgra",
+            "86": "logo-wavpack-white-086-1x.bgra",
+            "100": "logo-wavpack-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-wavpack-white-018.bgra",
+            "36": "logo-wavpack-white-036.bgra",
+            "54": "logo-wavpack-white-054.bgra",
+            "72": "logo-wavpack-white-072.bgra",
+            "86": "logo-wavpack-white-086.bgra",
+            "100": "logo-wavpack-white-100.bgra"
+          }
+        }
+      }
+    },
+    "ape": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "source-color",
+      "palette": [
+        "#F1C94A",
+        "#FF9D43",
+        "#FF675D",
+        "#CF58A9"
+      ],
+      "files": {
+        "18": "logo-ape-018.bgra",
+        "36": "logo-ape-036.bgra",
+        "54": "logo-ape-054.bgra",
+        "72": "logo-ape-072.bgra",
+        "86": "logo-ape-086.bgra",
+        "100": "logo-ape-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-ape-018-1x.bgra",
+            "36": "logo-ape-036-1x.bgra",
+            "54": "logo-ape-054-1x.bgra",
+            "72": "logo-ape-072-1x.bgra",
+            "86": "logo-ape-086-1x.bgra",
+            "100": "logo-ape-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-ape-018.bgra",
+            "36": "logo-ape-036.bgra",
+            "54": "logo-ape-054.bgra",
+            "72": "logo-ape-072.bgra",
+            "86": "logo-ape-086.bgra",
+            "100": "logo-ape-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-ape-white-018.bgra",
+        "36": "logo-ape-white-036.bgra",
+        "54": "logo-ape-white-054.bgra",
+        "72": "logo-ape-white-072.bgra",
+        "86": "logo-ape-white-086.bgra",
+        "100": "logo-ape-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-ape-white-018-1x.bgra",
+            "36": "logo-ape-white-036-1x.bgra",
+            "54": "logo-ape-white-054-1x.bgra",
+            "72": "logo-ape-white-072-1x.bgra",
+            "86": "logo-ape-white-086-1x.bgra",
+            "100": "logo-ape-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-ape-white-018.bgra",
+            "36": "logo-ape-white-036.bgra",
+            "54": "logo-ape-white-054.bgra",
+            "72": "logo-ape-white-072.bgra",
+            "86": "logo-ape-white-086.bgra",
+            "100": "logo-ape-white-100.bgra"
+          }
+        }
+      }
+    },
+    "wma": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "source-color",
+      "palette": [
+        "#28D4EE",
+        "#2E9BEF",
+        "#546DDF",
+        "#8A5CD7"
+      ],
+      "files": {
+        "18": "logo-wma-018.bgra",
+        "36": "logo-wma-036.bgra",
+        "54": "logo-wma-054.bgra",
+        "72": "logo-wma-072.bgra",
+        "86": "logo-wma-086.bgra",
+        "100": "logo-wma-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-wma-018-1x.bgra",
+            "36": "logo-wma-036-1x.bgra",
+            "54": "logo-wma-054-1x.bgra",
+            "72": "logo-wma-072-1x.bgra",
+            "86": "logo-wma-086-1x.bgra",
+            "100": "logo-wma-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-wma-018.bgra",
+            "36": "logo-wma-036.bgra",
+            "54": "logo-wma-054.bgra",
+            "72": "logo-wma-072.bgra",
+            "86": "logo-wma-086.bgra",
+            "100": "logo-wma-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-wma-white-018.bgra",
+        "36": "logo-wma-white-036.bgra",
+        "54": "logo-wma-white-054.bgra",
+        "72": "logo-wma-white-072.bgra",
+        "86": "logo-wma-white-086.bgra",
+        "100": "logo-wma-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-wma-white-018-1x.bgra",
+            "36": "logo-wma-white-036-1x.bgra",
+            "54": "logo-wma-white-054-1x.bgra",
+            "72": "logo-wma-white-072-1x.bgra",
+            "86": "logo-wma-white-086-1x.bgra",
+            "100": "logo-wma-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-wma-white-018.bgra",
+            "36": "logo-wma-white-036.bgra",
+            "54": "logo-wma-white-054.bgra",
+            "72": "logo-wma-white-072.bgra",
+            "86": "logo-wma-white-086.bgra",
+            "100": "logo-wma-white-100.bgra"
+          }
+        }
+      }
+    },
+    "opus": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#22D1E8",
+        "#258FFF",
+        "#586BFF",
+        "#9C5CFF"
+      ],
+      "files": {
+        "18": "logo-opus-018.bgra",
+        "36": "logo-opus-036.bgra",
+        "54": "logo-opus-054.bgra",
+        "72": "logo-opus-072.bgra",
+        "86": "logo-opus-086.bgra",
+        "100": "logo-opus-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-opus-018-1x.bgra",
+            "36": "logo-opus-036-1x.bgra",
+            "54": "logo-opus-054-1x.bgra",
+            "72": "logo-opus-072-1x.bgra",
+            "86": "logo-opus-086-1x.bgra",
+            "100": "logo-opus-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-opus-018.bgra",
+            "36": "logo-opus-036.bgra",
+            "54": "logo-opus-054.bgra",
+            "72": "logo-opus-072.bgra",
+            "86": "logo-opus-086.bgra",
+            "100": "logo-opus-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-opus-white-018.bgra",
+        "36": "logo-opus-white-036.bgra",
+        "54": "logo-opus-white-054.bgra",
+        "72": "logo-opus-white-072.bgra",
+        "86": "logo-opus-white-086.bgra",
+        "100": "logo-opus-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-opus-white-018-1x.bgra",
+            "36": "logo-opus-white-036-1x.bgra",
+            "54": "logo-opus-white-054-1x.bgra",
+            "72": "logo-opus-white-072-1x.bgra",
+            "86": "logo-opus-white-086-1x.bgra",
+            "100": "logo-opus-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-opus-white-018.bgra",
+            "36": "logo-opus-white-036.bgra",
+            "54": "logo-opus-white-054.bgra",
+            "72": "logo-opus-white-072.bgra",
+            "86": "logo-opus-white-086.bgra",
+            "100": "logo-opus-white-100.bgra"
+          }
+        }
+      }
+    },
+    "aac": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#FFB94A",
+        "#FF8D45",
+        "#F45F68",
+        "#BF58B4"
+      ],
+      "files": {
+        "18": "logo-aac-018.bgra",
+        "36": "logo-aac-036.bgra",
+        "54": "logo-aac-054.bgra",
+        "72": "logo-aac-072.bgra",
+        "86": "logo-aac-086.bgra",
+        "100": "logo-aac-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-aac-018-1x.bgra",
+            "36": "logo-aac-036-1x.bgra",
+            "54": "logo-aac-054-1x.bgra",
+            "72": "logo-aac-072-1x.bgra",
+            "86": "logo-aac-086-1x.bgra",
+            "100": "logo-aac-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-aac-018.bgra",
+            "36": "logo-aac-036.bgra",
+            "54": "logo-aac-054.bgra",
+            "72": "logo-aac-072.bgra",
+            "86": "logo-aac-086.bgra",
+            "100": "logo-aac-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-aac-white-018.bgra",
+        "36": "logo-aac-white-036.bgra",
+        "54": "logo-aac-white-054.bgra",
+        "72": "logo-aac-white-072.bgra",
+        "86": "logo-aac-white-086.bgra",
+        "100": "logo-aac-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-aac-white-018-1x.bgra",
+            "36": "logo-aac-white-036-1x.bgra",
+            "54": "logo-aac-white-054-1x.bgra",
+            "72": "logo-aac-white-072-1x.bgra",
+            "86": "logo-aac-white-086-1x.bgra",
+            "100": "logo-aac-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-aac-white-018.bgra",
+            "36": "logo-aac-white-036.bgra",
+            "54": "logo-aac-white-054.bgra",
+            "72": "logo-aac-white-072.bgra",
+            "86": "logo-aac-white-086.bgra",
+            "100": "logo-aac-white-100.bgra"
+          }
+        }
+      }
+    },
+    "vorbis": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "source-color",
+      "palette": [
+        "#17D0E8",
+        "#248FFF",
+        "#526EFF",
+        "#8E60FF"
+      ],
+      "files": {
+        "18": "logo-vorbis-018.bgra",
+        "36": "logo-vorbis-036.bgra",
+        "54": "logo-vorbis-054.bgra",
+        "72": "logo-vorbis-072.bgra",
+        "86": "logo-vorbis-086.bgra",
+        "100": "logo-vorbis-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-vorbis-018-1x.bgra",
+            "36": "logo-vorbis-036-1x.bgra",
+            "54": "logo-vorbis-054-1x.bgra",
+            "72": "logo-vorbis-072-1x.bgra",
+            "86": "logo-vorbis-086-1x.bgra",
+            "100": "logo-vorbis-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-vorbis-018.bgra",
+            "36": "logo-vorbis-036.bgra",
+            "54": "logo-vorbis-054.bgra",
+            "72": "logo-vorbis-072.bgra",
+            "86": "logo-vorbis-086.bgra",
+            "100": "logo-vorbis-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-vorbis-white-018.bgra",
+        "36": "logo-vorbis-white-036.bgra",
+        "54": "logo-vorbis-white-054.bgra",
+        "72": "logo-vorbis-white-072.bgra",
+        "86": "logo-vorbis-white-086.bgra",
+        "100": "logo-vorbis-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-vorbis-white-018-1x.bgra",
+            "36": "logo-vorbis-white-036-1x.bgra",
+            "54": "logo-vorbis-white-054-1x.bgra",
+            "72": "logo-vorbis-white-072-1x.bgra",
+            "86": "logo-vorbis-white-086-1x.bgra",
+            "100": "logo-vorbis-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-vorbis-white-018.bgra",
+            "36": "logo-vorbis-white-036.bgra",
+            "54": "logo-vorbis-white-054.bgra",
+            "72": "logo-vorbis-white-072.bgra",
+            "86": "logo-vorbis-white-086.bgra",
+            "100": "logo-vorbis-white-100.bgra"
+          }
+        }
+      }
+    },
+    "mp3": {
+      "w": 312,
+      "h": 128,
+      "intrinsic_frame": false,
+      "frame_style": "generated",
+      "mark_style": "monochrome",
+      "palette": [
+        "#1ACAE8",
+        "#218CFF",
+        "#516CFF",
+        "#8B60FF"
+      ],
+      "files": {
+        "18": "logo-mp3-018.bgra",
+        "36": "logo-mp3-036.bgra",
+        "54": "logo-mp3-054.bgra",
+        "72": "logo-mp3-072.bgra",
+        "86": "logo-mp3-086.bgra",
+        "100": "logo-mp3-100.bgra"
+      },
+      "variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-mp3-018-1x.bgra",
+            "36": "logo-mp3-036-1x.bgra",
+            "54": "logo-mp3-054-1x.bgra",
+            "72": "logo-mp3-072-1x.bgra",
+            "86": "logo-mp3-086-1x.bgra",
+            "100": "logo-mp3-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-mp3-018.bgra",
+            "36": "logo-mp3-036.bgra",
+            "54": "logo-mp3-054.bgra",
+            "72": "logo-mp3-072.bgra",
+            "86": "logo-mp3-086.bgra",
+            "100": "logo-mp3-100.bgra"
+          }
+        }
+      },
+      "white_files": {
+        "18": "logo-mp3-white-018.bgra",
+        "36": "logo-mp3-white-036.bgra",
+        "54": "logo-mp3-white-054.bgra",
+        "72": "logo-mp3-white-072.bgra",
+        "86": "logo-mp3-white-086.bgra",
+        "100": "logo-mp3-white-100.bgra"
+      },
+      "white_variants": {
+        "1": {
+          "w": 156,
+          "h": 64,
+          "files": {
+            "18": "logo-mp3-white-018-1x.bgra",
+            "36": "logo-mp3-white-036-1x.bgra",
+            "54": "logo-mp3-white-054-1x.bgra",
+            "72": "logo-mp3-white-072-1x.bgra",
+            "86": "logo-mp3-white-086-1x.bgra",
+            "100": "logo-mp3-white-100-1x.bgra"
+          }
+        },
+        "2": {
+          "w": 312,
+          "h": 128,
+          "files": {
+            "18": "logo-mp3-white-018.bgra",
+            "36": "logo-mp3-white-036.bgra",
+            "54": "logo-mp3-white-054.bgra",
+            "72": "logo-mp3-white-072.bgra",
+            "86": "logo-mp3-white-086.bgra",
+            "100": "logo-mp3-white-100.bgra"
+          }
+        }
+      }
+    }
+  },
+  "style": "custom-codec-marks-body-only-spectrum-sdr-line-spaced-optical-ink-balanced-native-resolution-tiered-rainbow-frame-badges"
+}

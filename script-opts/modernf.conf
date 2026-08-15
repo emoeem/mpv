@@ -1,0 +1,83 @@
+#choose a layout(reduced/original/mid)
+#layout=original
+
+#show OSC when windowed? yes/no
+#showwindowed=
+
+#show OSC when fullscreen? yes/no
+#showfullscreen=
+
+#scaling of the controller when windowed
+scalewindowed=1
+
+#scaling of the controller when fullscreen
+scalefullscreen=1
+
+#scaling when rendered on a forced window
+scaleforcedwindow=1.5
+
+#scale the controller with the video? yes/no
+#vidscale=
+
+#duration in ms until the OSC hides if no mouse movement. enforced non-negative for the user but internally negative is 'always-on'.
+#hidetimeout=500
+
+#duration of fade out in ms 0=no fade
+#fadeduration=200
+
+#minimum amount of pixels the mouse has to move between ticks to make the OSC show up
+#minmousemove=3
+
+#use native mpv values and disable OSC internal track list management (and some functions that depend on it) yes/no
+#amaprogrammer=
+
+#default osc font
+#font='mpv-osd-symbols'
+
+#show seekrange overlay yes/no
+#seekrange=
+
+#color of seekbar and knot,there is no # before value
+#seekbarfg_color="7FFFD4" 
+
+#transparency of seekranges
+seekrangealpha=128
+
+#use keyframes when dragging the seekbar yes/no
+#seekbarkeyframes=
+
+#string compatible with property-expansion to be shown as OSC title
+#title='${media-title}'
+
+#show osc and no hide timeout on pause yes/no
+showonpause=no
+
+#display timecodes with milliseconds yes/no
+#timems=false
+
+#display total time instead of remaining time? yes/no
+#timetotal=no
+
+#how mpv logo on idle
+#idlescreen=yes
+
+#only used at init to set visibility_mode(...) auto/always/never
+#visibility=always
+
+#whether to show window controls auto/yes/no
+#windowcontrols=
+
+#whether to show mute button and volumne slider yes/no
+#volumecontrol=
+
+#volume bar show processd volume yes/no
+#processvolume=
+
+#eng=English chs=Chinese eng/chs
+#language=chs
+
+#alpha of the background box,0 (opaque) to 255 (fully transparent)
+boxalpha=128
+
+#hight of deadzone,from bottom to top
+#deadzone=200
