@@ -92,13 +92,13 @@ function iff(cc, a, b) if cc then return a else return b end end
 
 function ss(s, from, to) return s:sub(from, to - 1) end
 
-local function cnorm() return color('ffffff') end -- white
+local function cnorm() return color('cdd6f4') end -- Catppuccin Mocha Text
 
-local function cdis() return color('909090') end -- grey
+local function cdis() return color('6c7086') end -- Overlay0
 
-local function ceq() return iff(drcbox_enabled, color('ffff90'), cdis()) end -- yellow-ish
+local function ceq() return iff(drcbox_enabled, color('f9e2af'), cdis()) end -- Yellow
 
-local function ckeys() return iff(bindings_enabled, color('90FF90'), cdis()) end -- green-ish
+local function ckeys() return iff(bindings_enabled, color('a6e3a1'), cdis()) end -- Green
 
 local DUR_DEFAULT = 1.5 -- seconds
 local osd_timer = nil

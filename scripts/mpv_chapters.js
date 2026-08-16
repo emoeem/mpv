@@ -6,10 +6,10 @@ mp.observe_property("chapter", "number", onChapterChange);
 mp.observe_property("chapter-list/count", "number", init);
 var options = {
 	font_size: 16,
-	font_color: "00FFFF",
+	font_color: "F4D6CD",
 	border_size: 1.0,
-	border_color: "000000",
-	font_color_currentChapter: "C27F1B",
+	border_color: "1B1111",
+	font_color_currentChapter: "F7A6CB",
 };
 var playinfo = {
 	chapters: [], //array

@@ -1168,7 +1168,7 @@ function draw_list(arr_contents)
 	local osd_text = string.format("{\\an%f{\\fscx%f}{\\fscy%f}{\\bord%f}{\\1c&H%s}", o.list_alignment, o.text_scale, o.text_scale, o.text_border, o.text_color)
 	local osd_cursor = string.format("{\\an%f}{\\fscx%f}{\\fscy%f}{\\bord%f}{\\1c&H%s}", o.list_alignment, o.text_cursor_scale, o.text_cursor_scale, o.text_cursor_border, o.text_cursor_color)
 	local osd_header = string.format("{\\an%f}{\\fscx%f}{\\fscy%f}{\\bord%f}{\\1c&H%s}", o.list_alignment, o.header_scale, o.header_scale, o.header_border, o.header_color)
-	local osd_msg_end = "{\\1c&HFFFFFF}"
+	local osd_msg_end = "{\\1c&HF4D6CD}"
 	local item_properties = {} --1.3# to hold all of the stuff that we extract from within this table, such as the osd_index, etc..
 	
 	if o.header_text ~= '' then

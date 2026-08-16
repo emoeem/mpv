@@ -960,7 +960,7 @@ local function get_ip(udp_method, check_ip)
   return ip
 end
 
-local function get_server(ipv)
+local function get_server(ipv, port)
   local address = "0.0.0.0"
   local udp_method = socket.udp
   local check_ip = "91.198.174.192"
@@ -973,7 +973,7 @@ local function get_server(ipv)
   end
 
   local server = {}
-  local s = socket.bind(address, options.port)
+  local s = socket.bind(address, port)
   if s == nil then
     return {}
   end
@@ -981,25 +981,30 @@ local function get_server(ipv)
   server.server = s
   local ip = get_ip(udp_method, check_ip)
 
-  server.listen = listen_format:format(ip, options.port)
+  server.listen = listen_format:format(ip, port)
 
   return {[address] = server}
 end
 
 local function init_servers()
-  local servers = {}
   if not options.ipv4 and not options.ipv6 then
     mp.msg.error("Error: ipv4 and ipv6 is disabled!")
-    return servers
+    return {}
   end
-  if options.ipv6 then
-    for k,v in pairs(get_server(6)) do servers[k] = v end
+  -- 多开时顺延端口，保留 WebUI 而不是让第二个 mpv 直接失效。
+  for port = options.port, options.port + 9 do
+    local servers = {}
+    if options.ipv6 then
+      for k,v in pairs(get_server(6, port)) do servers[k] = v end
+    end
+    if options.ipv4 then
+      for k,v in pairs(get_server(4, port)) do servers[k] = v end
+    end
+    if next(servers) ~= nil then
+      return servers
+    end
   end
-  if options.ipv4 then
-    for k,v in pairs(get_server(4)) do servers[k] = v end
-  end
-
-  return servers
+  return {}
 end
 
 local function parse_collections()

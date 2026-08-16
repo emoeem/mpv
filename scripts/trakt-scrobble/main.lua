@@ -399,7 +399,7 @@ end
 
 -- Authentication activation
 local function activation()
-    send_message("Querying trakt.tv... Hold tight", 10, "FFFFFF")
+    send_message("Querying trakt.tv... Hold tight", 10, "F4D6CD")
     mp.remove_key_binding("auth-trakt")
     local status, output = device_code()
 
@@ -408,20 +408,20 @@ local function activation()
         if mp.get_property('clipboard-backends') ~= nil or mp.get_property_bool('clipboard-enable') then
             mp.commandv('set', 'clipboard/text', message)
         end
-        send_message("Open " .. message .. "\nPress x when done", 60, "FF8800")
+        send_message("Open " .. message .. "\nPress x when done", 60, "FAB489")
         msg.info("Open " .. message)
         mp.add_forced_key_binding("x", "auth-trakt", function()
             mp.remove_key_binding("auth-trakt")
             local status = auth()
             if status == 0 then
-                send_message("It's done. Enjoy!", 3, "00FF00")
+                send_message("It's done. Enjoy!", 3, "A1E3A6")
             else
-                send_message("Authentication failed. Check the console for more info.", 5, "0000FF")
+                send_message("Authentication failed. Check the console for more info.", 5, "A88BF3")
                 msg.error("Authentication failed")
             end
         end)
     else
-        send_message("Failed to generate device code. Check the console for more info.", 5, "0000FF")
+        send_message("Failed to generate device code. Check the console for more info.", 5, "A88BF3")
         msg.error("Failed to generate device code")
     end
 end
@@ -535,7 +535,7 @@ function start_scrobble(config, data, no_osd)
         ["trakt-api-version"] = "2"
     }, data)
     if not res then
-        send_message("Unable to scrobble ", 3, "0000FF")
+        send_message("Unable to scrobble ", 3, "A88BF3")
         msg.error("Check-in failed")
         return
     end
@@ -554,12 +554,12 @@ function start_scrobble(config, data, no_osd)
                 open_input_menu(state.filename)
                 stop_scrobble(config, data)
             end)
-            local message1 = format_message(message, "00FF00")
-            local message2 = format_message("Incorrect scrobble? Press x to open the search menu", "FF8800")
+            local message1 = format_message(message, "A1E3A6")
+            local message2 = format_message("Incorrect scrobble? Press x to open the search menu", "FAB489")
             send_message(message1 .. "\n" .. message2, 10)
             msg.info(message)
         elseif not no_osd then
-            send_message(message, 3, "00FF00")
+            send_message(message, 3, "A1E3A6")
             msg.info(message)
         else
             msg.info(message)
@@ -760,7 +760,7 @@ local function checkin_file(path)
             start_scrobble(config, data)
         end)
     elseif (input_available or uosc_available) then
-        local message = format_message("Automatic parsing of media titles failed.\n Press x to open the search menu", "FF8800")
+        local message = format_message("Automatic parsing of media titles failed.\n Press x to open the search menu", "FAB489")
         send_message(message, 5)
         mp.add_forced_key_binding("x", "search-trakt", function()
             message_timer:kill()
@@ -794,15 +794,15 @@ local function trackt_scrobble(force)
     local status = init()
 
     if status == 10 then
-        send_message("[trakt] Please make sure you have set client_id and client_secret correctly!", 5, "0000FF")
+        send_message("[trakt] Please make sure you have set client_id and client_secret correctly!", 5, "A88BF3")
         msg.warn("Please make sure you have set client_id and client_secret correctly!")
     elseif status == 11 then
-        send_message("[trakt] Press X to authenticate with Trakt.tv", 10, "FF8800")
+        send_message("[trakt] Press X to authenticate with Trakt.tv", 10, "FAB489")
         mp.add_forced_key_binding("x", "auth-trakt", activation)
     elseif status == 0 then
         msg.info("Checking Trakt.tv authentication status.")
         if check_access_token(config) ~= 0 then
-            send_message("Authentication failed. Please re-login.", 5, "FF0000")
+            send_message("Authentication failed. Please re-login.", 5, "A88BF3")
             return
         end
         checkin_file(path)

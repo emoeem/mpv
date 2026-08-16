@@ -1,0 +1,54 @@
+{
+  "sources": [
+    {
+      "name": "uosc",
+      "url": "https://github.com/tomasklaen/uosc.git",
+      "branch": "main",
+      "source": "src/uosc",
+      "destination": "scripts/uosc",
+      "mode": "check",
+      "baseline": "5.12.0"
+    },
+    {
+      "name": "uosc_danmaku",
+      "url": "https://github.com/Tony15246/uosc_danmaku.git",
+      "branch": "main",
+      "source": ".",
+      "destination": "scripts/uosc_danmaku",
+      "mode": "check",
+      "baseline": "948f64eef08011faf2f3eb43050062d7ce5ed1ba"
+    },
+    {
+      "name": "anime4k",
+      "url": "https://github.com/bloc97/Anime4K.git",
+      "branch": "master",
+      "source": "glsl",
+      "destination": "shaders/Anime4K/glsl",
+      "mode": "replace"
+    },
+    {
+      "name": "file_browser",
+      "url": "https://github.com/CogentRedTester/mpv-file-browser.git",
+      "branch": "master",
+      "source": ".",
+      "destination": "scripts/file-browser",
+      "mode": "replace"
+    },
+    {
+      "name": "trakt_scrobble",
+      "url": "https://github.com/dyphire/trakt-scrobble.git",
+      "branch": "master",
+      "source": ".",
+      "destination": "scripts/trakt-scrobble",
+      "mode": "check"
+    },
+    {
+      "name": "simple_mpv_webui",
+      "url": "https://github.com/open-dynaMIX/simple-mpv-webui.git",
+      "branch": "master",
+      "source": ".",
+      "destination": "scripts/simple-mpv-webui",
+      "mode": "check"
+    }
+  ]
+}

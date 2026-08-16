@@ -154,6 +154,14 @@ local function open_files(path, type, i, is_clip)
 end
 
 local function select_folder()
+    if mp.get_property('platform') ~= 'windows' then
+        local res = mp.command_native({
+            name = 'subprocess', playback_only = false, capture_stdout = true,
+            args = { 'zenity', '--file-selection', '--directory', '--title=选择文件夹' },
+        })
+        if res.status ~= 0 then return nil end -- 用户取消也无需提示错误
+        return res.stdout:match('(.-)[\r\n]*$')
+    end
     if not powershell then pwsh_check() end
     local powershell_script = string.format([[&{
         Add-Type -AssemblyName System.Windows.Forms
@@ -190,6 +198,18 @@ local function select_folder()
 end
 
 local function select_files(filter)
+    if mp.get_property('platform') ~= 'windows' then
+        local res = mp.command_native({
+            name = 'subprocess', playback_only = false, capture_stdout = true,
+            args = { 'zenity', '--file-selection', '--multiple', '--separator=\n', '--title=选择媒体文件' },
+        })
+        local file_paths = {}
+        if res.status ~= 0 then return file_paths end -- 用户取消也无需提示错误
+        for file_path in string.gmatch(res.stdout, '[^\r\n]+') do
+            table.insert(file_paths, file_path)
+        end
+        return file_paths
+    end
     if not powershell then pwsh_check() end
     local powershell_script = string.format([[&{
         Add-Type -AssemblyName System.Windows.Forms

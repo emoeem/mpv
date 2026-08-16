@@ -54,15 +54,14 @@ do
 
 	-- alphanum sorting for humans in Lua
 	-- http://notebook.kulchenko.com/algorithms/alphanumeric-natural-sorting-for-humans-in-lua
-	local function padnum(n, d)
-		return #d > 0 and ('%03d%s%.12f'):format(#n, n, tonumber(d) / (10 ^ #d))
-			or ('%03d%s'):format(#n, n)
+	local function padnum(n)
+		return ('%03d%s'):format(#n, n)
 	end
 
 	local function sort_lua(strings)
 		local tuples = {}
 		for i, f in ipairs(strings) do
-			tuples[i] = {f:lower():gsub('0*(%d+)%.?(%d*)', padnum), f}
+			tuples[i] = {f:lower():gsub('0*(%d+)', padnum), f}
 		end
 		table.sort(tuples, function(a, b)
 			return a[1] == b[1] and #b[2] < #a[2] or a[1] < b[1]
@@ -1187,19 +1186,21 @@ function render()
 			'user-data/idle-branding-image/active',
 			'no'
 		) == 'yes'
-		local image_height = math.max(0, tonumber(mp.get_property(
+		local image_height_value = mp.get_property(
 			'user-data/idle-branding-image/display-height',
 			'0'
-		)) or 0)
+		)
+		local image_height = math.max(0, tonumber(image_height_value) or 0)
 		local image_mode = mp.get_property(
 			'user-data/idle-branding-image/mode',
 			'default'
 		)
 		if image_active then
-			center_y = tonumber(mp.get_property(
+			local image_center_y = mp.get_property(
 				'user-data/idle-branding-image/center-y',
 				tostring(center_y)
-			)) or center_y
+			)
+			center_y = tonumber(image_center_y) or center_y
 		end
 
 		-- The image is the complete mark. Do not synthesize a surrounding card.

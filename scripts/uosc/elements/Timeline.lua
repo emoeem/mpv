@@ -737,6 +737,13 @@ function Timeline:get_time_at_x(x)
 	return state.duration * progress
 end
 
+function Timeline:cursor_command(command)
+	if type(command) == 'string' and #command > 0 and state.time and state.duration then
+		local expanded_command = command:gsub('{time}', self:get_time_at_x(cursor.x))
+		mp.command(expanded_command)
+	end
+end
+
 ---@param fast? boolean
 function Timeline:set_from_cursor(fast)
 	if state.time and state.duration then
@@ -1089,6 +1096,11 @@ function Timeline:render()
 			self:handle_cursor_down()
 			cursor:once('primary_up', function() self:handle_cursor_up() end)
 		end)
+		if #options.timeline_mbtn_right > 0 then
+			cursor:zone('secondary_down', seek_hitbox, function()
+				self:cursor_command(options.timeline_mbtn_right)
+			end)
+		end
 		if config.timeline_step ~= 0 then
 			cursor:zone('wheel_down', seek_hitbox, function()
 				mp.commandv('seek', -config.timeline_step, config.timeline_step_flag)
@@ -1260,9 +1272,9 @@ function Timeline:render()
 			if options.timeline_cache then
 				local ax = range[1] < 0.5 and bax or math.floor(t2x(range[1]))
 				local bx = range[2] > state.duration - 0.5 and bbx or math.ceil(t2x(range[2]))
-				opts.color, opts.opacity, opts.anchor_x = 'ffffff', 0.4 - (0.2 * visibility), bax
+				opts.color, opts.opacity, opts.anchor_x = fg, 0.4 - (0.2 * visibility), bax
 				ass:texture(ax, fay, bx, fby, texture_char, opts)
-				opts.color, opts.opacity, opts.anchor_x = '000000', 0.6 - (0.2 * visibility), bax + offset
+				opts.color, opts.opacity, opts.anchor_x = bg, 0.6 - (0.2 * visibility), bax + offset
 				ass:texture(ax, fay, bx, fby, texture_char, opts)
 			end
 		end
@@ -1398,7 +1410,7 @@ function Timeline:render()
 				button_x - button_size / 2, button_y - button_size / 2,
 				button_x + button_size / 2, button_y + button_size / 2,
 				{
-					color = is_button_hovered and 'c54e4e' or bg,
+					color = is_button_hovered and config.color.error or bg,
 					opacity = is_button_hovered and 0.94 or 0.82,
 					radius = math.max(3, round(4 * state.scale)),
 					border = math.max(1, round(1 * state.scale)),
@@ -1407,9 +1419,9 @@ function Timeline:render()
 			)
 			ass:txt(button_x, button_y - round(1 * state.scale), 5, '×', {
 				size = math.max(18, round(19 * state.scale)),
-				color = is_button_hovered and 'ffffff' or fg,
+				color = is_button_hovered and fgt or fg,
 				border = math.max(1, round(1 * state.scale)),
-				border_color = is_button_hovered and 'c54e4e' or bg,
+				border_color = is_button_hovered and config.color.error or bg,
 				bold = true,
 			})
 			cursor:zone('primary_down', hitbox, function()

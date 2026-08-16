@@ -2,5 +2,8 @@
 cache/
 files/
 
+# Git mirrors used by scripts/manager.lua (not nested worktrees)
+.manager/
+
 # 运行时个人备忘记录（含本地文件路径，不入库）
 memo-history.log

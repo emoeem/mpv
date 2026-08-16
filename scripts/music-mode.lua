@@ -117,16 +117,16 @@ local function show_music_osd(mode)
     local prefix, suffix = osd_parts_for_mode(mode)
     local text = suffix
         and string.format(
-            '{\\c&H55E6F2&}%s{\\c&HC8B89F&} · {\\c&HF2E655&}%s',
+            '{\\c&HFAB489&}%s{\\c&HC8ADA6&} · {\\c&HF7A6CB&}%s',
             ass_escape(prefix),
             ass_escape(suffix)
         )
-        or ('{\\c&H55E6F2&}' .. ass_escape(prefix))
+        or ('{\\c&HFAB489&}' .. ass_escape(prefix))
 
     overlay.res_x = width
     overlay.res_y = height
     overlay.data = string.format(
-        '{\\an2\\pos(%d,%d)\\fs%d\\b1\\3c&H221507&'
+        '{\\an2\\pos(%d,%d)\\fs%d\\b1\\3c&H1B1111&'
             .. '\\3a&H25&\\bord%d\\blur0.4\\shad0}%s',
         math.floor(width / 2),
         y,

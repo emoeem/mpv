@@ -29,7 +29,12 @@ function TopBar:init()
 		mp.command(state.fullormaxed and 'set fullscreen no;set window-maximized no' or 'set window-maximized yes')
 	end
 
-	local close = {icon = 'close', hover_bg = '2311e8', hover_fg = 'ffffff', command = function() mp.command('quit') end}
+	local close = {
+		icon = 'close',
+		hover_bg = config.color.error,
+		hover_fg = fgt,
+		command = function() mp.command('quit') end,
+	}
 	local max = {icon = 'crop_square', command = maximized_command, is_max = true}
 	local min = {icon = 'minimize', command = function() mp.command('cycle window-minimized') end}
 	local pin = {
@@ -258,7 +263,7 @@ function TopBar:render()
 			local button_fg = is_hover and (button.hover_fg or bg) or fg
 			local button_bg = is_hover and (button.hover_bg or fg) or bg
 
-			cursor:zone('primary_down', rect, button.command)
+			cursor:zone('primary_click', rect, button.command)
 
 			local bg_size = self.size - margin
 			local bg_ax, bg_ay = rect.ax + (is_left and margin or 0), rect.ay + margin
@@ -311,7 +316,7 @@ function TopBar:render()
 			if left_aligned then title_bx = rect.ax - margin else title_ax = rect.bx + margin end
 
 			-- Click action
-			cursor:zone('primary_down', rect, function() mp.command('script-binding uosc/playlist') end)
+			cursor:zone('primary_click', rect, function() mp.command('script-binding uosc/playlist') end)
 		end
 
 		-- Skip rendering titles if there's not enough horizontal space
@@ -334,7 +339,7 @@ function TopBar:render()
 				local title_rect = {ax = ax, ay = title_ay, bx = ax + rect_width, by = by}
 
 				if options.top_bar_alt_title_place == 'toggle' then
-					cursor:zone('primary_down', title_rect, function() self:toggle_title() end)
+					cursor:zone('primary_click', title_rect, function() self:toggle_title() end)
 				end
 
 				ass:rect(title_rect.ax, title_rect.ay, title_rect.bx, title_rect.by, {
@@ -424,7 +429,7 @@ function TopBar:render()
 
 				-- Click action
 				rect.bx = time_bx
-				cursor:zone('primary_down', rect, function() mp.command('script-binding uosc/chapters') end)
+				cursor:zone('primary_click', rect, function() mp.command('script-binding uosc/chapters') end)
 
 				title_ay = rect.by + self.title_spacing
 			end

@@ -617,7 +617,7 @@ function draw_menu()
     local curtain_opacity = 0.7
 
     local alpha = 255 - math.ceil(255 * curtain_opacity)
-    ass.text = string.format("{\\pos(0,0)\\rDefault\\an7\\1c&H000000&\\alpha&H%X&}", alpha)
+    ass.text = string.format("{\\pos(0,0)\\rDefault\\an7\\1c&H1B1111&\\alpha&H%X&}", alpha)
     ass:draw_start()
     ass:rect_cw(0, 0, width, height)
     ass:draw_stop()

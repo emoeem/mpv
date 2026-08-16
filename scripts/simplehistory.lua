@@ -547,7 +547,7 @@ function parse_header(string)
 	elseif search_active == 'not_typing' then
 		osd_search_color = string.format("{\\1c&H%s}", o.search_color_not_typing)
 	end
-	local osd_msg_end = "{\\1c&HFFFFFF}"
+	local osd_msg_end = "{\\1c&HF4D6CD}"
 	
 	string = string:gsub("%%total%%", #list_contents)
 		:gsub("%%cursor%%", list_cursor)
@@ -844,7 +844,7 @@ function draw_list()
 	local osd_text = string.format("{\\an%f{\\fscx%f}{\\fscy%f}{\\bord%f}{\\1c&H%s}", o.list_alignment, o.text_scale, o.text_scale, o.text_border, o.text_color)
 	local osd_cursor = string.format("{\\an%f}{\\fscx%f}{\\fscy%f}{\\bord%f}{\\1c&H%s}", o.list_alignment, o.text_cursor_scale, o.text_cursor_scale, o.text_cursor_border, o.text_cursor_color)
 	local osd_header = string.format("{\\an%f}{\\fscx%f}{\\fscy%f}{\\bord%f}{\\1c&H%s}", o.list_alignment, o.header_scale, o.header_scale, o.header_border, o.header_color)
-	local osd_msg_end = "{\\1c&HFFFFFF}"
+	local osd_msg_end = "{\\1c&HF4D6CD}"
 	local osd_time_type = 'found_time'
 	
 	if o.text_time_type == 'length' then

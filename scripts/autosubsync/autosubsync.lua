@@ -352,10 +352,10 @@ ref_selector = menu:new {
     pos_x = 50,
     pos_y = 50,
     rect_width = 400,
-    text_color = 'fff5da',
-    border_color = '2f1728',
-    active_color = 'ff6b71',
-    inactive_color = 'fff5da',
+    text_color = 'cdd6f4',
+    border_color = 'cba6f7',
+    active_color = '45475a',
+    inactive_color = '1e1e2e',
 }
 
 function ref_selector:get_keybindings()

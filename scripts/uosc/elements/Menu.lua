@@ -222,6 +222,7 @@ function Menu:init(data, callback, opts)
 	self.opts = opts or {}
 	self.offset_x = 0 -- Used for submenu transition animation.
 	self.mouse_nav = self.opts.mouse_nav -- Stops pre-selecting items
+	self.mouse_hovered_index = nil -- Current menu item under the mouse, including non-selectable items.
 	self.item_height = nil
 	self.min_width = nil
 	self.item_spacing = 1
@@ -898,7 +899,8 @@ end
 
 ---@param shortcut? Shortcut
 function Menu:handle_cursor_up(shortcut)
-	if self.proximity_raw <= -self.padding and self.drag_last_y and not self.is_dragging then
+	if self.proximity_raw <= -self.padding and self.drag_last_y and not self.is_dragging
+		and self.mouse_hovered_index == self.current.selected_index then
 		self:activate_pointer_item(shortcut)
 	end
 	if self.is_dragging then
@@ -1644,6 +1646,7 @@ end
 function Menu:render()
 	self.pointer_menu = nil
 	self.pointer_index = nil
+	self.mouse_hovered_index = nil
 
 	for _, menu in ipairs(self.all) do
 		if menu.fling then
@@ -1970,7 +1973,7 @@ function Menu:render()
 
 						-- Select action on cursor hover
 						if self.mouse_nav and get_point_to_rectangle_proximity(cursor, rect) <= 0 then
-							bind_zone('primary_down', rect, self:create_action(function(shortcut)
+							bind_zone('primary_click', rect, self:create_action(function(shortcut)
 								self:activate_selected_item(shortcut, true)
 							end))
 							blur_action_index = false
@@ -2108,17 +2111,22 @@ function Menu:render()
 				ass:txt(title_x, item_center_y, align, rendered_title, title_style)
 			end
 
-			-- Select hovered item
-			if (is_current or is_submenu) and self.mouse_nav and not hover_frozen and item.selectable ~= false then
-				if submenu_is_hovered then
-					-- A deeper descendant already owns the pointer. Keep this ancestor
-					-- selected, but do not overwrite the deepest clickable target.
-					blur_selected_index = false
-				elseif submenu_rect and cursor:direction_to_rectangle_distance(submenu_rect)
-					or actions_rect and actions_rect.is_outside and cursor:direction_to_rectangle_distance(actions_rect) then
-					blur_selected_index = false
-				else
-					if get_point_to_rectangle_proximity(cursor, item_rect_hitbox) <= 0 then
+			-- Track every hovered row, including non-selectable rows. This prevents
+			-- releasing the mouse over a label/separator from activating the
+			-- previously selected item.
+			if (is_current or is_submenu) and self.mouse_nav and not hover_frozen
+				and get_point_to_rectangle_proximity(cursor, item_rect_hitbox) <= 0 then
+				if is_current then self.mouse_hovered_index = index end
+				if item.selectable ~= false then
+					if submenu_is_hovered then
+						-- A deeper descendant already owns the pointer. Keep this ancestor
+						-- selected, but do not overwrite the deepest clickable target.
+						blur_selected_index = false
+					elseif submenu_rect and cursor:direction_to_rectangle_distance(submenu_rect)
+						or actions_rect and actions_rect.is_outside
+							and cursor:direction_to_rectangle_distance(actions_rect) then
+						blur_selected_index = false
+					else
 						blur_selected_index = false
 						self.pointer_menu = menu
 						self.pointer_index = index
