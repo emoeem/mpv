@@ -211,7 +211,9 @@ screenshot-tag-colorspace=yes
 - 默认优先选择 2160p 以下视频并排除 VP9.2。
 - 通过 `cookies-from-browser=Firefox` 读取 Firefox cookies。
 - `script-opts/quality-menu.conf` 与 `quality-menu.lua` 提供视频 / 音频格式菜单。
-- `profiles.conf` 中的 `网络流` 和 `直播` 分别面向高缓存和低延迟场景。
+- `profiles.conf` 中的 `网络流` 会在 `demuxer-via-network=yes` 时自动启用：
+  预读目标为 30 秒，前向缓存上限为 256 MiB，回退缓存上限为 32 MiB。
+- `直播` 是需要手动应用的低缓存、低延迟场景配置，不会被普通网络视频自动触发。
 
 ### 输入策略
 
@@ -264,8 +266,8 @@ profile=HDR2SDR
 
 ### `profiles.conf` 场景模式
 
-这些 profile 不会自动启用，需要在启动参数或配置中使用
-`--profile=<名称>`，也可以通过快捷键动态应用部分着色器 profile。
+除 `网络流` 会按网络媒体属性自动触发外，其余场景 profile 需要在启动参数或配置中
+使用 `--profile=<名称>`；也可以通过快捷键动态应用部分着色器 profile。
 
 | Profile | 说明 |
 | --- | --- |
@@ -273,8 +275,8 @@ profile=HDR2SDR
 | `电影` | 高质量、插帧、去色带和 HDR 映射 |
 | `动画` | 动画专用 Anime4K 修复与去模糊 |
 | `低功耗` | 关闭硬解并降低缩放和解码负载，适合排查性能问题 |
-| `网络流` | 网络缓存、超时和 1080p 以内的 ytdl 格式 |
-| `HDR` | HDR 目标峰值、色域映射和 PixelClipper |
+| `网络流` | 网络媒体自动触发，使用 30 秒预读、256 MiB 前向缓存和网络超时设置 |
+| `HDR画质` | 手动 HDR 画质预设：目标峰值、色域映射和 PixelClipper |
 | `截图` | PNG 高质量截图和高质量缩放 |
 | `直播` | 低缓存、低延迟和流重连 |
 
@@ -372,6 +374,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `simplebookmark.lua` | 文件书签和进度书签 |
 | `history-bookmark.lua` | 历史与书签辅助功能 |
 | `auto-save-state.lua` | 自动保存状态 |
+| `episode-preferences.lua` | 在同一连续剧内临时保持音轨、字幕位置和播放倍速 |
 | `persist_properties.lua` | 跨文件持久化指定属性 |
 | `memo.lua` | 本地备注记录 |
 | `undoredo.lua` | 跳转和循环跳转撤销 / 重做 |
@@ -441,6 +444,9 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 表示需要按住 `Shift`，例如 `A` 与 `a` 是两个不同绑定。uosc 菜单中的项目
 也来自 `input.conf` 行尾的 `#menu:` 注释。
 
+为避免被 niri 的全局绑定截获，mpv 不直接使用 `F2`、`F7`–`F11` 和
+`CTRL+LEFT` / `CTRL+RIGHT`；对应功能使用下表中的带修饰键组合。
+
 ### 打开、历史、书签与剪贴板
 
 | 按键 | 功能 |
@@ -494,11 +500,11 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `F4` | 打开综合 OSD 菜单 |
 | `F5` | 打开播放列表 |
 | `F6` | 打开音频设备列表 |
-| `F7` | 打开章节列表 |
-| `F8` | 打开轨道列表 |
-| `F9` | 打开视频轨列表 |
-| `F10` | 打开音频轨列表 |
-| `F11` | 打开字幕轨列表 |
+| `CTRL+F7` | 打开章节列表 |
+| `CTRL+F8` | 打开轨道列表 |
+| `CTRL+F9` | 打开视频轨列表 |
+| `CTRL+F10` | 打开音频轨列表 |
+| `CTRL+F11` | 打开字幕轨列表 |
 | `ALT+c` | 标记章节时间 |
 | `ALT+e` | 编辑当前章节标题 |
 | `ALT+r` | 删除当前章节 |
@@ -521,7 +527,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | 按键 | 功能 |
 | --- | --- |
 | `A` | 循环切换 16:9、4:3、2.35:1 和默认宽高比 |
-| `CTRL+LEFT` / `CTRL+RIGHT` | 左旋转 / 右旋转视频 |
+| `ALT+SHIFT+LEFT` / `ALT+SHIFT+RIGHT` | 左旋转 / 右旋转视频 |
 | `CTRL+-` / `CTRL+=` | 缩小 / 放大窗口 |
 | `ALT+-` / `ALT+=` | 缩小 / 放大视频画面 |
 | `ALT+LEFT` / `ALT+RIGHT` | 向左 / 向右移动画面 |
@@ -577,7 +583,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `CTRL+y` | 切换音频独占模式 |
 | `CTRL+Y` | 切换精确跳转丢帧同步模式 |
 | `ALT+y` | 循环切换 7.1、5.1、立体声和自动声道模式 |
-| `F2` | 循环切换动态范围 / 响度滤镜 |
+| `CTRL+F2` | 循环切换动态范围 / 响度滤镜 |
 | ``ALT+` `` | 清空音频滤镜 |
 
 ### 字幕

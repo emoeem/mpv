@@ -14,6 +14,7 @@ local arm_timer = nil
 local disable_audio_timer = nil
 local last_stable_aid = nil
 local last_sub_pos = nil
+local last_speed = nil
 
 local function kill_timer(timer)
     if timer then timer:kill() end
@@ -262,6 +263,7 @@ local function deactivate_file()
     cancel_disable_audio_timer()
     last_stable_aid = nil
     last_sub_pos = nil
+    last_speed = nil
 end
 
 local function on_preloaded()
@@ -281,6 +283,9 @@ local function on_preloaded()
     if aid then mp.set_property('file-local-options/aid', aid) end
     if preference.sub_pos ~= nil then
         mp.set_property('file-local-options/sub-pos', tostring(preference.sub_pos))
+    end
+    if preference.speed ~= nil then
+        mp.set_property('file-local-options/speed', tostring(preference.speed))
     end
 end
 
@@ -304,12 +309,23 @@ local function on_file_loaded()
         end
         last_stable_aid = normalize_aid(mp.get_property_native('aid'))
         last_sub_pos = tonumber(mp.get_property_native('sub-pos'))
+        last_speed = tonumber(mp.get_property_native('speed'))
         file_active = true
     end)
 end
 
+local function on_speed_change(_, value)
+    value = tonumber(value)
+    if not file_active or not value then return end
+    if last_speed ~= nil and math.abs(value - last_speed) < 0.0001 then return end
+    last_speed = value
+    local saved = ensure_preference()
+    if saved then saved.speed = value end
+end
+
 mp.observe_property('aid', 'native', on_aid_change)
 mp.observe_property('sub-pos', 'number', on_sub_pos_change)
+mp.observe_property('speed', 'number', on_speed_change)
 mp.add_hook('on_preloaded', 40, on_preloaded)
 mp.add_hook('on_unload', 40, deactivate_file)
 mp.register_event('file-loaded', on_file_loaded)
