@@ -215,3 +215,4 @@ vec4 hook() {
 	//Otherwise we would need to convert RGB to YUV, modify Y then convert back to RGB.
     return HOOKED_tex(HOOKED_pos) + (LINEKERNEL_tex(HOOKED_pos).x * STRENGTH);
 }
+

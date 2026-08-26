@@ -110,3 +110,4 @@ vec4 hook() {
     float c3 = c2;
     return vec4(c0, c1, c2, c3) + MAIN_tex(MAIN_pos);
 }
+

@@ -37,7 +37,7 @@
     {
       "name": "trakt_scrobble",
       "url": "https://github.com/dyphire/trakt-scrobble.git",
-      "branch": "master",
+      "branch": "main",
       "source": ".",
       "destination": "scripts/trakt-scrobble",
       "mode": "check"
@@ -45,7 +45,7 @@
     {
       "name": "simple_mpv_webui",
       "url": "https://github.com/open-dynaMIX/simple-mpv-webui.git",
-      "branch": "master",
+      "branch": "main",
       "source": ".",
       "destination": "scripts/simple-mpv-webui",
       "mode": "check"

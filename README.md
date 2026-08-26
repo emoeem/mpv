@@ -516,7 +516,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `ALT+q` | 切换章节跳过模式 |
 | `ALT+n` | 标记片头或片尾 |
 | `,` / `.` | 上一帧 / 下一帧 |
-| `LEFT` / `RIGHT` | 后退 30 秒 / 前进 60 秒 |
+| `LEFT` / `RIGHT` | 后退 30 秒 / 前进 30 秒 |
 | `SHIFT+LEFT` / `SHIFT+RIGHT` | 精确后退 / 前进 1 秒 |
 | `SHIFT+DOWN` / `SHIFT+UP` | 精确后退 80 秒 / 前进 80 秒 |
 | `CTRL+z` / `CTRL+x` | 撤销 / 重做跳转 |

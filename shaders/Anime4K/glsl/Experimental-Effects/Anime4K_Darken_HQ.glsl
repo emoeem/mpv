@@ -195,3 +195,4 @@ vec4 hook() {
 	//Otherwise we would need to convert RGB to YUV, modify Y then convert back to RGB.
     return HOOKED_tex(HOOKED_pos) + (comp_gaussian_y() * STRENGTH);
 }
+
