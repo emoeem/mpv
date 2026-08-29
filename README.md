@@ -26,6 +26,7 @@
 - [快捷键](#快捷键)
 - [第三方更新器](#第三方更新器)
 - [依赖与注意事项](#依赖与注意事项)
+- [更新记录](CHANGELOG.md)
 
 ## 快速开始
 
@@ -346,6 +347,8 @@ profile=HDR2SDR
 - 空闲状态下保留打开文件、历史、WebDAV、播放列表等入口。
 
 时间轴右键绑定为 `uosc/chapters`，不会修改视频或片头片尾标记。
+画面区域右键菜单（`conditional-rightclick`）会在空间允许时贴近鼠标
+位置打开（`menu-blurred-at` 锚点）。
 uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 `CTRL+ALT+SHIFT+u` 控制。
 
@@ -357,7 +360,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | --- | --- |
 | `uosc/` | 主播放界面、菜单、时间轴、顶栏、缩放和自定义按钮 |
 | `uosc_danmaku/` | 弹幕搜索、加载、延迟、保存、源管理和弹幕样式菜单 |
-| `thumbfast.lua` | 时间轴缩略图预览 |
+| `thumbfast.lua` | 时间轴缩略图预览，两阶段显示（先附近关键帧，再精确画面） |
 | `playlistmanager.lua` | 播放列表浏览、排序、移动、保存、随机和网络标题解析 |
 | `playlist-view.lua` | 播放列表视图 |
 | `file-browser/` | OSD 文件浏览器、目录缓存、收藏和多选 |
@@ -400,7 +403,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 
 | 脚本 | 功能 |
 | --- | --- |
-| `dynamic-crop.lua` | 检测并切除黑边，只对视频流工作 |
+| `dynamic-crop.lua` | 检测并切除黑边，只对视频流工作；起播尺寸未就绪时自动重试 |
 | `hdr-mode.lua` | HDR 模式辅助 |
 | `drcbox.lua` | 音频动态范围处理 |
 | `music-mode.lua` | 音乐播放模式 |
@@ -740,6 +743,12 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 `manager.json` 中的 `baseline` 用于记录定制版本基于哪个上游版本或提交。
 例如 uosc 当前 baseline 为 `5.12.0`；发现上游版本变化时，需要人工比较和合并
 本地改动，再决定是否更新 baseline。不要把 `.manager/` 缓存目录提交到仓库。
+
+2026-08-29 已将 Yaozhi 8.29 便携包的 uosc、弹幕与共享脚本改动合并进本地
+定制版，合并范围、保留的本地定制与跳过项见 [CHANGELOG.md](CHANGELOG.md)。
+注意：`uosc_danmaku` 源指向的 `Tony15246/uosc_danmaku` 与本地实际血统
+（含 `modules/resolver_affinity.lua`）不一致，其 `check` 结果仅供参考，
+不能作为更新依据。
 
 添加来源时，建议先使用 `check`：
 
