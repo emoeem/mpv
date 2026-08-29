@@ -152,6 +152,8 @@ local function detect_dolby_vision_label(track)
 	if track['dolby-vision-level'] ~= nil then return 'DV' end
 	local dvl_vp = mp.get_property('video-params/dolby-vision-level', '')
 	if dvl_vp and dvl_vp ~= '' then return 'DV' end
+	local colormatrix = mp.get_property('video-params/colormatrix', ''):lower()
+	if colormatrix == 'dolbyvision' then return 'DV' end
 
 	return nil
 end
@@ -531,6 +533,10 @@ function Timeline:init()
 		request_render()
 	end)
 	self:observe_mp_property('video-frame-info', 'native', invalidate_media_info_and_render)
+	self:observe_mp_property('video-codec', 'string', invalidate_media_info_and_render)
+	self:observe_mp_property('user-data/media-format/dolby-vision-profile', 'number',
+		invalidate_media_info_and_render)
+	self:observe_mp_property('vid', 'native', invalidate_media_info_and_render)
 	self:observe_mp_property('estimated-vf-fps', 'number', invalidate_media_info_and_render)
 	self:observe_mp_property('audio-codec', 'string', invalidate_media_info_and_render)
 	self:observe_mp_property('audio-params', 'native', invalidate_media_info_and_render)
@@ -759,10 +765,17 @@ function Timeline:clear_thumbnail()
 end
 
 function Timeline:handle_cursor_down()
+	local ai_active = mp.get_property_native('user-data/video-enhancement/ai-active')
 	self.pressed = {
 		pause = state.pause,
 		distance = 0,
 		dragging = false,
+		-- A VapourSynth/RIFE graph must refill its temporal frame window after
+		-- every seek.  Repeating keyframe seeks on every mouse move turns one
+		-- timeline drag into a series of visible stalls.  While real RIFE 2x is
+		-- active, keep the existing timeline/thumbnail preview and issue only the
+		-- exact landing seek on release.  Native playback retains live scrubbing.
+		ai_preview_only = ai_active == true or ai_active == 'yes',
 		last = {x = cursor.x, y = cursor.y},
 	}
 end
@@ -831,7 +844,7 @@ function Timeline:on_global_mouse_move()
 		if self.pressed.dragging then
 			-- Scrubbing must remain cheap even when the cursor moves slowly.
 			-- The exact landing seek is issued only once on mouse release.
-			self:set_from_cursor(true)
+			if not self.pressed.ai_preview_only then self:set_from_cursor(true) end
 		end
 	end
 end

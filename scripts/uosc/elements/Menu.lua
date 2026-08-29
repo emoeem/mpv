@@ -4,13 +4,13 @@ local Element = require('elements/Element')
 ---@alias MenuSearchAction {name: string; icon: string; label?: string;}
 
 -- Menu data structure accepted by `Menu:open(menu)`.
----@alias MenuData {id?: string; type?: string; title?: string; hint?: string; min_width?: number; min_width_px?: boolean; fixed_columns?: boolean; uniform_title_size?: boolean; footnote: string; content_padding_bottom?: number; search_style?: 'on_demand' | 'palette' | 'disabled'; search_action?: MenuSearchAction; search_cursor_blink?: boolean; search_focus_indicator?: boolean; item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; items?: MenuDataChild[]; selected_index?: integer; on_search?: string|string[]; on_search_action?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; back_on_escape?: boolean; bind_keys?: string[]}
+---@alias MenuData {id?: string; type?: string; title?: string; hint?: string; min_width?: number; min_width_px?: boolean; fixed_columns?: boolean; uniform_title_size?: boolean; hint_max_ratio?: number; hint_fit_ratio?: number; hint_ellipsis_ratio?: number; hint_force_ellipsis_when_scaled?: boolean; footnote: string; content_padding_bottom?: number; search_style?: 'on_demand' | 'palette' | 'disabled'; search_action?: MenuSearchAction; search_cursor_blink?: boolean; search_focus_indicator?: boolean; item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; items?: MenuDataChild[]; selected_index?: integer; on_search?: string|string[]; on_search_action?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; back_on_escape?: boolean; bind_keys?: string[]}
 ---@alias MenuDataChild MenuDataItem|MenuData
 ---@alias MenuDataItem {title?: string; hint?: string; icon?: string; value: any; actions?: MenuAction[]; actions_place?: 'inside' | 'outside'; active?: boolean; keep_open?: boolean; selectable?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; opacity?: number; separator?: boolean; align?: 'left'|'center'|'right'; search_exact_hint?: boolean}
----@alias MenuOptions {mouse_nav?: boolean;}
+---@alias MenuOptions {mouse_nav?: boolean; anchor_x?: number; anchor_y?: number; item_height?: number; font_scale?: number;}
 
 -- Internal data structure created from `MenuData`.
----@alias MenuStack {id?: string; type?: string; title?: string; hint?: string; footnote: string; min_width?: number; min_width_px?: boolean; fixed_columns?: boolean; uniform_title_size?: boolean; content_padding_bottom?: number; search_style?: 'on_demand' | 'palette' | 'disabled'; search_action?: MenuSearchAction; search_cursor_blink?: boolean; search_focus_indicator?: boolean; item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; selected_index?: number; action_index?: number; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; items: MenuStackChild[]; on_search?: string|string[]; on_search_action?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; back_on_escape?: boolean; bind_keys?: string[]; parent_menu?: MenuStack; submenu_path: integer[]; active?: boolean; width: number; height: number; top: number; scroll_y: number; scroll_height: number; title_width: number; hint_width: number; max_hint_width: number; max_item_width: number; max_width: number; is_root?: boolean; fling?: Fling, search?: Search, ass_safe_title?: string}
+---@alias MenuStack {id?: string; type?: string; title?: string; hint?: string; footnote: string; min_width?: number; min_width_px?: boolean; fixed_columns?: boolean; uniform_title_size?: boolean; hint_max_ratio?: number; hint_fit_ratio?: number; hint_ellipsis_ratio?: number; hint_force_ellipsis_when_scaled?: boolean; content_padding_bottom?: number; search_style?: 'on_demand' | 'palette' | 'disabled'; search_action?: MenuSearchAction; search_cursor_blink?: boolean; search_focus_indicator?: boolean; item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; selected_index?: number; action_index?: number; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; items: MenuStackChild[]; on_search?: string|string[]; on_search_action?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; back_on_escape?: boolean; bind_keys?: string[]; parent_menu?: MenuStack; submenu_path: integer[]; active?: boolean; width: number; height: number; top: number; scroll_y: number; scroll_height: number; title_width: number; hint_width: number; max_hint_width: number; max_item_width: number; max_width: number; is_root?: boolean; fling?: Fling, search?: Search, ass_safe_title?: string}
 ---@alias MenuStackChild MenuStackItem|MenuStack
 ---@alias MenuStackItem {title?: string; hint?: string; icon?: string; value: any; actions?: MenuAction[]; actions_place?: 'inside' | 'outside'; active?: boolean; keep_open?: boolean; selectable?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; opacity?: number; separator?: boolean; align?: 'left'|'center'|'right'; title_width: number; hint_width: number; ass_safe_hint?: string}
 ---@alias Fling {y: number, distance: number, time: number, easing: fun(x: number), duration: number, update_cursor?: boolean}
@@ -222,6 +222,10 @@ function Menu:init(data, callback, opts)
 	self.opts = opts or {}
 	self.offset_x = 0 -- Used for submenu transition animation.
 	self.mouse_nav = self.opts.mouse_nav -- Stops pre-selecting items
+	-- Mouse-opened context menus keep the click position as their visual
+	-- anchor. Keyboard-opened menus leave these unset and remain centered.
+	self.anchor_x = tonumber(self.opts.anchor_x)
+	self.anchor_y = tonumber(self.opts.anchor_y)
 	self.mouse_hovered_index = nil -- Current menu item under the mouse, including non-selectable items.
 	self.item_height = nil
 	self.min_width = nil
@@ -275,7 +279,13 @@ function Menu:init(data, callback, opts)
 	self:update(data)
 
 	for _, menu in ipairs(self.all) do self:scroll_to_index(menu.selected_index, menu.id) end
-	if self.mouse_nav then self.current.selected_index = nil end
+	if self.mouse_nav then
+		self.current.selected_index = nil
+		-- A replacement menu can appear directly under the stationary pointer.
+		-- Keep it neutral until the next real mouse move, otherwise the row at
+		-- that screen coordinate is selected and its submenu opens immediately.
+		self.current.hover_suppressed_until = math.huge
+	end
 
 	self:tween_property('opacity', self.opacity, 1, menu_open_duration)
 	self:enable_key_bindings()
@@ -431,13 +441,16 @@ function Menu:update_content_dimensions()
 		or logical_display_height < 800 and 0.86
 		or logical_display_height < 900 and 0.94
 		or 1
-	self.item_height = round(options.menu_item_height * state.scale * density_scale)
+	local menu_item_height = tonumber(self.opts.item_height) or options.menu_item_height
+	local menu_font_scale = tonumber(self.opts.font_scale) or 1
+	self.item_height = round(menu_item_height * state.scale * density_scale)
 	self.min_width = round(options.menu_min_width * state.scale)
 	self.separator_size = round(1 * state.scale)
 	self.scrollbar_size = round(2 * state.scale)
 	self.padding = round(options.menu_padding * state.scale)
 	self.gap = round(2 * state.scale)
-	self.font_size = round(self.item_height * 0.46 * options.font_scale)
+	self.font_size = round(self.item_height * 0.46 * options.font_scale
+		* menu_font_scale)
 	self.font_size_hint = self.font_size - 1
 	self.font = options.menu_font ~= '' and options.menu_font or config.font
 	self.item_padding = round((self.item_height - self.font_size) * 0.6)
@@ -535,6 +548,20 @@ function Menu:update_dimensions()
 			menu.search and math.min(menu.search.min_top, menu.search.source.top) or height_available,
 			round((height_available - menu.height + title_height) / 2)
 		)
+		if self.anchor_y then
+			local anchor_gap = round(8 * state.scale)
+			local draw_title = menu.is_root and menu.title or menu.search
+			local title_panel_height = draw_title and self.scroll_step or 0
+			local outer_height = title_panel_height + menu.height + self.padding * 2
+			local maximum_top = math.max(anchor_gap,
+				display.height - anchor_gap - outer_height)
+			-- Start beside the click and pull the complete panel back inside the
+			-- viewport when it would cross the lower edge. This keeps long menus
+			-- close to the pointer instead of snapping all the way to the top.
+			local outer_top = clamp(anchor_gap,
+				self.anchor_y + anchor_gap, maximum_top)
+			menu.top = outer_top + title_panel_height + self.padding
+		end
 		if menu.search then
 			menu.search.min_top = math.min(menu.search.min_top, menu.top)
 			menu.search.max_width = math.max(menu.search.max_width, menu.width)
@@ -564,7 +591,33 @@ end
 
 -- Updates element coordinates to match padding box of currently open (sub)menu.
 function Menu:update_coordinates()
-	local ax = round((display.width - self.current.width) / 2 - self.padding) + self.offset_x
+	local ax = round((display.width - self.current.width) / 2 - self.padding)
+	if self.anchor_x then
+		local anchor_gap = round(8 * state.scale)
+		local root_outer_width = self.root.width + self.padding * 2
+		local root_left = self.anchor_x + anchor_gap
+		if root_left + root_outer_width > display.width - anchor_gap then
+			root_left = self.anchor_x - root_outer_width - anchor_gap
+		end
+
+		-- The renderer places every parent immediately to the left of the
+		-- current submenu. Preserve the click-anchored root position, then
+		-- move the complete visible chain only as much as edge avoidance needs.
+		local distance_from_root = 0
+		local parent = self.current.parent_menu
+		while parent do
+			distance_from_root = distance_from_root
+				+ parent.width + self.padding * 2 + self.gap
+			parent = parent.parent_menu
+		end
+		local current_outer_width = self.current.width + self.padding * 2
+		local chain_width = distance_from_root + current_outer_width
+		local maximum_root_left = math.max(anchor_gap,
+			display.width - anchor_gap - chain_width)
+		root_left = clamp(anchor_gap, root_left, maximum_root_left)
+		ax = root_left + distance_from_root
+	end
+	ax = ax + self.offset_x
 	self:set_coordinates(
 		ax, self.current.top - self.padding,
 		ax + self.current.width + self.padding * 2, self.current.top + self.current.height + self.padding
@@ -1764,8 +1817,9 @@ function Menu:render()
 					if item.hint_width > 0 then
 						local width_before_hint = available_width - self.item_padding
 						local hint_width = fixed_columns and menu.max_hint_width or item.hint_width
+						local hint_max_ratio = clamp(menu.hint_max_ratio or 0.58, 0.30, 0.85)
 						local hint_reserve = math.min(
-							width_before_hint * 0.58,
+							width_before_hint * hint_max_ratio,
 							hint_width + self.item_padding * 1.5
 						)
 						available_width = width_before_hint - hint_reserve
@@ -2025,7 +2079,11 @@ function Menu:render()
 				-- so reserve an extra padding buffer and clip the title earlier.
 				local width = content_bx - content_ax - self.item_padding
 				local hint_width = fixed_columns and menu.max_hint_width or item.hint_width
-				local hint_reserve = math.min(width * 0.58, hint_width + self.item_padding * 1.5)
+				local hint_max_ratio = clamp(menu.hint_max_ratio or 0.58, 0.30, 0.85)
+				local hint_reserve = math.min(
+					width * hint_max_ratio,
+					hint_width + self.item_padding * 1.5
+				)
 				local title_width = width - hint_reserve
 				title_clip_bx = math.min(
 					title_clip_bx,
@@ -2044,7 +2102,12 @@ function Menu:render()
 					hint_font_size,
 					uniform_title_size and hint_font_size
 						or math.max(round(8 * state.scale), round(self.font_size_hint * 0.82)),
-					{font = self.font}
+					{font = self.font},
+					menu.hint_fit_ratio and {
+						fit_ratio = menu.hint_fit_ratio,
+						ellipsis_ratio = menu.hint_ellipsis_ratio,
+						force_ellipsis_when_scaled = menu.hint_force_ellipsis_when_scaled,
+					} or nil
 				)
 				local clip = '\\clip(' .. title_clip_bx .. ','
 					.. math.max(item_ay, content_rect.ay) .. ',' .. hint_clip_bx .. ','
@@ -2427,7 +2490,10 @@ function Menu:render()
 
 	-- Reserve the widest possible submenu path from the first frame. The value
 	-- is cached in update_dimensions() to keep menu animation/rendering cheap.
-	local cascade_width = self.current.cascade_width or (self.current.width + self.padding * 2)
+	local cascade_width = self.anchor_x
+		and (self.current.width + self.padding * 2)
+		or self.current.cascade_width
+		or (self.current.width + self.padding * 2)
 	local cascade_x = math.max(self.padding,
 		math.min(self.ax, display.width - self.padding - cascade_width))
 

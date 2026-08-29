@@ -15,6 +15,30 @@ local mp = require 'mp'
 local utils = require 'mp.utils'
 local input = require 'mp.input'
 
+local function load_audio_stats_info()
+    local candidates = {}
+    local function add(path)
+        if path and path ~= '' then candidates[#candidates + 1] = path end
+    end
+    add(mp.command_native({'expand-path', '~~/script-modules/audio-stats-info.lua'}))
+    local source = debug.getinfo(1, 'S').source:gsub('^@', '')
+    local script_dir = select(1, utils.split_path(source))
+    local parent = ''
+    for _ = 1, 4 do
+        parent = parent .. '../'
+        add(utils.join_path(script_dir, parent .. 'script-modules/audio-stats-info.lua'))
+    end
+    local last_error = ''
+    for _, path in ipairs(candidates) do
+        local ok, result = pcall(dofile, path)
+        if ok and type(result) == 'table' then return result end
+        last_error = tostring(result)
+    end
+    error('Unable to load audio-stats-info.lua: ' .. last_error)
+end
+
+local AudioStatsInfo = load_audio_stats_info()
+
 -- Options
 local o = {
     -- Default key bindings
@@ -944,7 +968,7 @@ local function append_hdr(s, hdr, video_out)
 end
 
 
-local function append_img_params(s, r, ro)
+local function append_img_params(s, r, ro, show_superres)
     if not r then
         return
     end
@@ -955,6 +979,23 @@ local function append_img_params(s, r, ro)
             ro["crop-w"] = nil
         end
         append_resolution(s, ro, "Output Resolution:", "dw", "dh")
+    end
+
+    if show_superres then
+        -- gpu-next shaders run after video-out-params, so mpv's native
+        -- resolution fields cannot identify whether the final display upscale
+        -- is using the managed SSim/FSRCNNX path. Reuse the publication that
+        -- also drives the video-enhancement menu; this keeps both UIs truthful.
+        local superres_active = mp.get_property_native(
+            "user-data/video-enhancement/superres-active") == "yes"
+        local superres_effective = mp.get_property_native(
+            "user-data/video-enhancement/superres-effective")
+        local superres_detail = mp.get_property_native(
+            "user-data/video-enhancement/superres-detail")
+        local superres_status = superres_active and superres_detail or superres_effective
+        if superres_status and superres_status ~= "" and superres_status ~= "等待视频" then
+            append(s, superres_status, {prefix="Super Resolution:"})
+        end
     end
 
     local indent = o.prefix_sep .. o.prefix_sep
@@ -1131,7 +1172,7 @@ local function add_video(s)
     if mp.get_property_native("current-tracks/video/image") == false then
         append_fps(s, "container-fps", "estimated-vf-fps")
     end
-    append_img_params(s, r, ro)
+    append_img_params(s, r, ro, true)
     append_hdr(s, ro)
     append_property(s, "video-bitrate", {prefix="Bitrate:"})
     append_filters(s, "vf", "Filters:")
@@ -1155,6 +1196,8 @@ local function add_audio(s)
 
     append(s, "", {prefix="Audio:", nl=o.nl .. o.nl, indent=""})
     local track = mp.get_property_native("current-tracks/audio")
+    local output_format = ro.format or r.format
+    local passthrough = AudioStatsInfo.is_passthrough(output_format)
     if track then
         append(s, track["codec-desc"], {prefix_sep="", nl="", indent=""})
         append(s, track["codec-profile"], {prefix="[", nl="", indent=" ", prefix_sep="",
@@ -1174,10 +1217,26 @@ local function add_audio(s)
     if math.abs(mp.get_property_native("audio-delay")) > 1e-6 then
         append_property(s, "audio-delay", {prefix="A-V delay:"})
     end
-    local cc = append(s, merge(r, ro, "channel-count"), {prefix="Channels:"})
-    append(s, merge(r, ro, "format"), {prefix="Format:", nl=cc and "" or o.nl,
-                            indent=cc and o.prefix_sep .. o.prefix_sep})
-    append(s, merge(r, ro, "samplerate"), {prefix="Sample Rate:", suffix=" Hz"})
+    local cc
+    local format
+    local samplerate
+    if passthrough then
+        -- IEC61937/SPDIF exposes its carrier as a 2-channel, often 192 kHz
+        -- output.  The movie's actual bed layout and sample rate live on the
+        -- selected demux track and must be shown instead.
+        cc = append(s, AudioStatsInfo.source_channel_label(track) or "Unknown",
+                    {prefix="Channels:"})
+        format = AudioStatsInfo.passthrough_format_label(output_format, track)
+        samplerate = AudioStatsInfo.source_samplerate(track)
+    else
+        cc = append(s, AudioStatsInfo.merge_channel_labels(r, ro) or "Unknown",
+                    {prefix="Channels:"})
+        format = merge(r, ro, "format")
+        samplerate = merge(r, ro, "samplerate")
+    end
+    append(s, format, {prefix="Format:", nl=cc and "" or o.nl,
+                       indent=cc and o.prefix_sep .. o.prefix_sep})
+    append(s, samplerate, {prefix="Sample Rate:", suffix=" Hz"})
     append_property(s, "audio-bitrate", {prefix="Bitrate:"})
     append_filters(s, "af", "Filters:")
 end
@@ -1347,7 +1406,7 @@ local function add_track(c, t, i)
         end
     end
     append(c, t["lang"], {prefix="Language:"})
-    append(c, t["demux-channel-count"], {prefix="Channels:"})
+    append(c, AudioStatsInfo.source_channel_label(t), {prefix="Channels:"})
     append(c, t["demux-channels"], {prefix="Channel Layout:"})
     append(c, t["demux-samplerate"], {prefix="Sample Rate:", suffix=" Hz"})
     local function B(b) return b and string.format("%.2f", b / 1024) end
@@ -2153,6 +2212,7 @@ local function auto_translate_text(text)
         ["Deinterlacing:"] = "去隔行：",
         ["Resolution:"] = "分辨率：",
         ["Output Resolution:"] = "输出分辨率：",
+        ["Super Resolution:"] = "超分：",
         ["Format:"] = "格式：",
         ["Levels:"] = "色彩范围：",
         ["Chroma Loc:"] = "色度位置：",
@@ -2232,6 +2292,7 @@ local function auto_translate_text(text)
         ["End Cached:"] = "结尾已缓存：",
         ["Range "] = "范围 ",
         ["Unavailable."] = "不可用。",
+        ["Unknown"] = "未知",
         ["yes"] = "是",
         ["no"] = "否",
         

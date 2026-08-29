@@ -356,6 +356,7 @@ function has_value(tab, val, array2d)
 end
 
 function file_exists(name)
+	if type(name) ~= "string" or name == "" then return false end
 	local f = io.open(name, "r")
 	if f ~= nil then io.close(f) return true else return false end
 end
@@ -428,8 +429,42 @@ function get_file()
 	end
 
 	local path = mp.get_property('path')
-	if not path then return end
-	if path:match("bd://") or path:match("dvd://")  or path:match("dvb://") or path:match("cdda://") then return end
+
+	-- 处理光盘播放模式（bd:// / dvd://）：
+	-- 注意：光盘协议下 path 可能为 nil（最常见的情况！）、bd://、dvd:// 或原始路径
+	-- 优先通过 auto_iso_loader 暴露的 user-data 获取，兜底通过 bluray-device/dvd-device
+	local iso_original_path = mp.get_property("user-data/auto-iso-loader/original-path")
+	if utils.shared_script_property_get then
+		iso_original_path = iso_original_path or utils.shared_script_property_get("auto-iso-loader-original-path")
+	end
+
+	local bd_dev = mp.get_property("bluray-device") or ""
+	local dvd_dev = mp.get_property("dvd-device") or ""
+
+	if iso_original_path and iso_original_path ~= "" then
+		-- 方案 A：auto_iso_loader.lua 传的原始路径（最优先）
+		path = iso_original_path
+	elseif path and (path:find("bd://") or path:find("dvd://")) then
+		-- 方案 B：path 是光盘协议，从设备属性取真实路径
+		if path:find("bd://") and bd_dev ~= "" then
+			path = bd_dev
+		elseif path:find("dvd://") and dvd_dev ~= "" then
+			path = dvd_dev
+		else
+			return
+		end
+	elseif bd_dev:lower():match("%.iso$") then
+		-- 方案 C：path 为 nil（光盘协议常见情况），用蓝光设备路径
+		path = bd_dev
+	elseif dvd_dev:lower():match("%.iso$") then
+		path = dvd_dev
+	elseif not path then
+		-- path 为 nil 且设备无法确定 → 放弃
+		return
+	elseif path:find("dvb://") or path:find("cdda://") then
+		return
+	end
+
 	if not path:match('^%a[%a%d-_]+://') then path = normalize(path) end
 	
 	local length = (mp.get_property_number('duration') or 0)
@@ -490,7 +525,8 @@ function read_log(func)
 	if not f then return end
 	local contents = {}
 	for line in f:lines() do
-		table.insert(contents, (func(line)))
+		local item = func(line)
+		if item then table.insert(contents, item) end
 	end
 	f:close()
 	return contents
@@ -505,11 +541,12 @@ function read_log_table()
 			n, p = line:match('^.-\"(.-)\" | (.*) | ' .. esc_string(log_length_text) .. '(.*)')
 		else
 			p = line:match('[(.*)%]]%s(.*) | ' .. esc_string(log_length_text) .. '(.*)')
-			d, n, e = p:match('^(.-)([^\\/]-)%.([^\\/%.]-)%.?$')
+			if p then d, n, e = p:match('^(.-)([^\\/]-)%.([^\\/%.]-)%.?$') end
 		end
 		dt = line:match('%[(.-)%]')
 		t = line:match(' | ' .. esc_string(log_time_text) .. '(%d*%.?%d*)(.*)$')
 		ln = line:match(' | ' .. esc_string(log_length_text) .. '(%d*%.?%d*)(.*)$')
+		if not p or p == "" or not tonumber(t) or not tonumber(ln) then return nil end
 		r = tonumber(ln) - tonumber(t)
 		l = line
 		line_pos = line_pos + 1
@@ -2128,9 +2165,9 @@ function history_incognito_mode()
 	if not incognito_mode then
 		incognito_mode = true
 		if o.osd_messages == true then
-			mp.osd_message('🕵 Incognito Mode Enabled')
+			mp.osd_message('无痕历史已开启\n本次播放不会写入历史记录')
 		end
-		msg.info('Incognito Mode Enabled')
+		msg.info('无痕历史已开启')
 		
 		if o.delete_incognito_entry and autosaved_entry == true then
 			delete_log_entry_specific('last', filePath, 0)
@@ -2143,9 +2180,9 @@ function history_incognito_mode()
 	else
 		incognito_mode = false
 		if o.osd_messages == true then
-			mp.osd_message('Incognito Mode Disabled')
+			mp.osd_message('无痕历史已关闭\n已恢复正常历史记录')
 		end
-		msg.info('Incognito Mode Disabled')
+		msg.info('无痕历史已关闭')
 		
 		if o.restore_incognito_entry == 'always' then
 			history_fileonly_save()

@@ -28,6 +28,31 @@ local function same_server(a, b)
     return normalize_server(a) == normalize_server(b)
 end
 
+local episode_request_generation = 0
+local recover_history_association
+
+local function get_current_path()
+    if type(mp) == "table" and type(mp.get_property) == "function" then
+        return mp.get_property("path")
+    end
+end
+
+local function episode_request_is_current(request)
+    if type(request) ~= "table" then return true end
+    if request.generation ~= episode_request_generation then return false end
+    local current_path = get_current_path()
+    return not request.path or not current_path or request.path == current_path
+end
+
+-- Invalidate in-flight comment/search requests as soon as another file starts.
+-- playback_only normally cancels the subprocess too, but the generation guard
+-- also protects callbacks that were already queued by mpv.
+if type(mp) == "table" and type(mp.register_event) == "function" then
+    mp.register_event("start-file", function()
+        episode_request_generation = episode_request_generation + 1
+    end)
+end
+
 local function get_fallback_server_list(skip_server)
     local servers = {}
     for server in tostring(options.fallback_server or ""):gmatch("[^,]+") do
@@ -130,8 +155,9 @@ end
 
 -- 写入history.json
 -- 读取episodeId获取danmaku
-function set_episode_id(input, from_menu, api_server, episode_number)
+function set_episode_id(input, from_menu, api_server, episode_number, request_options)
     from_menu = from_menu or false
+    request_options = request_options or {}
     DANMAKU.source = "dandanplay"
     local selected_server = api_server
     for url, source in pairs(DANMAKU.sources) do
@@ -158,9 +184,56 @@ function set_episode_id(input, from_menu, api_server, episode_number)
     DANMAKU.api_server = selected_server
 
     local episodeId = tonumber(input)
-    write_history(episodeId, selected_server, episode_number)
+    if not episodeId or not selected_server or selected_server == "" then
+        show_message("弹幕关联无效", 3)
+        msg.warn("弹幕关联缺少有效 episodeId 或服务器")
+        return
+    end
+
+    episode_request_generation = episode_request_generation + 1
+    local request = {
+        generation = episode_request_generation,
+        path = get_current_path(),
+        from_menu = from_menu,
+        from_history = request_options.from_history == true,
+        episode_number = tonumber(episode_number),
+        association = {
+            animeTitle = DANMAKU.anime,
+            episodeTitle = DANMAKU.episode,
+            source = DANMAKU.source,
+        },
+        on_complete = request_options.on_complete,
+    }
+    request.history_record = request_options.history_record or {
+        animeTitle = request.association.animeTitle,
+        episodeTitle = request.association.episodeTitle,
+        episodeNumber = request.episode_number,
+        source = request.association.source,
+    }
+
     set_danmaku_button()
-    fetch_danmaku(episodeId, from_menu, selected_server)
+
+    local function finish(success, reason)
+        if not episode_request_is_current(request) then return end
+        if success then
+            write_history(episodeId, selected_server, episode_number, request.association)
+            if request.on_complete then pcall(request.on_complete, true) end
+            return
+        end
+        if request_options.recover_on_failure ~= false and recover_history_association then
+            recover_history_association(request, selected_server, reason)
+        elseif request.on_complete then
+            pcall(request.on_complete, false, reason)
+        end
+    end
+
+    if request_options.from_history and request_options.refresh_before_fetch and recover_history_association then
+        recover_history_association(request, selected_server,
+            request_options.refresh_reason or "association_refresh")
+        return
+    end
+
+    fetch_danmaku(episodeId, from_menu, selected_server, finish, request)
 end
 
 -- 回退使用额外的弹幕获取方式
@@ -253,6 +326,8 @@ end
 function make_danmaku_request_args(method, url, headers, body, request_options)
     local args = {
         "curl",
+        "--silent",
+        "--show-error",
         "-L",
         "-X",
         method,
@@ -598,9 +673,14 @@ local function match_file(file_path, file_name, callback)
         DANMAKU.anime = selected.animeTitle
         DANMAKU.episode = selected.episodeTitle
 
-        set_episode_id(selected.episodeId, nil, server, expected_episode or matched_episode)
+        set_episode_id(selected.episodeId, nil, server, expected_episode or matched_episode, {
+            on_complete = function(success, reason)
+                if callback then
+                    pcall(callback, success and nil or (reason or "弹幕内容为空"))
+                end
+            end,
+        })
         if cancel_fn then pcall(cancel_fn) end
-        if callback then pcall(callback) end
     end
 
     local function final_cb()
@@ -618,7 +698,11 @@ function fetch_danmaku_data(args, callback, request_options)
     call_cmd_async(args, function(error, json)
         if error then
             if not request_options.silent then show_message("获取数据失败", 3) end
-            msg.error("HTTP 请求失败：" .. error)
+            if request_options.silent then
+                msg.debug("HTTP 请求失败：" .. error)
+            else
+                msg.error("HTTP 请求失败：" .. error)
+            end
             if request_options.callback_on_error then callback(nil, error) end
             return
         end
@@ -645,6 +729,7 @@ function save_danmaku_data(comments, query, danmaku_source)
     else
         DANMAKU.sources[query] = {from = danmaku_source, data = danmaku_list}
     end
+    return #danmaku_list
 end
 
 function save_danmaku_xml(url, xml_string)
@@ -680,39 +765,283 @@ function save_danmaku_downloaded(url, downloaded_file)
 end
 
 -- 处理获取到的数据
-function handle_fetched_danmaku(data, url, from_menu)
-    if data and data["comments"] then
-        if data["count"] == 0 then
-            if DANMAKU.sources[url] == nil then
-                DANMAKU.sources[url] = {from = "api_server"}
-            end
-            show_message("该集弹幕内容为空，结束加载", 3)
-            msg.verbose("该集弹幕内容为空，结束加载")
-            return
+function handle_fetched_danmaku(data, url, from_menu, silent_empty)
+    local comments = data and data["comments"]
+    -- Trust the actual payload instead of a mirror's advertised count; some
+    -- community nodes return a stale count while comments are still present.
+    local count = type(comments) == "table" and #comments or 0
+    if type(comments) == "table" and count > 0 and #comments > 0 then
+        local saved_count = save_danmaku_data(comments, url, "api_server")
+        if saved_count and saved_count > 0 then
+            load_danmaku(from_menu)
+            return true
         end
-        save_danmaku_data(data["comments"], url, "api_server")
-        load_danmaku(from_menu)
-    else
-        show_message("无数据", 3)
-        msg.info("无数据")
     end
+
+    if DANMAKU.sources[url] and DANMAKU.sources[url].from == "api_server" and
+        not DANMAKU.sources[url].from_history then
+        DANMAKU.sources[url] = nil
+    end
+
+    if not silent_empty then
+        show_message("该集弹幕内容为空，结束加载", 3)
+    end
+    msg.verbose("该集弹幕内容为空，结束加载")
+    return false, data and "empty" or "no_data"
 end
 
 -- 匹配弹幕库 comment, 仅匹配dandan本身弹幕库
 -- 通过danmaku api（url）+id获取弹幕
-function fetch_danmaku(episodeId, from_menu, api_server)
+function fetch_danmaku(episodeId, from_menu, api_server, callback, request)
     local url = api_server .. "/api/v2/comment/" .. episodeId .. "?withRelated=true&chConvert=0"
     show_message("弹幕加载中...", 30)
     msg.verbose("尝试获取弹幕：" .. url)
-    local args = make_danmaku_request_args("GET", url)
+    local args = make_danmaku_request_args("GET", url, nil, nil, {
+        connect_timeout = 3,
+        max_time = 12,
+        fail_http = true,
+    })
 
     if args == nil then
+        if callback then callback(false, "no_args") end
         return
     end
 
-    fetch_danmaku_data(args, function(data)
-        handle_fetched_danmaku(data, url, from_menu)
-    end)
+    fetch_danmaku_data(args, function(data, err)
+        if request and not episode_request_is_current(request) then
+            msg.debug("忽略已过期的弹幕请求：" .. url)
+            return
+        end
+
+        if err then
+            if not (request and request.history_record) then
+                show_message("获取数据失败", 3)
+            end
+            if callback then callback(false, err) end
+            return
+        end
+
+        local success, reason = handle_fetched_danmaku(
+            data, url, from_menu, request and request.history_record ~= nil)
+        if callback then callback(success, reason) end
+    end, {silent = true, callback_on_error = true})
+end
+
+local function trim_text(value)
+    return tostring(value or ""):match("^%s*(.-)%s*$")
+end
+
+local function split_history_title(value)
+    local raw = trim_text(value)
+    local cleaned = raw:gsub("%s*【.-】.*$", "")
+        :gsub("%s+[Ff][Rr][Oo][Mm]%s+[%w_%-]+.*$", "")
+    cleaned = trim_text(cleaned)
+    local year = cleaned:match("%(([12]%d%d%d)%)")
+    local base = trim_text(cleaned:gsub("%s*%([12]%d%d%d%)%s*$", ""))
+    local source = raw:match("[Ff][Rr][Oo][Mm]%s+([%w_%-]+)")
+    return raw, cleaned, base, tonumber(year), source and source:lower() or nil
+end
+
+local function is_series_type(value)
+    local kind = trim_text(value):lower()
+    return kind == "tvseries" or kind == "tv" or kind == "series"
+        or kind == "电视剧" or kind == "電視劇"
+end
+
+local function choose_history_candidate(animes, history_record, episode_number)
+    if type(animes) ~= "table" then return nil, "no_animes" end
+
+    local target_raw, target_clean, target_base, target_year, target_source =
+        split_history_title(history_record and history_record.animeTitle)
+    if target_base == "" then return nil, "no_title" end
+
+    local require_series = tonumber(episode_number) and tonumber(episode_number) > 1
+        or target_raw:find("电视剧", 1, true) ~= nil
+        or target_raw:find("電視劇", 1, true) ~= nil
+    local best, best_score, tied = nil, -1, false
+
+    for _, anime in ipairs(animes) do
+        if type(anime) == "table" and anime.bangumiId and anime.animeTitle then
+            local raw, clean, base, year, source = split_history_title(anime.animeTitle)
+            local score = nil
+            if raw == target_raw then
+                score = 100
+            elseif clean == target_clean then
+                score = 80
+            elseif base == target_base then
+                score = 60
+            end
+
+            if score and target_year and year and target_year ~= year then score = nil end
+            if score and require_series and not is_series_type(anime.type) then score = nil end
+            if score then
+                if target_year and year == target_year then score = score + 10 end
+                if require_series and is_series_type(anime.type) then score = score + 3 end
+                if target_source and source == target_source then score = score + 8 end
+
+                if score > best_score then
+                    best, best_score, tied = anime, score, false
+                elseif score == best_score and best and tostring(best.bangumiId) ~= tostring(anime.bangumiId) then
+                    tied = true
+                end
+            end
+        end
+    end
+
+    if tied then return nil, "ambiguous" end
+    return best, best and nil or "no_exact_match"
+end
+
+recover_history_association = function(request, failed_server, failure_reason)
+    if not episode_request_is_current(request) or request.recovery_started then return end
+    request.recovery_started = true
+
+    local history_record = request.history_record or request.association or {}
+    local _, _, query_title = split_history_title(history_record.animeTitle)
+    local episode_number = tonumber(history_record.episodeNumber) or request.episode_number
+    local association_label = request.from_history and "历史弹幕关联" or "弹幕关联"
+    local proactive_refresh = failure_reason == "community_server_refresh"
+        or failure_reason == "episode_changed"
+        or failure_reason == "association_refresh"
+    if query_title == "" or not episode_number then
+        show_message(association_label .. "无效，请手动重新关联", 4)
+        msg.warn(association_label .. "缺少可安全重匹配的片名或集数")
+        if request.on_complete then pcall(request.on_complete, false, "missing_identity") end
+        return
+    end
+
+    local servers, seen = {}, {}
+    local function add_server(server)
+        server = normalize_server(server)
+        if server ~= "" and not seen[server] then
+            seen[server] = true
+            servers[#servers + 1] = server
+        end
+    end
+    add_server(failed_server)
+    for _, server in ipairs(get_api_server_list(options.api_server)) do add_server(server) end
+
+    if proactive_refresh then
+        show_message("正在校验" .. association_label .. "...", 30)
+        msg.info(("%s开始安全刷新：%s (%s)")
+            :format(association_label, tostring(failed_server), tostring(failure_reason)))
+    else
+        show_message(association_label .. "已失效，正在自动重新匹配...", 30)
+        msg.info(("%s失效，开始自愈：%s (%s)")
+            :format(association_label, tostring(failed_server), tostring(failure_reason)))
+    end
+
+    local original_anime = DANMAKU.anime
+    local original_episode = DANMAKU.episode
+    local original_server = DANMAKU.api_server
+
+    local function restore_metadata()
+        DANMAKU.anime = original_anime
+        DANMAKU.episode = original_episode
+        DANMAKU.api_server = original_server
+    end
+
+    local function finish_failed(reason)
+        if not episode_request_is_current(request) then return end
+        restore_metadata()
+        show_message(association_label .. "无有效数据，请手动重新关联", 4)
+        msg.warn(association_label .. "自愈失败：" .. tostring(reason))
+        if request.on_complete then pcall(request.on_complete, false, reason) end
+    end
+
+    local try_server
+    try_server = function(index)
+        if not episode_request_is_current(request) then return end
+        local server = servers[index]
+        if not server then
+            finish_failed("all_servers_exhausted")
+            return
+        end
+
+        local search_url = server .. "/api/v2/search/anime?keyword=" .. url_encode(query_title)
+        local search_args = make_danmaku_request_args("GET", search_url, nil, nil, {
+            connect_timeout = 3,
+            max_time = 10,
+            fail_http = true,
+        })
+        fetch_danmaku_data(search_args, function(search_data, search_error)
+            if not episode_request_is_current(request) then return end
+            if search_error then
+                msg.debug(("历史关联搜索失败：%s (%s)"):format(server, tostring(search_error)))
+                try_server(index + 1)
+                return
+            end
+
+            local anime, match_error = choose_history_candidate(
+                search_data and search_data.animes, history_record, episode_number)
+            if not anime then
+                msg.debug(("历史关联无安全候选：%s (%s)"):format(server, tostring(match_error)))
+                try_server(index + 1)
+                return
+            end
+
+            local detail_url = server .. "/api/v2/bangumi/" .. tostring(anime.bangumiId)
+            local detail_args = make_danmaku_request_args("GET", detail_url, nil, nil, {
+                connect_timeout = 3,
+                max_time = 10,
+                fail_http = true,
+            })
+            fetch_danmaku_data(detail_args, function(detail_data, detail_error)
+                if not episode_request_is_current(request) then return end
+                if detail_error or not detail_data or not detail_data.bangumi or
+                    type(detail_data.bangumi.episodes) ~= "table" then
+                    msg.debug(("历史关联详情失败：%s (%s)"):format(server, tostring(detail_error)))
+                    try_server(index + 1)
+                    return
+                end
+
+                local selected_episode = nil
+                for _, episode in ipairs(detail_data.bangumi.episodes) do
+                    local candidate_number = tonumber(episode.episodeNumber) or get_matched_episode_number(episode)
+                    if candidate_number == episode_number then
+                        selected_episode = episode
+                        break
+                    end
+                end
+                if not selected_episode or not tonumber(selected_episode.episodeId) then
+                    msg.debug("历史关联未找到目标集数：" .. server)
+                    try_server(index + 1)
+                    return
+                end
+
+                local refreshed_id = tonumber(selected_episode.episodeId)
+                local association = {
+                    animeTitle = anime.animeTitle,
+                    episodeTitle = selected_episode.episodeTitle or history_record.episodeTitle,
+                    source = "dandanplay",
+                }
+                DANMAKU.anime = association.animeTitle
+                DANMAKU.episode = association.episodeTitle
+                DANMAKU.api_server = server
+
+                fetch_danmaku(refreshed_id, request.from_menu, server, function(success, comment_error)
+                    if not episode_request_is_current(request) then return end
+                    if not success then
+                        restore_metadata()
+                        msg.debug(("刷新后的弹幕仍无效：%s (%s)"):format(server, tostring(comment_error)))
+                        try_server(index + 1)
+                        return
+                    end
+
+                    request.recovery_done = true
+                    write_history(refreshed_id, server, episode_number, association)
+                    local success_text = proactive_refresh and
+                        (association_label .. "已刷新") or (association_label .. "已自动修复")
+                    show_message(success_text, 4)
+                    msg.info(("%s：%s -> %s")
+                        :format(success_text, tostring(failed_server), server))
+                    if request.on_complete then pcall(request.on_complete, true) end
+                end, request)
+            end, {silent = true, callback_on_error = true})
+        end, {silent = true, callback_on_error = true})
+    end
+
+    try_server(1)
 end
 
 -- 从用户添加过的弹幕源添加弹幕

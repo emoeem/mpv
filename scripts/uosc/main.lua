@@ -1191,6 +1191,18 @@ mp.register_script_message('show-submenu', function(id) toggle_menu_with_items({
 mp.register_script_message('show-submenu-blurred', function(id)
 	toggle_menu_with_items({submenu = id, mouse_nav = true})
 end)
+mp.register_script_message('menu-blurred-at', function(x, y)
+	local anchor_x, anchor_y = tonumber(x), tonumber(y)
+	if anchor_x and anchor_y then
+		toggle_menu_with_items({
+			mouse_nav = true,
+			anchor_x = anchor_x,
+			anchor_y = anchor_y,
+		})
+	else
+		toggle_menu_with_items({mouse_nav = true})
+	end
+end)
 mp.register_script_message('open-menu', function(json, submenu_id)
 	local data = utils.parse_json(json)
 	if type(data) ~= 'table' or type(data.items) ~= 'table' then
@@ -1305,7 +1317,7 @@ mp.register_script_message('idle-branding-toggle', function(value)
 	persist_uosc_option('idle_branding', enabled)
 	publish_idle_branding_state()
 	request_render()
-	mp.osd_message(enabled and 'mpv-Yaozhi 启动页：开启' or 'mpv-Yaozhi 启动页：关闭', 2)
+	mp.osd_message(enabled and 'mpv-Yaozhi 启动界面：开启' or 'mpv-Yaozhi 启动界面：关闭', 2)
 end)
 publish_idle_branding_state()
 local function publish_chapter_display_state()

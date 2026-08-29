@@ -1,4 +1,4 @@
----@alias OpenCommandMenuOptions {submenu?: string; mouse_nav?: boolean; on_close?: string | string[]}
+---@alias OpenCommandMenuOptions {submenu?: string; mouse_nav?: boolean; anchor_x?: number; anchor_y?: number; item_height?: number; font_scale?: number; on_close?: string | string[]}
 ---@param data MenuData
 ---@param opts? OpenCommandMenuOptions
 function open_command_menu(data, opts)
@@ -33,7 +33,8 @@ function open_command_menu(data, opts)
 	end
 
 	---@type MenuOptions
-	local menu_opts = table_assign_props({}, opts, {'mouse_nav'})
+	local menu_opts = table_assign_props({}, opts,
+		{'mouse_nav', 'anchor_x', 'anchor_y', 'item_height', 'font_scale'})
 	menu = Menu:open(data, callback, menu_opts)
 	if opts.submenu then menu:activate_menu(opts.submenu) end
 	return menu
@@ -69,6 +70,16 @@ end
 
 local function on_off_hint(enabled)
 	return enabled and '● 开启' or '○ 关闭'
+end
+
+	-- Keep the optical-disc entry understandable on both the current
+-- formal core and the c318236 candidate.  The hint is read-only; it never
+-- changes the default disc-menu policy.
+local function has_command(name)
+	for _, command in ipairs(mp.get_property_native('command-list') or {}) do
+		if type(command) == 'table' and command.name == name then return true end
+	end
+	return false
 end
 
 ---@param items MenuDataChild[]
@@ -112,6 +123,15 @@ local function update_menu_state_hints(items, image_subtitle_summary, media_load
 			local enabled = mp.get_property_native('user-data/audio-passthrough/enabled') == 'yes'
 			local label = mp.get_property_native('user-data/audio-passthrough/label') or '关闭'
 			item.hint = enabled and ('● ' .. label) or '○ 关闭'
+		elseif item.value == 'script-message codex-open-video-enhancement-menu' then
+			local superres_mode = mp.get_property_native(
+				'user-data/video-enhancement/superres-mode'
+			) or 'auto'
+			local smooth_mode = mp.get_property_native(
+				'user-data/video-enhancement/smooth-mode'
+			) or 'auto'
+			local enabled = superres_mode ~= 'off' or smooth_mode ~= 'off'
+			item.hint = enabled and '● 开启' or '○ 关闭'
 		elseif item.value == 'script-message codex-open-dock-animation-menu' then
 			local mode = mp.get_property_native('user-data/uosc/dock-animation-mode') or 'classic'
 			item.hint = mode == 'smooth' and '● 丝滑 Morph'
@@ -140,6 +160,35 @@ local function update_menu_state_hints(items, image_subtitle_summary, media_load
 			item.hint = image_subtitle_summary and (image_subtitle_summary .. ' · ' .. mode_hint)
 				or media_loaded and '无图形字幕'
 				or '未加载'
+		elseif item.value == 'script-message-to disc_menu open' then
+			if not has_command('discnav') then
+				item.hint = '需更新核心'
+			else
+				local disc_path = tostring(mp.get_property('stream-open-filename') or '')
+				local demuxer = tostring(mp.get_property('demuxer') or '')
+				local remote = mp.get_property_native('user-data/auto-iso-loader/remote') == true
+				local loading = mp.get_property_native('user-data/auto-iso-loader/loading') == true
+				local loading_phase = tostring(mp.get_property_native('user-data/auto-iso-loader/loading-phase') or '')
+				local menu_active = mp.get_property_native('disc-menu-active') == true
+				local bdj_ready = mp.get_property_native('user-data/disc-menu/bdj-runtime-ready') == true
+				local is_disc = disc_path:match('^bd://') or disc_path:match('^dvd://')
+					or demuxer == 'disc'
+				if remote then
+					item.hint = '网盘 ISO · 主标题'
+				elseif menu_active then
+					item.hint = '● 蓝光菜单正在显示 · Esc 返回'
+				elseif loading and loading_phase == 'menu-unresponsive' then
+					item.hint = '菜单暂未响应 · 点击重试'
+				elseif loading then
+					item.hint = '正在打开 · 点击查看菜单操作'
+				elseif is_disc then
+					item.hint = '● 本地原盘 · 可唤出菜单'
+				elseif bdj_ready then
+					item.hint = '自动进入 · BD-J 已内置'
+				else
+					item.hint = 'BD-J 组件缺失'
+				end
+			end
 		end
 		if item.items then
 			update_menu_state_hints(item.items, image_subtitle_summary, media_loaded)
@@ -161,7 +210,7 @@ end
 local function tune_yaozhi_menu_dimensions(items)
 	for _, item in ipairs(items or {}) do
 		if item.title == '杳知' and item.items then
-			item.min_width = 264
+			item.min_width = 320
 			return
 		end
 	end
@@ -187,13 +236,49 @@ local function inject_atmos_menu(items)
 		if item.value == 'script-message codex-open-atmos-menu' then return end
 	end
 
-	yaozhi_menu.items[#yaozhi_menu.items + 1] = {
-		title = 'Atmos 实验模式',
+	local atmosphere_item = {
+		title = 'Dolby Atmos 实验模式',
 		hint = mp.get_property_native('user-data/yaozhi/atmos-status-label')
 			or '实验播放器已进入',
 		value = 'script-message codex-open-atmos-menu',
 	}
+	local insert_at = #yaozhi_menu.items + 1
+	for index, item in ipairs(yaozhi_menu.items) do
+		if item.value == 'script-message codex-open-audio-passthrough-menu' then
+			insert_at = index + 1
+			break
+		end
+	end
+	table.insert(yaozhi_menu.items, insert_at, atmosphere_item)
 	msg.verbose('Injected Atmos experiment entry into the Yaozhi menu')
+end
+
+-- Keep the support entry visually separated and pinned to the very bottom,
+-- including in the Atmos sidecar where a process-only item is injected later.
+local function pin_yaozhi_donation(items)
+	local yaozhi_menu
+	for _, item in ipairs(items or {}) do
+		if item.title == '杳知' and item.items then
+			yaozhi_menu = item
+			break
+		end
+	end
+	if not yaozhi_menu then return end
+
+	local donation
+	for index, item in ipairs(yaozhi_menu.items) do
+		if item.value == 'script-message-to yaozhi_donation open' then
+			donation = table.remove(yaozhi_menu.items, index)
+			break
+		end
+	end
+	if not donation then return end
+
+	donation.icon = 'favorite'
+	donation.hint = '感谢支持 · 长期维护'
+	local previous = yaozhi_menu.items[#yaozhi_menu.items]
+	if previous then previous.separator = true end
+	yaozhi_menu.items[#yaozhi_menu.items + 1] = donation
 end
 
 ---@param opts? OpenCommandMenuOptions
@@ -201,13 +286,22 @@ function toggle_menu_with_items(opts)
 	if Menu:is_open('menu') then
 		Menu:close()
 	else
+		-- Keep the primary command tree compact without changing playlist,
+		-- history, subtitle, track, or file-navigation menu ergonomics.
+		opts = table_assign({item_height = 40, font_scale = 1.12}, opts or {})
 		-- get_menu_items() returns a cached tree. Work on a clone so dynamic
 		-- state hints and process-only entries never mutate the shared cache.
 		local items = clone_menu_items(get_menu_items())
 		tune_yaozhi_menu_dimensions(items)
 		inject_atmos_menu(items)
+		pin_yaozhi_donation(items)
 		update_menu_state_hints(items)
-		open_command_menu({type = 'menu', items = items, search_submenus = true}, opts)
+		open_command_menu({
+			type = 'menu',
+			min_width = 250,
+			items = items,
+			search_submenus = true,
+		}, opts)
 	end
 end
 
@@ -1780,6 +1874,372 @@ mp.register_script_message('codex-open-dock-animation-menu', function()
 	})
 end)
 
+local video_enhancement_profiles = {
+	balanced = {
+		label = '智能推荐', backend = 'auto', superres = 'auto', smooth = 'auto',
+	},
+	ai_smooth = {
+		label = '优先流畅', backend = 'nvidia_hq', superres = 'off', smooth = 'quality',
+	},
+	clarity = {
+		label = '优先清晰', backend = 'auto', superres = 'quality', smooth = 'performance',
+	},
+}
+
+mp.register_script_message('codex-set-video-enhancement-profile', function(name)
+	local profile = video_enhancement_profiles[tostring(name or '')]
+	if not profile then return end
+	mp.commandv('script-message-to', 'ai_interpolation', 'set-backend',
+		profile.backend, 'silent')
+	mp.commandv('script-message-to', 'adaptive_quality', 'set-profile',
+		profile.superres, profile.smooth, 'silent')
+	mp.add_timeout(0.12, function()
+		local restart = mp.get_property_native(
+			'user-data/video-enhancement/ai-backend-restart-required') == 'yes'
+		mp.osd_message(restart
+			and (profile.label .. '已保存\n重启播放器后切换 VF 后端，当前播放链保持稳定')
+			or ('视频增强档位：' .. profile.label), restart and 4 or 2.5)
+	end)
+end)
+
+local video_enhancement_pages = {}
+local open_video_enhancement_menu
+
+-- 两阶段视频增强：超分使用 gpu-next GLSL；补帧在安全边界内优先便携
+-- RIFE Vulkan，其他场景无感回退 mpv 原生时间插值。
+open_video_enhancement_menu = function()
+	local superres_mode = mp.get_property_native('user-data/video-enhancement/superres-mode') or 'auto'
+	local smooth_mode = mp.get_property_native('user-data/video-enhancement/smooth-mode') or 'auto'
+	local superres_effective = mp.get_property_native(
+		'user-data/video-enhancement/superres-effective'
+	) or '等待视频'
+	local smooth_effective = mp.get_property_native(
+		'user-data/video-enhancement/smooth-effective'
+	) or '等待视频'
+	local superres_detail = mp.get_property_native(
+		'user-data/video-enhancement/superres-detail'
+	) or superres_effective
+	local smooth_detail = mp.get_property_native(
+		'user-data/video-enhancement/smooth-detail'
+	) or smooth_effective
+	local ai_effective = mp.get_property_native(
+		'user-data/video-enhancement/ai-effective'
+	) or '等待视频'
+	local ai_detail = mp.get_property_native(
+		'user-data/video-enhancement/ai-detail'
+	) or ai_effective
+	local ai_ready = mp.get_property_native('user-data/video-enhancement/ai-ready') == 'yes'
+	local ai_safety_limit = mp.get_property_native(
+		'user-data/video-enhancement/ai-safety-limit'
+	) or '等待显卡与策略检测'
+	local protect_4k = mp.get_property_native(
+		'user-data/video-enhancement/protect-4k'
+	) ~= 'no'
+	local gpu = mp.get_property_native('user-data/adaptive-quality/gpu') or '检测中'
+	local tier = mp.get_property_native('user-data/adaptive-quality/tier') or 'balanced'
+	local tier_labels = {
+		low = '入门',
+		balanced = '均衡',
+		medium = '中档',
+		high = '高档',
+	}
+	local choices = {
+		off = {
+			title = '关闭', superres_title = '关闭', smooth_title = '关闭',
+			superres = '不加载画面增强', smooth = '恢复普通播放',
+		},
+		auto = {
+			title = '自动（推荐）', superres_title = '自动（推荐）', smooth_title = '自动（推荐）',
+			superres = '按片源和显卡自动增强', smooth = '性能足够时自动 AI 补帧，否则保持稳定',
+		},
+		performance = {
+			title = '性能优先', superres_title = '省性能', smooth_title = '基础平滑',
+			superres = '轻量增强，适合入门显卡', smooth = '不生成 AI 中间帧，资源占用更低',
+		},
+		quality = {
+			title = '画质优先', superres_title = '更清晰', smooth_title = 'AI 补帧优先',
+			superres = '优先提高细节，性能不足时自动保护', smooth = '保留原始清晰度，能稳定运行时才补帧',
+		},
+	}
+	local order = {'off', 'auto', 'performance', 'quality'}
+	local superres_items = {}
+	local smooth_items = {}
+	for _, mode in ipairs(order) do
+		local choice = choices[mode]
+		superres_items[#superres_items + 1] = {
+			title = choice.superres_title,
+			hint = choice.superres,
+			active = superres_mode == mode,
+			value = {'script-message-to', 'adaptive_quality', 'set-superres', mode},
+		}
+		smooth_items[#smooth_items + 1] = {
+			title = choice.smooth_title,
+			hint = choice.smooth,
+			active = smooth_mode == mode,
+			value = {'script-message-to', 'adaptive_quality', 'set-smooth', mode},
+		}
+	end
+	local function selected_policy_hint(mode, effective, kind)
+		local choice = choices[mode] or choices.auto
+		local label = kind == 'superres' and choice.superres_title or choice.smooth_title
+		if mode == 'auto' then
+			label = kind == 'superres' and '按片源自适应' or '按性能自适应'
+		end
+		return string.format('%s · %s', label, effective)
+	end
+
+	local hq_pack_installed = mp.get_property_native(
+		'user-data/video-enhancement/hq-pack-installed') == 'yes'
+	local hq_pack_ready = mp.get_property_native(
+		'user-data/video-enhancement/hq-pack-ready') == 'yes'
+	local hq_gpu_supported = mp.get_property_native(
+		'user-data/video-enhancement/hq-gpu-supported') == 'yes'
+	local hq_status = mp.get_property_native(
+		'user-data/video-enhancement/hq-status') or '正在检测高端扩展'
+	local backend_mode = mp.get_property_native(
+		'user-data/video-enhancement/ai-backend-mode') or 'auto'
+	local backend_mode_label = mp.get_property_native(
+		'user-data/video-enhancement/ai-backend-mode-label') or '智能自动（推荐）'
+
+	local profile_name = backend_mode == 'nvidia_hq'
+		and superres_mode == 'off' and smooth_mode == 'quality' and 'ai_smooth'
+		or backend_mode == 'auto'
+			and superres_mode == 'quality' and smooth_mode == 'performance' and 'clarity'
+		or backend_mode == 'auto'
+			and superres_mode == 'auto' and smooth_mode == 'auto' and 'balanced'
+		or 'custom'
+	local profile_label = video_enhancement_profiles[profile_name]
+		and video_enhancement_profiles[profile_name].label or '自定义组合'
+	local backend_display_labels = {
+		auto = '自动选择',
+		nvidia_hq = 'NVIDIA 高画质补帧',
+		vulkan = '通用兼容补帧',
+	}
+	local backend_display_label = backend_display_labels[backend_mode] or backend_mode_label
+	local hq_pack_hint = not hq_pack_installed
+		and '○ 未安装 · 当前使用内置兼容方案，不影响正常播放'
+		or not hq_pack_ready
+			and ('⚠ 安装不完整 · ' .. hq_status)
+		or hq_gpu_supported
+			and '● 已安装 · 一键增强可用'
+		or '● 已安装 · 当前显卡使用内置兼容方案'
+	local hq_pack_help = not hq_pack_installed
+		and '高端补帧依赖包：未安装\n当前内置兼容方案可正常使用'
+		or not hq_pack_ready
+			and ('高端补帧依赖包：安装不完整\n' .. hq_status)
+		or hq_gpu_supported
+			and '高端补帧依赖包：已安装并可用\n建议从“一键增强模式”开始'
+		or '高端补帧依赖包：已安装\n当前显卡继续使用内置兼容方案'
+
+	local hq_profile_items = {
+		{
+			title = '智能推荐（推荐）',
+			hint = '自动平衡清晰度和流畅度，适合绝大多数视频',
+			active = profile_name == 'balanced',
+			value = {'script-message', 'codex-set-video-enhancement-profile', 'balanced'},
+		},
+		{
+			title = '优先流畅',
+			hint = hq_gpu_supported and '适合高端 NVIDIA 显卡，让低帧率视频更顺滑'
+				or '当前显卡不支持此高端档位',
+			active = profile_name == 'ai_smooth',
+			selectable = hq_pack_ready and hq_gpu_supported,
+			muted = not (hq_pack_ready and hq_gpu_supported),
+			value = {'script-message', 'codex-set-video-enhancement-profile', 'ai_smooth'},
+		},
+		{
+			title = '优先清晰',
+			hint = '优先保留画面细节，补帧不能稳定时自动让步',
+			active = profile_name == 'clarity',
+			value = {'script-message', 'codex-set-video-enhancement-profile', 'clarity'},
+		},
+	}
+	local hq_backend_items = {
+		{
+			title = '自动选择（推荐）',
+			hint = '由播放器选择当前设备最合适的补帧方式',
+			active = backend_mode == 'auto',
+			value = {'script-message-to', 'ai_interpolation', 'set-backend', 'auto'},
+		},
+		{
+			title = 'NVIDIA 高画质补帧',
+			hint = hq_gpu_supported and '高端 RTX 专用 · TensorRT FP16'
+				or '当前显卡不支持此高端后端',
+			active = backend_mode == 'nvidia_hq',
+			selectable = hq_pack_ready and hq_gpu_supported,
+			muted = not (hq_pack_ready and hq_gpu_supported),
+			value = {'script-message-to', 'ai_interpolation', 'set-backend', 'nvidia_hq'},
+		},
+		{
+			title = '通用兼容补帧',
+			hint = '跨显卡方案 · RIFE Vulkan · 保留安全保护',
+			active = backend_mode == 'vulkan',
+			value = {'script-message-to', 'ai_interpolation', 'set-backend', 'vulkan'},
+		},
+		{
+			title = '关闭 AI 补帧',
+			hint = '恢复普通平滑，不再生成 AI 中间帧',
+			active = smooth_mode == 'performance',
+			value = {'script-message-to', 'adaptive_quality', 'set-smooth', 'performance'},
+		},
+	}
+	video_enhancement_pages = {
+		profiles = {
+			title = '一键增强模式',
+			items = hq_profile_items,
+			footnote = '不确定怎么选就用“智能推荐”；所有档位都保留原始画质',
+		},
+		backends = {
+			title = '专业设置',
+			items = hq_backend_items,
+			footnote = '普通用户无需修改；播放器始终只启用一种补帧后端',
+		},
+		superres = {
+			title = '画质模式',
+			items = superres_items,
+			footnote = '不确定怎么选就用“自动（推荐）”',
+		},
+		smooth = {
+			title = '流畅模式',
+			items = smooth_items,
+			footnote = '不确定怎么选就用“自动（推荐）”；基础平滑不是 AI 补帧',
+		},
+	}
+
+	local menu_items = {
+		{title = '当前画质增强', hint = superres_detail, selectable = false},
+		{title = '当前流畅处理', hint = smooth_detail, selectable = false},
+		{
+			title = 'AI 补帧状态',
+			hint = ai_ready and ai_detail or '运行库不可用 · 使用原生回退',
+			selectable = false,
+			muted = ai_effective ~= 'RIFE AI 2×',
+		},
+		{
+			title = '高端补帧依赖包',
+			hint = hq_pack_hint,
+			value = {'show-text', hq_pack_help, '4000'},
+			muted = not (hq_pack_ready and hq_gpu_supported),
+		},
+	}
+	if hq_pack_installed then
+		menu_items[#menu_items + 1] = {
+			title = '一键增强模式',
+			hint = profile_label,
+			value = {'script-message', 'codex-open-video-enhancement-profiles'},
+			muted = not hq_pack_ready,
+		}
+		menu_items[#menu_items + 1] = {
+			title = '专业设置',
+			hint = backend_mode == 'auto' and '一般无需修改' or backend_display_label,
+			value = {'script-message', 'codex-open-video-enhancement-backends'},
+			muted = not hq_pack_ready,
+		}
+	end
+	menu_items[#menu_items + 1] = {
+		title = '安全保护', hint = ai_safety_limit, selectable = false, muted = true,
+	}
+	menu_items[#menu_items + 1] = {
+		title = '设备性能',
+		hint = string.format('%s · %s', gpu, tier_labels[tier] or tier),
+		selectable = false, muted = true,
+	}
+	menu_items[#menu_items + 1] = {
+		title = '4K 补帧保护',
+		hint = protect_4k and '● 开启（推荐）' or '○ 关闭 · 按显卡性能尝试',
+		value = {'script-message-to', 'adaptive_quality', 'set-protect-4k', 'toggle'},
+		active = protect_4k,
+	}
+	menu_items[#menu_items + 1] = {
+		title = '画质模式',
+		hint = selected_policy_hint(superres_mode, superres_effective, 'superres'),
+		value = {'script-message', 'codex-open-video-enhancement-superres'},
+	}
+	menu_items[#menu_items + 1] = {
+		title = '流畅模式',
+		hint = selected_policy_hint(smooth_mode, smooth_effective, 'smooth'),
+		value = {'script-message', 'codex-open-video-enhancement-smooth'},
+	}
+	menu_items[#menu_items + 1] = {
+		title = '重新检测',
+		hint = '刷新片源、显卡与实时性能策略',
+		value = {'script-message', 'codex-refresh-video-enhancement'},
+	}
+
+	open_command_menu({
+		type = 'codex_video_enhancement',
+		title = '超分与补帧',
+		min_width = 600,
+		-- Keep the dependency status visible on compact windows instead of
+		-- initially scrolling to the active 4K-protection row.
+		selected_index = 4,
+		-- Status text carries mixed Latin/CJK model, clock and HDR metadata.
+		-- Give that column deliberate room and ellipsize at the readable edge;
+		-- a silently clipped first glyph is much harder to understand.
+		hint_max_ratio = 0.70,
+		hint_fit_ratio = 0.86,
+		hint_ellipsis_ratio = 0.78,
+		hint_force_ellipsis_when_scaled = true,
+		items = menu_items,
+		footnote = hq_pack_installed
+			and '建议先用“一键增强模式”；任何档位都不会先降低原始画质再补帧'
+			or '无需高端依赖包也可正常使用；“画质模式 / 流畅模式”建议保持自动',
+	}, {mouse_nav = true})
+end
+
+local function open_video_enhancement_page(page_name)
+	local page = video_enhancement_pages[page_name]
+	if not page then
+		open_video_enhancement_menu()
+		return
+	end
+	local items = {}
+	for _, item in ipairs(page.items) do items[#items + 1] = item end
+	items[#items + 1] = {
+		title = '返回超分与补帧',
+		hint = '继续调整其他选项',
+		separator = true,
+		value = {'script-message', 'codex-open-video-enhancement-menu'},
+	}
+	open_command_menu({
+		type = 'codex_video_enhancement_' .. page_name,
+		title = page.title,
+		min_width = 520,
+		hint_max_ratio = 0.68,
+		hint_fit_ratio = 0.84,
+		hint_ellipsis_ratio = 0.76,
+		hint_force_ellipsis_when_scaled = true,
+		items = items,
+		footnote = page.footnote,
+	}, {mouse_nav = true})
+end
+
+local function schedule_video_enhancement_page(page_name)
+	mp.add_timeout(0, function() open_video_enhancement_page(page_name) end)
+end
+
+mp.register_script_message('codex-open-video-enhancement-menu', function()
+	mp.add_timeout(0, open_video_enhancement_menu)
+end)
+mp.register_script_message('codex-open-video-enhancement-profiles', function()
+	schedule_video_enhancement_page('profiles')
+end)
+mp.register_script_message('codex-open-video-enhancement-backends', function()
+	schedule_video_enhancement_page('backends')
+end)
+mp.register_script_message('codex-open-video-enhancement-superres', function()
+	schedule_video_enhancement_page('superres')
+end)
+mp.register_script_message('codex-open-video-enhancement-smooth', function()
+	schedule_video_enhancement_page('smooth')
+end)
+
+mp.register_script_message('codex-refresh-video-enhancement', function()
+	mp.commandv('script-message-to', 'adaptive_quality', 'refresh')
+	mp.commandv('script-message-to', 'ai_interpolation', 'refresh')
+	mp.osd_message('视频增强：正在重新检测', 2)
+end)
+
 -- ASS/SSA 特效字幕色彩矩阵。默认优先保持脚本中写明的 RGB 原色；
 -- 旧字幕仍可按制作环境临时切换 VSFilter 兼容模式。
 mp.register_script_message('codex-open-subtitle-color-menu', function()
@@ -1831,7 +2291,7 @@ end)
 -- 普通 mpv.exe 中入口会在菜单构建时被完全移除。
 mp.register_script_message('codex-open-atmos-menu', function()
 	if mp.get_property_native('user-data/yaozhi/atmos-mode') ~= 'yes' then
-		mp.osd_message('当前未进入 Atmos 实验模式')
+		mp.osd_message('当前未进入 Dolby Atmos 实验模式')
 		return
 	end
 	local status = mp.get_property_native('user-data/yaozhi/atmos-status-label')
@@ -1840,7 +2300,7 @@ mp.register_script_message('codex-open-atmos-menu', function()
 		or '等待片源'
 	open_command_menu({
 		type = 'codex_atmos',
-		title = 'Atmos 实验模式',
+		title = 'Dolby Atmos 实验模式',
 		items = {
 			{
 				title = '实验播放器',
@@ -1888,7 +2348,7 @@ mp.register_script_message('codex-open-atmos-menu', function()
 	})
 end)
 
--- 音乐模式。音乐文件进入后台播放逻辑；视频仍保持最小化暂停播放。
+-- 音乐播放模式。音乐文件进入后台播放逻辑；视频仍保持最小化自动暂停。
 mp.register_script_message('codex-open-music-mode-menu', function()
 	local current = mp.get_property_native('user-data/music-mode/mode') or 'loop'
 	local active = mp.get_property_native('user-data/music-mode/active') == 'yes'
@@ -1897,11 +2357,11 @@ mp.register_script_message('codex-open-music-mode-menu', function()
 		{value = 'loop', title = '列表循环', hint = '按顺序播放'},
 		{value = 'random', title = '随机循环', hint = '防重复播放'},
 		{value = 'single', title = '单曲循环', hint = '循环当前歌曲'},
-		{value = 'off', title = '退出音乐模式'},
+		{value = 'off', title = '退出音乐播放模式'},
 	}
 	local items = {
 		{
-			title = active and '已进入音乐模式' or '未进入音乐模式',
+			title = active and '已进入音乐播放模式' or '未进入音乐播放模式',
 			hint = detail,
 			selectable = false,
 			muted = true,
@@ -1925,9 +2385,9 @@ mp.register_script_message('codex-open-music-mode-menu', function()
 
 	open_command_menu({
 		type = 'codex_music_mode',
-		title = '音乐模式',
+		title = '音乐播放模式',
 		items = items,
-		footnote = '音乐模式下支持后台播放，最小化不暂停',
+		footnote = '音乐播放模式下支持后台播放，最小化不暂停',
 	})
 end)
 
@@ -2074,7 +2534,7 @@ mp.register_script_message('codex-open-image-subs-brightness-menu', function()
 		title = 'HDR 图形字幕色彩与亮度',
 		items = items,
 		footnote = supported
-			and '随视频模式保留正片 HDR 元数据；亮度档位只用于 SDR 图形字幕，不影响视频、ASS 与 OSD'
+			and '随视频模式保留正片 HDR 元数据；选择亮度档位会切换到 SDR 图形字幕，不影响视频、ASS 与 OSD'
 			or '需要配套的 mpv-Yaozhi 自编译核心',
 	})
 end)
@@ -2082,6 +2542,8 @@ end)
 -- 杳知HDR - 安全 HDR 输出与峰值亮度菜单
 mp.register_script_message('codex-open-peak-menu', function()
 	local force_active = mp.get_property('user-data/hdr-mode/manual-force', 'no') == 'yes'
+	local output_mode = mp.get_property('user-data/hdr-mode/output-mode', 'auto')
+	local force_sdr = output_mode == 'sdr'
 	local hdr_supported_raw = mp.get_property_native('user-data/display-info/hdr-supported')
 	local hdr_status = tostring(mp.get_property_native('user-data/display-info/hdr-status') or '')
 	local gamma = mp.get_property('video-params/gamma', ''):lower()
@@ -2099,7 +2561,7 @@ mp.register_script_message('codex-open-peak-menu', function()
 	local current_number = tonumber(current_raw)
 	local current_label = current_number
 		and (math.floor(current_number + 0.5) .. ' nits') or '自动'
-	local presets = {200, 300, 400, 500, 600, 800, 1000}
+	local presets = {200, 300, 400, 500, 600, 800, 1000, 1200, 1500, 2000, 4000}
 	local unavailable_hint
 	if not source_is_hdr then
 		unavailable_hint = '当前片源为 SDR'
@@ -2112,12 +2574,31 @@ mp.register_script_message('codex-open-peak-menu', function()
 	end
 	local items = {}
 	items[#items + 1] = {
+		title = 'HDR 输出模式',
+		hint = force_sdr and '关闭 HDR（映射为 SDR）' or '自动（默认）',
+		items = {
+			{
+				title = '自动（默认）',
+				hint = '保持当前自动 HDR 行为',
+				value = {'script-message-to', 'hdr_mode', 'set-output-mode', 'auto', 'refresh'},
+				active = not force_sdr,
+			},
+			{
+				title = '关闭 HDR 输出',
+				hint = 'HDR 片源安全映射为 SDR',
+				value = {'script-message-to', 'hdr_mode', 'set-output-mode', 'sdr', 'refresh'},
+				active = force_sdr,
+			},
+		},
+	}
+	items[#items + 1] = {
 		title = '强制 HDR 输出',
-		hint = force_active and '已开启 · 仅当前视频'
+		hint = force_sdr and '已关闭 HDR 输出 · 请先恢复自动'
+			or force_active and '已开启 · 仅当前视频'
 			or (unavailable_hint or (output_is_hdr and '自动 HDR 已生效' or '异常设备兜底')),
 		value = {'script-message-to', 'hdr_mode', 'manual-force-toggle', 'refresh'},
-		selectable = force_active or source_is_hdr,
-		muted = not force_active and not source_is_hdr,
+		selectable = not force_sdr and (force_active or source_is_hdr),
+		muted = force_sdr or (not force_active and not source_is_hdr),
 	}
 	items[#items + 1] = {
 		title = '当前目标峰值：' .. current_label,
@@ -2130,20 +2611,22 @@ mp.register_script_message('codex-open-peak-menu', function()
 		hint = force_active and '使用系统/显示器报告值' or '选择后自动启用强制 HDR',
 		value = {'script-message-to', 'hdr_mode', 'manual-force-peak', 'auto', 'refresh'},
 		active = not current_number,
-		selectable = source_is_hdr,
-		muted = not source_is_hdr,
+		selectable = source_is_hdr and not force_sdr,
+		muted = not source_is_hdr or force_sdr,
 	}
 	for _, val in ipairs(presets) do
 		items[#items + 1] = {
 			title = val .. ' nits',
 			value = {'script-message-to', 'hdr_mode', 'manual-force-peak', tostring(val), 'refresh'},
 			active = current_number and math.floor(current_number + 0.5) == val,
-			selectable = source_is_hdr,
-			muted = not source_is_hdr,
+			selectable = source_is_hdr and not force_sdr,
+			muted = not source_is_hdr or force_sdr,
 		}
 	end
-	local footnote = '仅在自动 HDR 输出异常时使用'
-	if force_active then
+	local footnote = '默认自动 HDR；不需要 HDR 时可持久切换为 SDR 输出'
+	if force_sdr then
+		footnote = 'HDR 输出已关闭；HDR 片源将由 gpu-next 安全映射为 SDR'
+	elseif force_active then
 		footnote = '强制模式关闭时会完整恢复自动设置'
 	elseif not source_is_hdr then
 		footnote = '仅 PQ/HLG HDR 片源可使用强制输出'

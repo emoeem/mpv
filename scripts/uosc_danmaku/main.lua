@@ -412,7 +412,7 @@ function clear_danmaku_resolver_affinity(query, expected_server, context)
     return true
 end
 
-function write_history(episodeid, api_server, matched_episode_number)
+function write_history(episodeid, api_server, matched_episode_number, association)
     local history = {}
     local path = mp.get_property("path")
     local dir = get_parent_directory(path)
@@ -459,9 +459,9 @@ function write_history(episodeid, api_server, matched_episode_number)
         end
         history[dir] = {}
         history[dir].fname = fname
-        history[dir].source = DANMAKU.source
-        history[dir].animeTitle = DANMAKU.anime
-        history[dir].episodeTitle = DANMAKU.episode
+        history[dir].source = association and association.source or DANMAKU.source
+        history[dir].animeTitle = association and association.animeTitle or DANMAKU.anime
+        history[dir].episodeTitle = association and association.episodeTitle or DANMAKU.episode
         history[dir].episodeNumber = episodeNumber
         if episodeid then
             history[dir].episodeId = episodeid
@@ -741,7 +741,22 @@ function auto_load_danmaku(path, dir, filename, number)
                     msg.verbose("自动加载上次匹配的弹幕")
                     if history_id then
                         local tmp_id = tostring(x + history_id)
-                        set_episode_id(tmp_id, nil, history_api_server, playing_number)
+                        local normalized_history_server = tostring(history_api_server or "")
+                            :lower():gsub("/+$", "")
+                        local stable_history_id = normalized_history_server == "https://api.dandanplay.net"
+                        set_episode_id(tmp_id, nil, history_api_server, playing_number, {
+                            from_history = true,
+                            -- Mirror-local episode IDs are not guaranteed to
+                            -- stay stable or consecutive after a database refresh.
+                            refresh_before_fetch = x ~= 0 or not stable_history_id,
+                            refresh_reason = x ~= 0 and "episode_changed" or "community_server_refresh",
+                            history_record = {
+                                animeTitle = history_dir.animeTitle,
+                                episodeTitle = DANMAKU.episode,
+                                episodeNumber = playing_number,
+                                source = history_dir.source,
+                            },
+                        })
                     elseif history_extra then
                         local episodenum = history_extra.episodenum + x
                         get_details(history_extra.class, history_extra.id, history_extra.site,

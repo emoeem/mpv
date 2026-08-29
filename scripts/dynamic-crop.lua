@@ -317,7 +317,7 @@ local function switch_hwdec(id, hwdec, error)
     if hwdec ~= "no" and not string.match(hwdec, "-copy") then
         local msg = "Switch to SW decoding or HW -copy variant."
         mp.msg.info(msg)
-        mp.osd_message(string.format("%s: %s", label_prefix, msg), 5)
+        -- mp.osd_message(string.format("%s: %s", label_prefix, msg), 5)
     end
     if s.hwdec and hwdec ~= s.hwdec and s.hwdec ~= "no" and not string.match(s.hwdec, "-copy") and
         filter_state(labels.cropdetect) then mp.commandv("vf", "remove", string.format("@%s", labels.cropdetect)) end
@@ -755,7 +755,17 @@ local function pause(event, is_paused)
     end
 end
 
+local start_retry_timer = nil
+local start_retry_count = 0
+
+local function cancel_start_retry()
+    if start_retry_timer then start_retry_timer:kill() end
+    start_retry_timer = nil
+end
+
 function cleanup()
+    cancel_start_retry()
+    start_retry_count = 0
     if not s.started then return end
     if not s.paused then print_stats() end
     mp.msg.info("Cleanup...")
@@ -782,6 +792,24 @@ local function on_start()
         mp.msg.warn("Exit, only works for videos.")
         return
     end
+    local source_width = mp.get_property_number("width")
+    local source_height = mp.get_property_number("height")
+    if not source_width or source_width <= 0 or not source_height or source_height <= 0 then
+        -- Newer mpv builds can emit file-loaded just before the decoded video
+        -- dimensions become observable. Retry briefly instead of aborting the
+        -- script with arithmetic on nil during the same startup window in
+        -- which VapourSynth/RIFE is preparing its first frames.
+        start_retry_count = start_retry_count + 1
+        cancel_start_retry()
+        if start_retry_count <= 30 and mp.get_property_native("vid") then
+            start_retry_timer = mp.add_timeout(0.10, on_start)
+        else
+            mp.msg.warn("Dynamic crop skipped: video dimensions are unavailable.")
+        end
+        return
+    end
+    cancel_start_retry()
+    start_retry_count = 0
     s.user_auto_window_resize = mp.get_property("auto-window-resize")
     -- init/re-init stored data
     s.buffer = {i_to_shift = 0, i_total = 0, i_ratio = 0, indexed_list = {}, t_total = 0, t_ratio = 0}
@@ -793,7 +821,7 @@ local function on_start()
     }
     s.stats = {applied = {}, buffer = {}, buffer_unique = 0, trusted = {}, trusted_offset = {}, trusted_unique = 1}
     s.stats.indexed_applied = {}
-    s.source = {w_untouched = mp.get_property_number("width"), h_untouched = mp.get_property_number("height")}
+    s.source = {w_untouched = source_width, h_untouched = source_height}
     s.source.w = math.floor(s.source.w_untouched / options.detect_round) * options.detect_round
     s.source.h = math.floor(s.source.h_untouched / options.detect_round) * options.detect_round
     s.source.x = math.floor((s.source.w_untouched - s.source.w) / 2)
@@ -831,4 +859,8 @@ end
 
 mp.add_key_binding("C", "toggle_crop", on_toggle)
 mp.register_event("end-file", cleanup)
-mp.register_event("file-loaded", on_start)
+mp.register_event("file-loaded", function()
+    cancel_start_retry()
+    start_retry_count = 0
+    on_start()
+end)

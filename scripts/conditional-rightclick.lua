@@ -18,7 +18,12 @@ local function on_right_click(info)
     if info and info.event == 'up' then return end
     local mouse = mp.get_property_native('mouse-pos')
     if is_over_visible_controls(mouse) then return end
-    mp.commandv('script-message-to', 'uosc', 'menu-blurred')
+    if mouse and type(mouse.x) == 'number' and type(mouse.y) == 'number' then
+        mp.commandv('script-message-to', 'uosc', 'menu-blurred-at',
+            tostring(mouse.x), tostring(mouse.y))
+    else
+        mp.commandv('script-message-to', 'uosc', 'menu-blurred')
+    end
 end
 
 mp.add_forced_key_binding('MBTN_Right', 'conditional-rightclick', on_right_click, {complex = true})

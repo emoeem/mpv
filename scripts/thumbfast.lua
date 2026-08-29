@@ -34,11 +34,19 @@ local options = {
     -- Enable on network playback
     network = false,
 
+    -- Enable thumbnails for media opened through the built-in AList browser.
+    -- Kept separate from network so ordinary HTTP streams can opt in without
+    -- starting a second remote reader for AList/WebDAV files.
+    alist = false,
+
     -- Enable on audio playback
     audio = false,
 
     -- Enable hardware decoding
     hwdec = false,
+
+    -- Use fast keyframe seek before exact seek. Faster, but can flash two different frames.
+    fast_seek = true,
 
     -- Windows only: use native Windows API to write to pipe (requires LuaJIT)
     direct_io = false,
@@ -98,12 +106,21 @@ local function is_protocol(path)
     return type(path) == 'string' and (path:find('^%a[%w.+-]-://') ~= nil or path:find('^%a[%w.+-]-:%?') ~= nil)
 end
 
-function subprocess(args, async, callback)
+function subprocess(args, async, callback, discard_stderr)
     callback = callback or function() end
 
     if not pre_0_30_0 then
         if async then
-            return mp.command_native_async({name = "subprocess", playback_only = true, args = args}, callback)
+            local command = {name = "subprocess", playback_only = true, args = args}
+            if discard_stderr then
+                -- Some decoders (notably libdavs2) write ANSI-coloured diagnostics
+                -- directly to stderr, bypassing mpv's --really-quiet/--no-terminal.
+                -- Drain that child-only stream without retaining it so the main
+                -- console stays clean and long thumbnail sessions do not grow RAM.
+                command.capture_stderr = true
+                command.capture_size = 0
+            end
+            return mp.command_native_async(command, callback)
         else
             return mp.command_native({name = "subprocess", playback_only = false, capture_stdout = true, args = args})
         end
@@ -170,7 +187,10 @@ end
 
 local file = nil
 local file_bytes = 0
+local inherited_options_path = nil
+local inherited_options_generation = 0
 local spawned = false
+local prewarm_started = false
 local disabled = false
 local force_disabled = false
 local spawn_waiting = false
@@ -196,6 +216,7 @@ local last_real_h = nil
 local script_name = nil
 
 local show_thumbnail = false
+local reveal_pending = false
 
 local filters_reset = {["lavfi-crop"]=true, ["crop"]=true}
 local filters_runtime = {["hflip"]=true, ["vflip"]=true}
@@ -211,6 +232,8 @@ local last_par = ""
 
 local last_has_vid = 0
 local has_vid = 0
+local last_is_dolby_vision = false
+local last_vout_gamma = nil
 
 local file_timer = nil
 local file_check_period = 1/60
@@ -339,6 +362,42 @@ if mpv_path == "mpv" and os_name == "darwin" and unique then
     end
 end
 
+-- The Atmos experiment runs a patched mpv from a versioned sidecar directory.
+-- Its nested thumbnail process must still use the native player in the
+-- portable package root, which is not reliably discoverable through PATH from
+-- every Windows launcher.
+local function resolve_spawn_mpv_path()
+    if os_name == "windows"
+        and mp.get_property_native("user-data/yaozhi/atmos-mode") == "yes"
+    then
+        local native_mpv = mp.command_native({"expand-path", "~~/../mpv.exe"})
+        local native_mpv_info = native_mpv and mp.utils.file_info(native_mpv)
+        if native_mpv_info and native_mpv_info.is_file then
+            return native_mpv
+        end
+        mp.msg.warn("Atmos mode could not locate the portable native mpv.exe")
+    end
+    return mpv_path
+end
+
+local function current_video_track()
+    local track = properties["current-tracks/video"]
+    return type(track) == "table" and track or nil
+end
+
+local function is_dolby_vision()
+    local track = current_video_track()
+    return track and track["dolby-vision-profile"] ~= nil or false
+end
+
+local function is_nonseekable_alist_archive()
+    local path = tostring(properties["path"] or "")
+    local open_filename = tostring(properties["stream-open-filename"] or "")
+    return properties["user-data/alist/archive-inner"] == true or
+        path:match("^alist%-archive://") ~= nil or
+        open_filename:match("^https?://.+/ae/") ~= nil
+end
+
 local function vf_string(filters, full)
     local vf = ""
     local vf_table = properties["vf"]
@@ -393,7 +452,6 @@ local info_timer = nil
 local function info(w, h)
     local rotate = properties["video-params"] and properties["video-params"]["rotate"]
     local rtx_hdr = properties["video-params"] and properties["video-params"]["gamma"] == "bt.1886" and properties["video-out-params"] and properties["video-out-params"]["gamma"] ~= "bt.1886"
-    local dovi_p5 = properties["video-params"] and properties["video-params"]["colormatrix"] == "dolbyvision" and properties["video-params"]["colorlevels"] == "full"
     local image = properties["current-tracks/video"] and properties["current-tracks/video"]["image"]
     local albumart = image and properties["current-tracks/video"]["albumart"]
     local cache_state = properties["demuxer-cache-state"]
@@ -405,11 +463,14 @@ local function info(w, h)
 
     disabled = (w or 0) == 0 or (h or 0) == 0 or
         has_vid == 0 or
+        not current_video_track() or
+        is_dolby_vision() or
+        (properties["user-data/alist/playing"] == true and not options.alist) or
+        is_nonseekable_alist_archive() or
         (dir and need_ignore(excluded_dir, dir)) or
         (file_ext and exclude(file_ext:lower(), ext_blacklist)) or
         ((properties["demuxer-via-network"] or is_protocol(properties["path"]) or (properties["cache"] == "auto" and #cached_ranges > 0)) and not options.network) or
         (rtx_hdr) or
-        (dovi_p5) or
         (albumart and not options.audio) or
         (image and not albumart) or
         force_disabled
@@ -417,7 +478,7 @@ local function info(w, h)
     if info_timer then
         info_timer:kill()
         info_timer = nil
-    elseif has_vid == 0 or (rotate == nil and not disabled) then
+    elseif has_vid == 0 or rotate == nil then
         info_timer = mp.add_timeout(0.05, function() info(w, h) end)
     end
 
@@ -431,12 +492,53 @@ end
 
 local function remove_thumbnail_files()
     if file then
-        file:close()
+        pcall(function() file:close() end)
         file = nil
         file_bytes = 0
     end
     os.remove(options.thumbnail)
     os.remove(options.thumbnail..".bgra")
+end
+
+local function remove_inherited_options()
+    inherited_options_generation = inherited_options_generation + 1
+    if inherited_options_path then
+        os.remove(inherited_options_path)
+        inherited_options_path = nil
+    end
+end
+
+local function write_inherited_options()
+    remove_inherited_options()
+
+    -- The thumbnailer runs with --no-config, so file-local HTTP options used
+    -- by AList/WebDAV would otherwise be lost. Keep credentials out of the
+    -- child command line and pass them through a short-lived include file.
+    local http_headers = mp.get_property("http-header-fields", "")
+    if not properties["demuxer-via-network"] or http_headers == "" then
+        return nil
+    end
+
+    inherited_options_path = options.thumbnail..".conf"
+    local config = io.open(inherited_options_path, "w")
+    if not config then
+        inherited_options_path = nil
+        mp.msg.warn("could not create temporary thumbnail network options")
+        return nil
+    end
+    config:write("http-header-fields=", string.format("%q", http_headers), "\n")
+    config:close()
+    inherited_options_generation = inherited_options_generation + 1
+    local current_generation = inherited_options_generation
+    local current_options_path = inherited_options_path
+    mp.add_timeout(5, function()
+        if inherited_options_generation == current_generation and
+            inherited_options_path == current_options_path
+        then
+            remove_inherited_options()
+        end
+    end)
+    return inherited_options_path
 end
 
 local activity_timer
@@ -464,9 +566,8 @@ local function spawn(time)
 
     local vid = properties["vid"]
     has_vid = vid or 0
-
     local args = {
-        mpv_path, "--no-config", "--msg-level=all=no", "--idle", "--ao=null", "--pause", "--keep-open=always", "--really-quiet", "--no-terminal",
+        resolve_spawn_mpv_path(), "--no-config", "--msg-level=all=no", "--idle", "--ao=null", "--pause", "--keep-open=always", "--really-quiet", "--no-terminal",
         "--load-scripts=no", "--osc=no", "--ytdl=no", "--load-stats-overlay=no", "--load-auto-profiles=no", "--autoload-files=no",
         "--edition="..(properties["edition"] or "auto"), "--vid="..(vid or "auto"), "--no-sub", "--no-audio",
         "--start="..time, allow_fast_seek and "--hr-seek=no" or "--hr-seek=yes",
@@ -479,6 +580,11 @@ local function spawn(time)
         "--video-rotate="..last_rotate,
         "--ovc=rawvideo", "--of=image2", "--ofopts=update=1", "--ocopy-metadata=no", "--o="..options.thumbnail
     }
+
+    local inherited_options = write_inherited_options()
+    if inherited_options then
+        table.insert(args, 3, "--include="..inherited_options)
+    end
 
     if mp.get_property_native("load-console") ~= nil then
         table.insert(args, "--load-console=no")
@@ -540,6 +646,7 @@ local function spawn(time)
     table.insert(args, path)
 
     spawned = true
+    prewarm_started = true
     spawn_waiting = true
 
     subprocess(args, true,
@@ -578,23 +685,25 @@ local function spawn(time)
                 spawn_working = true
                 spawn_waiting = false
             end
-        end
+        end,
+        true
     )
 end
 
 local function run(command)
-    if not spawned then return end
+    if not spawned then return false end
 
     if options.direct_io then
         local hPipe = winapi.C.CreateFileW(winapi.socket_wc, winapi.GENERIC_WRITE, 0, nil, winapi.OPEN_EXISTING, winapi._createfile_pipe_flags, nil)
         if hPipe ~= winapi.INVALID_HANDLE_VALUE then
             local buf = command .. "\n"
             winapi.C.SetNamedPipeHandleState(hPipe, winapi.PIPE_NOWAIT, nil, nil)
-            winapi.C.WriteFile(hPipe, buf, #buf + 1, winapi._lpNumberOfBytesWritten, nil)
+            local success = winapi.C.WriteFile(hPipe, buf, #buf + 1, winapi._lpNumberOfBytesWritten, nil)
             winapi.C.CloseHandle(hPipe)
+            return success
         end
 
-        return
+        return false
     end
 
     local command_n = command.."\n"
@@ -610,15 +719,27 @@ local function run(command)
         end
     elseif pre_0_33_0 then
         subprocess({"/usr/bin/env", "sh", "-c", "echo '" .. command .. "' | socat - " .. options.socket})
-        return
+        return true
     elseif not file then
         file = io.open(options.socket, "r+")
     end
     if file then
-        file_bytes = file:seek("end")
-        file:write(command_n)
-        file:flush()
+        local success, result = pcall(function()
+            local position = file:seek("end")
+            if position then file_bytes = position end
+            if not file:write(command_n) then return false end
+            return file:flush()
+        end)
+        if success and result then
+            file_bytes = file_bytes + #command_n
+            return true
+        end
+
+        pcall(function() file:close() end)
+        file = nil
+        file_bytes = 0
     end
+    return false
 end
 
 local function draw(w, h, script)
@@ -632,6 +753,37 @@ local function draw(w, h, script)
     elseif script then
         local json, err = mp.utils.format_json({width=w, height=h, x=x, y=y, socket=options.socket, thumbnail=options.thumbnail, overlay_id=options.overlay_id})
         mp.commandv("script-message-to", script, "thumbfast-render", json)
+    end
+end
+
+-- A first hover normally waits for a newly generated frame so a stale
+-- prewarm image cannot flash on screen. If IPC or decoding is unusually
+-- slow, reveal the existing frame only after the pointer has settled. This
+-- caps the black-placeholder time without bringing back rapid stale flashes.
+local reveal_fallback_delay = 0.75
+local reveal_timer = mp.add_timeout(reveal_fallback_delay, function()
+    if reveal_pending and show_thumbnail and real_w and real_h and
+        mp.utils.file_info(options.thumbnail..".bgra") then
+        reveal_pending = false
+        draw(real_w, real_h, script_name)
+    end
+end)
+reveal_timer:kill()
+
+local function schedule_reveal_fallback()
+    if reveal_pending and real_w and real_h and
+        mp.utils.file_info(options.thumbnail..".bgra") then
+        reveal_timer:kill()
+        reveal_timer:resume()
+    end
+end
+
+local function remove_overlay()
+    if script_name then return end
+    if pre_0_30_0 then
+        mp.command_native({"overlay-remove", options.overlay_id})
+    else
+        mp.command_native_async({"overlay-remove", options.overlay_id}, function() end)
     end
 end
 
@@ -673,22 +825,51 @@ end
 
 local function seek(fast)
     if last_seek_time then
-        run("async seek " .. last_seek_time .. (fast and " absolute+keyframes" or " absolute+exact"))
+        return run("async seek " .. last_seek_time .. (fast and " absolute+keyframes" or " absolute+exact"))
     end
+    return false
 end
 
 local seek_period = 3/60
 local seek_period_counter = 0
+local seek_retry_timeout = 10
+local seek_retry_deadline = 0
 local seek_timer
+
+local function seek_retry_expired()
+    if not spawned or disabled then
+        seek_timer:kill()
+        return true
+    end
+    if seek_retry_deadline > 0 and mp.get_time() >= seek_retry_deadline then
+        seek_timer:kill()
+        mp.msg.warn("thumbnail seek IPC was not ready after " .. seek_retry_timeout .. " seconds")
+        return true
+    end
+    return false
+end
+
 seek_timer = mp.add_periodic_timer(seek_period, function()
     if seek_period_counter == 0 then
-        seek(allow_fast_seek)
-        seek_period_counter = 1
+        if seek(allow_fast_seek) then
+            if allow_fast_seek then
+                seek_period_counter = 1
+            else
+                seek_timer:kill()
+            end
+        else
+            seek_retry_expired()
+        end
     else
         if seek_period_counter == 2 then
             if allow_fast_seek then
+                if seek() then
+                    seek_timer:kill()
+                else
+                    seek_retry_expired()
+                end
+            else
                 seek_timer:kill()
-                seek()
             end
         else seek_period_counter = seek_period_counter + 1 end
     end
@@ -696,12 +877,20 @@ end)
 seek_timer:kill()
 
 local function request_seek()
+    seek_retry_deadline = mp.get_time() + seek_retry_timeout
     if seek_timer:is_enabled() then
         seek_period_counter = 0
     else
         seek_timer:resume()
-        seek(allow_fast_seek)
-        seek_period_counter = 1
+        if seek(allow_fast_seek) then
+            if allow_fast_seek then
+                seek_period_counter = 1
+            else
+                seek_timer:kill()
+            end
+        else
+            seek_period_counter = 0
+        end
     end
 end
 
@@ -735,6 +924,8 @@ end
 
 file_timer = mp.add_periodic_timer(file_check_period, function()
     if check_new_thumb() then
+        reveal_timer:kill()
+        reveal_pending = false
         draw(real_w, real_h, script_name)
     end
 end)
@@ -743,6 +934,7 @@ file_timer:kill()
 local function clear()
     file_timer:kill()
     seek_timer:kill()
+    reveal_timer:kill()
     if options.quit_after_inactivity > 0 then
         if show_thumbnail or activity_timer:is_enabled() then
             activity_timer:kill()
@@ -751,14 +943,10 @@ local function clear()
     end
     last_seek_time = nil
     show_thumbnail = false
+    reveal_pending = false
     last_x = nil
     last_y = nil
-    if script_name then return end
-    if pre_0_30_0 then
-        mp.command_native({"overlay-remove", options.overlay_id})
-    else
-        mp.command_native_async({"overlay-remove", options.overlay_id}, function() end)
-    end
+    remove_overlay()
 end
 
 local function quit()
@@ -789,11 +977,19 @@ local function thumb(time, r_x, r_y, script)
     end
 
     script_name = script
+    local first_show = not show_thumbnail
     if last_x ~= x or last_y ~= y or not show_thumbnail then
         show_thumbnail = true
         last_x = x
         last_y = y
-        draw(real_w, real_h, script)
+        if first_show then
+            -- A prewarmed thumbnail belongs to the current playback position,
+            -- not necessarily the newly requested timeline position. Keep it
+            -- hidden until the thumbnailer has produced the requested frame.
+            reveal_pending = true
+        elseif not reveal_pending then
+            draw(real_w, real_h, script)
+        end
     end
 
     if options.quit_after_inactivity > 0 then
@@ -803,11 +999,13 @@ local function thumb(time, r_x, r_y, script)
         activity_timer:resume()
     end
 
-    if time == last_seek_time then return end
+    local same_time = time == last_seek_time
+    if not same_time then schedule_reveal_fallback() end
+    if not file_timer:is_enabled() then file_timer:resume() end
+    if same_time then return end
     last_seek_time = time
     if not spawned then spawn(time) end
     request_seek()
-    if not file_timer:is_enabled() then file_timer:resume() end
 end
 
 local function watch_changes()
@@ -816,22 +1014,26 @@ local function watch_changes()
 
     local old_w = effective_w
     local old_h = effective_h
-
+    local vout_gamma = properties["video-out-params"] and properties["video-out-params"]["gamma"] or nil
     calc_dimensions()
 
     local vf_reset = vf_string(filters_reset)
     local rotate = properties["video-rotate"] or 0
+    local dovi = is_dolby_vision()
 
     local resized = old_w ~= effective_w or
         old_h ~= effective_h or
         last_vf_reset ~= vf_reset or
         (last_rotate % 180) ~= (rotate % 180) or
-        par ~= last_par
+        par ~= last_par or
+        dovi ~= last_is_dolby_vision
 
     if resized then
         last_rotate = rotate
         info(effective_w, effective_h)
     elseif last_has_vid ~= has_vid and has_vid ~= 0 then
+        info(effective_w, effective_h)
+    elseif vout_gamma ~= last_vout_gamma then
         info(effective_w, effective_h)
     end
 
@@ -861,9 +1063,11 @@ local function watch_changes()
     last_vf_reset = vf_reset
     last_rotate = rotate
     last_par = par
+    last_is_dolby_vision = dovi
+    last_vout_gamma = vout_gamma
     last_has_vid = has_vid
 
-    if not spawned and not disabled and options.spawn_first and resized then
+    if not spawned and not disabled and options.spawn_first and not prewarm_started then
         spawn(mp.get_property_number("time-pos", 0))
         file_timer:resume()
     end
@@ -883,6 +1087,7 @@ local function update_tracklist(name, value)
     for _, track in ipairs(value) do
         if track.type == "video" and track.selected then
             properties["current-tracks/video"] = track
+            dirty = true
             return
         end
     end
@@ -914,8 +1119,10 @@ local function sync_changes(prop, val)
 end
 
 local function file_load()
+    remove_inherited_options()
     clear()
     spawned = false
+    prewarm_started = false
     real_w, real_h = nil, nil
     last_real_w, last_real_h = nil, nil
     last_seek_time = nil
@@ -931,6 +1138,7 @@ end
 local function shutdown()
     run("quit")
     remove_thumbnail_files()
+    remove_inherited_options()
     if os_name ~= "windows" then
         os.remove(options.socket)
         os.remove(options.socket..".run")
@@ -938,7 +1146,7 @@ local function shutdown()
 end
 
 local function on_duration(prop, val)
-    allow_fast_seek = (val or 30) >= 30
+    allow_fast_seek = options.fast_seek and (val or 30) >= 30
 end
 
 mp.observe_property("current-tracks/video", "native", function(name, value)
@@ -946,7 +1154,7 @@ mp.observe_property("current-tracks/video", "native", function(name, value)
         mp.unobserve_property(update_tracklist)
         pre_0_33_0 = false
     end
-    update_property(name, value)
+    update_property_dirty(name, value)
 end)
 
 mp.observe_property("track-list", "native", update_tracklist)
@@ -959,6 +1167,8 @@ mp.observe_property("cache", "native", update_property)
 mp.observe_property("demuxer-via-network", "native", update_property)
 mp.observe_property('demuxer-cache-state', 'native', update_property)
 mp.observe_property("stream-open-filename", "native", update_property)
+mp.observe_property("user-data/alist/playing", "native", update_property_dirty)
+mp.observe_property("user-data/alist/archive-inner", "native", update_property_dirty)
 mp.observe_property("macos-app-activation-policy", "native", update_property)
 mp.observe_property("current-vo", "native", update_property)
 mp.observe_property("video-rotate", "native", update_property)

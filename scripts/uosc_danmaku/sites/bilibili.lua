@@ -5,7 +5,7 @@ local user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 
 local function build_curl_args(url, extra_headers)
     local args = {
-        'curl', '-L', '-s', '--user-agent', user_agent
+        'curl', '-L', '-s', '--compressed', '--user-agent', user_agent
     }
     extra_headers = extra_headers or {}
     for _, h in ipairs(extra_headers) do
@@ -189,6 +189,12 @@ local function download_bilibili_danmaku(path, cid, from_menu, callback)
             return
         end
         if not out or out == '' then
+            callback(false)
+            return
+        end
+        local prefix = out:sub(1, 512)
+        if not prefix:find('<i>', 1, true) and not prefix:find('<i ', 1, true) then
+            msg.error('Bilibili danmaku response is not valid XML')
             callback(false)
             return
         end

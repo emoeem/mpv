@@ -40,7 +40,7 @@ local o = {
     retry_count = 8,
     style = 'color',
     video_priority = 'dolby-vision,hdr-vivid,hdr10-plus,hdr10,hlg,sdr',
-    audio_priority = 'dolby-atmos,dts-x,audio-vivid,dolby-truehd,dts-hd-ma,dts-hd-hra,dolby-digital-plus,dolby-digital,dts,ac4,mpeg-h,flac,alac,pcm,mlp,wavpack,ape,wma,opus,aac,vorbis,mp3',
+    audio_priority = 'dolby-atmos,dts-x,audio-vivid,dolby-truehd,dts-hd-ma,dts-hd-hra,dolby-digital-plus,dolby-digital,dts,ac4,mpeg-h,dra,flac,alac,pcm,mlp,wavpack,ape,wma,opus,aac,vorbis,mp3',
     asset_dir = '~~/script-assets/startup-format-logos/runtime',
     overlay_id = 50,
 }
@@ -373,6 +373,41 @@ local function contains_plain(text, needle)
 end
 
 
+local CODEC_IDENTITY_FIELDS = {
+    'codec', 'decoder', 'codec-desc', 'decoder-desc', 'demux-codec', 'format',
+}
+
+
+local APE_CODEC_IDENTITIES = {
+    ape = true,
+    monkeysaudio = true,
+}
+
+
+local DRA_CODEC_IDENTITIES = {
+    dra = true,
+    libdra = true,
+    draudiodecoder = true,
+}
+
+
+local function normalize_codec_identity(value)
+    local normalized = tostring(value or ''):lower():gsub('’', '')
+    normalized = normalized:gsub('[%s%p]+', '')
+    return normalized
+end
+
+
+local function has_codec_identity(track, current_codec, identities)
+    if identities[normalize_codec_identity(current_codec)] then return true end
+    if type(track) ~= 'table' then return false end
+    for _, field in ipairs(CODEC_IDENTITY_FIELDS) do
+        if identities[normalize_codec_identity(track[field])] then return true end
+    end
+    return false
+end
+
+
 local function positive(value)
     local number = tonumber(value)
     return number ~= nil and number > 0
@@ -380,6 +415,10 @@ end
 
 
 local function has_dolby_vision(track, params, compact)
+    if positive(mp.get_property_native(
+        'user-data/media-format/dolby-vision-profile')) then
+        return true
+    end
     if type(track) == 'table' then
         if positive(track['dolby-vision-profile']) or track['dolby-vision-level'] ~= nil then
             return true
@@ -389,6 +428,9 @@ local function has_dolby_vision(track, params, compact)
         if positive(params['dolby-vision-profile']) or params['dolby-vision-level'] ~= nil then
             return true
         end
+        local colormatrix = tostring(
+            params.colormatrix or params['color-matrix'] or ''):lower()
+        if colormatrix == 'dolbyvision' then return true end
     end
     return contains_plain(compact, 'dolbyvision')
         or contains_plain(compact, 'dovi')
@@ -525,6 +567,9 @@ local function detect_audio_candidates(track, include_filename)
         or contains_plain(codec_compact, 'mha1') then
         candidates['mpeg-h'] = true
     end
+    if has_codec_identity(track, codec, DRA_CODEC_IDENTITIES) then
+        candidates.dra = true
+    end
 
     if o.show_common_audio then
         if contains_plain(codec_compact, 'flac') then
@@ -545,8 +590,7 @@ local function detect_audio_candidates(track, include_filename)
             or codec_compact == 'wv' then
             candidates.wavpack = true
         end
-        if codec_compact == 'ape'
-            or contains_plain(codec_compact, 'monkeysaudio') then
+        if has_codec_identity(track, codec, APE_CODEC_IDENTITIES) then
             candidates.ape = true
         end
         if codec_compact == 'wma'
@@ -1491,6 +1535,11 @@ mp.register_event('video-reconfig', on_video_geometry_ready)
 mp.register_event('playback-restart', on_playback_restart)
 mp.register_event('end-file', on_end_file)
 mp.observe_property('aid', 'native', on_audio_track_change)
+mp.observe_property('user-data/media-format/dolby-vision-profile', 'native', function()
+    if state.loaded and state.frame_ready then
+        schedule_detection('demuxer-metadata', 0)
+    end
+end)
 mp.observe_property('osd-dimensions', 'native', function()
     on_video_geometry_ready()
     if state.visible and state.opacity_index > 0 then
