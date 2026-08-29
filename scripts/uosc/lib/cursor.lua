@@ -164,10 +164,19 @@ function cursor:trigger(event, shortcut)
 
 	-- Call raw event handlers.
 	local zone = self:find_zone(event)
+	if event:find('primary', 1, true) then
+		mp.msg.log('info', 'DBGCLICK trigger=' .. tostring(event)
+			.. ' x=' .. tostring(math.floor(self.x))
+			.. ' y=' .. tostring(math.floor(self.y))
+			.. ' zone=' .. tostring(zone and zone.event or 'nil'))
+	end
 	local callbacks = self.handlers[event]
 	if zone or #callbacks > 0 then
 		forward = false
 		if zone and shortcut then
+			mp.msg.log('info', 'DBGCLICK fire zone=' .. tostring(zone.event)
+				.. ' x=' .. tostring(math.floor(self.x))
+				.. ' y=' .. tostring(math.floor(self.y)))
 			zone.handler(shortcut)
 			zone_handled = true
 		end
@@ -185,6 +194,9 @@ function cursor:trigger(event, shortcut)
 				if meta.is_end then
 					local start_event = self.last_events[meta.start_event]
 					if start_event and point_collides_with(start_event, parent_zone.hitbox) and shortcut then
+						mp.msg.log('info', 'DBGCLICK compound ' .. tostring(meta.trigger_event)
+							.. ' start_x=' .. tostring(math.floor(start_event.x))
+							.. ' start_y=' .. tostring(math.floor(start_event.y)))
 						parent_zone.handler(create_shortcut('primary_click', shortcut.modifiers))
 					end
 				end

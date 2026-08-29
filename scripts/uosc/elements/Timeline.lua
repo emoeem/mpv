@@ -462,6 +462,73 @@ local function is_premium_audio(codec, layout)
 		or layout:match('^[579]%.1') ~= nil
 end
 
+-- 视频位深：从像素格式推断，8bit 返回空串（不显示）
+local function video_bit_depth_label()
+	local fmt = tostring(mp.get_property('video-params/pixelformat') or '')
+	if fmt:find('10le', 1, true) or fmt:find('10be', 1, true)
+		or fmt:find('p010', 1, true) or fmt:find('rgb30', 1, true) then
+		return '10bit'
+	end
+	if fmt:find('12le', 1, true) or fmt:find('12be', 1, true)
+		or fmt:find('p012', 1, true) then
+		return '12bit'
+	end
+	if fmt:find('16le', 1, true) or fmt:find('16be', 1, true)
+		or fmt:find('p016', 1, true) or fmt:find('rgb48', 1, true) then
+		return '16bit'
+	end
+	return ''
+end
+
+-- 当前音轨位置与语言：多音轨文件才显示，如 "音轨 2/4 国配"
+local function audio_track_label()
+	local tl = mp.get_property_native('track-list') or {}
+	local total, selected, lang = 0, 0, ''
+	for _, t in ipairs(tl) do
+		if type(t) == 'table' and t.type == 'audio' then
+			total = total + 1
+			if t.selected then
+				selected = total
+				lang = tostring(t.title or '')
+				if lang == '' and type(t.lang) == 'string' and #t.lang <= 8 then
+					lang = t.lang
+				end
+			end
+		end
+	end
+	if total < 2 or selected == 0 then return '' end
+	local label = ('音轨 %d/%d'):format(selected, total)
+	if lang ~= '' then label = label .. ' ' .. lang end
+	return label
+end
+
+-- 字幕状态：存在字幕轨才显示，如 "字幕 开(简中)" / "字幕 关"
+local function subtitle_label()
+	local sub = mp.get_property_native('current-tracks/sub')
+	if type(sub) ~= 'table' then return '' end
+	local lang = tostring(sub.title or '')
+	if lang == '' and type(sub.lang) == 'string' and #sub.lang <= 8 then
+		lang = sub.lang
+	end
+	local vis = mp.get_property('sub-visibility')
+	if vis == 'yes' or vis == true then
+		return lang ~= '' and ('字幕 开(' .. lang .. ')') or '字幕 开'
+	end
+	return '字幕 关'
+end
+
+-- HDR→SDR 映射提示：片源 HDR 且输出明确非 HDR 时显示
+local function hdr_mapping_label(dynamic_range)
+	if dynamic_range == '' or dynamic_range == 'SDR' then return '' end
+	local hdr_status = tostring(mp.get_property_native('user-data/display-info/hdr-status') or '')
+	if hdr_status == 'on' then return '' end
+	if hdr_status == 'off' then return '映射' end
+	-- 没有 display-info 状态时按渲染目标推断：明确非 PQ 才算 SDR 输出
+	local trc = tostring(mp.get_property('target-trc') or '')
+	if trc ~= '' and trc ~= 'pq' and trc ~= 'auto' then return '映射' end
+	return ''
+end
+
 function Timeline:new() return Class.new(self) --[[@as Timeline]] end
 function Timeline:init()
 	Element.init(self, 'timeline', {render_order = 5})
@@ -541,6 +608,17 @@ function Timeline:init()
 	self:observe_mp_property('audio-codec', 'string', invalidate_media_info_and_render)
 	self:observe_mp_property('audio-params', 'native', invalidate_media_info_and_render)
 	self:observe_mp_property('aid', 'native', invalidate_media_info_and_render)
+	self:observe_mp_property('vf', 'native', invalidate_media_info_and_render)
+	self:observe_mp_property('glsl-shaders', 'native', invalidate_media_info_and_render)
+	self:observe_mp_property('speed', 'number', invalidate_media_info_and_render)
+	self:observe_mp_property('user-data/rife', 'native', invalidate_media_info_and_render)
+	self:observe_mp_property('af', 'native', invalidate_media_info_and_render)
+	self:observe_mp_property('track-list', 'native', invalidate_media_info_and_render)
+	self:observe_mp_property('current-tracks/sub', 'native', invalidate_media_info_and_render)
+	self:observe_mp_property('sub-visibility', 'native', invalidate_media_info_and_render)
+	self:observe_mp_property('decoder-frame-drop-count', 'number', invalidate_media_info_and_render)
+	self:observe_mp_property('user-data/display-info/hdr-status', 'native', invalidate_media_info_and_render)
+	self:observe_mp_property('target-trc', 'string', invalidate_media_info_and_render)
 	self:decide_progress_size()
 	self:update_dimensions()
 
@@ -871,13 +949,58 @@ local function build_media_info_segments()
 		add_media_capsule(parts, '软解', 'muted', 96, 'decode')
 	end
 
+	-- RIFE 补帧：以滤镜链中的 @rife 标签为准（滤镜初始化失败会被 mpv 自动移除），
+	-- 倍数读 rife.lua 发布的 user-data
+	local rife_active = false
+	for _, filter in ipairs(mp.get_property_native('vf') or {}) do
+		if filter.label == 'rife' then
+			rife_active = true
+			break
+		end
+	end
+	if rife_active then
+		local rife_state = mp.get_property_native('user-data/rife')
+		local multi = rife_state and tonumber(tostring(rife_state.multi)) or 0
+		add_media_capsule(parts, multi > 0 and ('RIFE ×%g'):format(multi) or 'RIFE', 'hero', 95, 'enhance')
+	end
+
+	-- 已启用的 GLSL 着色器数量
+	local shader_count = #(mp.get_property_native('glsl-shaders') or {})
+	if shader_count > 0 then
+		add_media_capsule(parts, ('着色器 ×%d'):format(shader_count), 'primary', 70, 'enhance')
+	end
+
+	-- 已启用的音频滤镜数量（drcbox/EQ 等）
+	local af_count = 0
+	for _, filter in ipairs(mp.get_property_native('af') or {}) do
+		if type(filter) == 'table' and filter.enabled ~= false then
+			af_count = af_count + 1
+		end
+	end
+	if af_count > 0 then
+		add_media_capsule(parts, ('音效 ×%d'):format(af_count), 'primary', 65, 'enhance')
+	end
+
 	-- Resolution
-	add_media_capsule(parts, info.resolution_long, 'primary', 80, 'picture')
+	local resolution_text = info.resolution_long
+	local bit_depth = video_bit_depth_label()
+	if bit_depth ~= '' then resolution_text = resolution_text .. ' ' .. bit_depth end
+	add_media_capsule(parts, resolution_text, 'primary', 80, 'picture')
 
 	-- Dynamic range
 	local dynamic_range = info.dynamic_range
 	if dynamic_range ~= '' then
 		add_media_capsule(parts, dynamic_range, 'hero', 100, 'picture')
+	end
+	-- HDR→SDR 映射提示（仅片源 HDR 且输出非 HDR 时出现）
+	local mapping_label = hdr_mapping_label(dynamic_range)
+	if mapping_label ~= '' then
+		add_media_capsule(parts, mapping_label, 'muted', 92, 'picture')
+	end
+
+	-- 交错源（老 DVD/电视录制）
+	if info.interlaced then
+		add_media_capsule(parts, '交错', 'muted', 30, 'picture')
 	end
 
 	-- Framerate
@@ -892,12 +1015,34 @@ local function build_media_info_segments()
 		add_media_capsule(parts, audio_codec, 'primary', priority, 'audio')
 		add_media_capsule(parts, audio_layout, 'muted', priority, 'audio')
 	end
+	-- 音轨序号（多音轨文件）
+	local audio_track = audio_track_label()
+	if audio_track ~= '' then
+		add_media_capsule(parts, audio_track, 'muted', 40, 'audio')
+	end
+
+	-- 字幕状态
+	local subtitle = subtitle_label()
+	if subtitle ~= '' then
+		add_media_capsule(parts, subtitle, 'primary', 50, 'sub')
+	end
+
+	-- 倍速：仅在与原速不同时显示
+	local speed = mp.get_property_number('speed', 1)
+	if math.abs(speed - 1) > 0.001 then
+		add_media_capsule(parts, ('倍速 ×%g'):format(speed), 'primary', 45, 'playback')
+	end
 
 	-- Bitrate
 	local br_text = read_bitrate_text_once()
 	if br_text and br_text ~= '' then
 		add_media_capsule(parts, '码率', 'muted', 25, 'throughput')
 		add_media_capsule(parts, br_text, 'primary', 25, 'throughput', true)
+	end
+	-- 解码丢帧（仅丢帧时出现，卡顿诊断）
+	local drop_count = mp.get_property_number('decoder-frame-drop-count', 0)
+	if drop_count > 0 then
+		add_media_capsule(parts, ('丢帧 %d'):format(drop_count), 'muted', 58, 'throughput')
 	end
 
 	media_info_segments = parts
