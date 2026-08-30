@@ -942,7 +942,6 @@ function Menu:on_prop_fullormaxed() self:update_content_dimensions() end
 function Menu:on_options() self:update_content_dimensions() end
 
 function Menu:handle_cursor_down()
-	mp.msg.log('info', 'DBGCLICK menu_cursor_down proximity=' .. tostring(self.proximity_raw))
 	if self.proximity_raw <= 0 then
 		self.drag_last_y = cursor.y
 		self.current.fling = nil
@@ -953,9 +952,6 @@ end
 
 ---@param shortcut? Shortcut
 function Menu:handle_cursor_up(shortcut)
-	mp.msg.log('info', 'DBGCLICK menu_cursor_up hovered='
-		.. tostring(self.mouse_hovered_index) .. ' selected='
-		.. tostring(self.current and self.current.selected_index))
 	if self.proximity_raw <= -self.padding and self.drag_last_y and not self.is_dragging
 		and self.mouse_hovered_index == self.current.selected_index then
 		self:activate_pointer_item(shortcut)
@@ -985,9 +981,6 @@ function Menu:activate_pointer_item(shortcut, target_menu, target_index)
 	local menu = target_menu or self.pointer_menu or self.current
 	local index = target_index or self.pointer_index or menu.selected_index
 	local item = index and menu.items[index]
-	mp.msg.log('info', 'DBGCLICK activate menu=' .. tostring(menu and menu.id)
-		.. ' index=' .. tostring(index) .. ' value='
-		.. tostring(item and tostring(item.value):sub(1, 40) or 'nil'))
 	if not item then return end
 
 	-- Pointer navigation uses cascading panels. Hovering a submenu is enough to
@@ -2212,9 +2205,6 @@ function Menu:render()
 						self.pointer_menu = menu
 						self.pointer_index = index
 						menu.selected_index = index
-						mp.msg.log('info', 'DBGCLICK hover select menu='
-							.. tostring(menu.id) .. ' index=' .. tostring(index)
-							.. ' frozen=' .. tostring(hover_frozen))
 						if not is_selected then
 							is_selected = true
 							request_render()
