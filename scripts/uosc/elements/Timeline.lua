@@ -78,6 +78,21 @@ local function is_likely_remote_path(path)
 		or lower:match('^mms[t]?://') ~= nil
 end
 
+local function prefer_keyframe_seek(fast)
+	-- Bilibili VOD normally arrives as separate DASH video/audio streams. A
+	-- keyframe-only landing can start the video at the previous GOP while the
+	-- external audio stream resumes at the requested timestamp, producing a
+	-- short but audible silence gap. Keep keyframe seeks for drag previews, then
+	-- use one exact landing seek on release so both streams restart together.
+	local online_vod = mp.get_property_bool('user-data/online-media/matched', false)
+		and mp.get_property_native('user-data/online-media/content-type', '') == 'video'
+	if fast ~= true and online_vod then return false end
+	return fast == true
+		or state.is_stream == true
+		or mp.get_property_bool('demuxer-via-network', false)
+		or is_likely_remote_path(mp.get_property('path', ''))
+end
+
 -- nil-safe numeric helpers
 local function safe_num(value)
 	return tonumber(value)
@@ -821,22 +836,19 @@ function Timeline:get_time_at_x(x)
 	return state.duration * progress
 end
 
-function Timeline:cursor_command(command)
-	if type(command) == 'string' and #command > 0 and state.time and state.duration then
-		local expanded_command = command:gsub('{time}', self:get_time_at_x(cursor.x))
-		mp.command(expanded_command)
-	end
-end
-
 ---@param fast? boolean
 function Timeline:set_from_cursor(fast)
 	if state.time and state.duration then
-		mp.commandv('seek', self:get_time_at_x(cursor.x), fast and 'absolute+keyframes' or 'absolute+exact')
+		mp.commandv('seek', self:get_time_at_x(cursor.x),
+			prefer_keyframe_seek(fast) and 'absolute+keyframes' or 'absolute+exact')
 	end
 end
 
 function Timeline:clear_thumbnail()
 	if self.has_thumbnail then
+		-- Hide the card immediately. thumbfast publishes ready=true only after
+		-- a fresh frame for the next hover has arrived.
+		thumbnail.ready = false
 		mp.commandv('script-message-to', 'thumbfast', 'clear')
 		self.has_thumbnail = false
 	end
@@ -852,7 +864,9 @@ function Timeline:handle_cursor_down()
 		-- every seek.  Repeating keyframe seeks on every mouse move turns one
 		-- timeline drag into a series of visible stalls.  While real RIFE 2x is
 		-- active, keep the existing timeline/thumbnail preview and issue only the
-		-- exact landing seek on release.  Native playback retains live scrubbing.
+		-- landing seek on release. Local files keep exact landing; network sources
+		-- land on the nearest keyframe so one click cannot force a long range/decode
+		-- wait. Native local playback retains live scrubbing.
 		ai_preview_only = ai_active == true or ai_active == 'yes',
 		last = {x = cursor.x, y = cursor.y},
 	}
@@ -1254,9 +1268,9 @@ function Timeline:render()
 			self:handle_cursor_down()
 			cursor:once('primary_up', function() self:handle_cursor_up() end)
 		end)
-		if #options.timeline_mbtn_right > 0 then
+		if options.timeline_mbtn_right ~= '' then
 			cursor:zone('secondary_down', seek_hitbox, function()
-				self:cursor_command(options.timeline_mbtn_right)
+				mp.command(options.timeline_mbtn_right:gsub('{time}', tostring(self:get_time_at_x(cursor.x))))
 			end)
 		end
 		if config.timeline_step ~= 0 then
@@ -1430,9 +1444,9 @@ function Timeline:render()
 			if options.timeline_cache then
 				local ax = range[1] < 0.5 and bax or math.floor(t2x(range[1]))
 				local bx = range[2] > state.duration - 0.5 and bbx or math.ceil(t2x(range[2]))
-				opts.color, opts.opacity, opts.anchor_x = fg, 0.4 - (0.2 * visibility), bax
+				opts.color, opts.opacity, opts.anchor_x = 'ffffff', 0.4 - (0.2 * visibility), bax
 				ass:texture(ax, fay, bx, fby, texture_char, opts)
-				opts.color, opts.opacity, opts.anchor_x = bg, 0.6 - (0.2 * visibility), bax + offset
+				opts.color, opts.opacity, opts.anchor_x = '000000', 0.6 - (0.2 * visibility), bax + offset
 				ass:texture(ax, fay, bx, fby, texture_char, opts)
 			end
 		end
@@ -1568,7 +1582,7 @@ function Timeline:render()
 				button_x - button_size / 2, button_y - button_size / 2,
 				button_x + button_size / 2, button_y + button_size / 2,
 				{
-					color = is_button_hovered and config.color.error or bg,
+					color = is_button_hovered and 'c54e4e' or bg,
 					opacity = is_button_hovered and 0.94 or 0.82,
 					radius = math.max(3, round(4 * state.scale)),
 					border = math.max(1, round(1 * state.scale)),
@@ -1577,9 +1591,9 @@ function Timeline:render()
 			)
 			ass:txt(button_x, button_y - round(1 * state.scale), 5, '×', {
 				size = math.max(18, round(19 * state.scale)),
-				color = is_button_hovered and fgt or fg,
+				color = is_button_hovered and 'ffffff' or fg,
 				border = math.max(1, round(1 * state.scale)),
-				border_color = is_button_hovered and config.color.error or bg,
+				border_color = is_button_hovered and 'c54e4e' or bg,
 				bold = true,
 			})
 			cursor:zone('primary_down', hitbox, function()
@@ -1644,7 +1658,8 @@ function Timeline:render()
 					local circle = {point = {x = t2x(chapter.time), y = chapter_y}, r = diamond_radius_hovered}
 					if input_enabled and visibility > 0 and chapter == hovered_chapter then
 						cursor:zone('primary_down', circle, function()
-							mp.commandv('seek', chapter.time, 'absolute+exact')
+							mp.commandv('seek', chapter.time,
+								prefer_keyframe_seek(false) and 'absolute+keyframes' or 'absolute+exact')
 						end)
 					end
 				end
@@ -1743,18 +1758,22 @@ function Timeline:render()
 			local thumb_y = round(tooltip_anchor.ay - thumb_y_margin - thumb_height)
 			local ax, ay = (thumb_x - border), (thumb_y - border)
 			local bx, by = (thumb_x + thumb_width + border), (thumb_y + thumb_height + border)
-			ass:rect(ax, ay, bx, by, {
-				color = bg,
-				border = 1,
-				opacity = {main = config.opacity.thumbnail, border = 0.08 * config.opacity.thumbnail},
-				border_color = fg,
-				radius = state.radius,
-			})
+			-- The timestamp responds immediately.  Until a fresh thumbnail is
+			-- ready, omit the empty card instead of showing stale prewarm content.
+			if thumbnail.ready ~= false then
+				ass:rect(ax, ay, bx, by, {
+					color = bg,
+					border = 1,
+					opacity = {main = config.opacity.thumbnail, border = 0.08 * config.opacity.thumbnail},
+					border_color = fg,
+					radius = state.radius,
+				})
+			end
 			local thumb_seconds = (state.rebase_start_time == false and state.start_time) and
 				(hovered_seconds - state.start_time) or hovered_seconds
 			mp.commandv('script-message-to', 'thumbfast', 'thumb', thumb_seconds, thumb_x, thumb_y)
 			self.has_thumbnail, rendered_thumbnail = true, true
-			tooltip_anchor.ay = ay
+			if thumbnail.ready ~= false then tooltip_anchor.ay = ay end
 		end
 
 		-- Chapter title

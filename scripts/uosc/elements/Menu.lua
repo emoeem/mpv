@@ -4,13 +4,13 @@ local Element = require('elements/Element')
 ---@alias MenuSearchAction {name: string; icon: string; label?: string;}
 
 -- Menu data structure accepted by `Menu:open(menu)`.
----@alias MenuData {id?: string; type?: string; title?: string; hint?: string; min_width?: number; min_width_px?: boolean; fixed_columns?: boolean; uniform_title_size?: boolean; hint_max_ratio?: number; hint_fit_ratio?: number; hint_ellipsis_ratio?: number; hint_force_ellipsis_when_scaled?: boolean; footnote: string; content_padding_bottom?: number; search_style?: 'on_demand' | 'palette' | 'disabled'; search_action?: MenuSearchAction; search_cursor_blink?: boolean; search_focus_indicator?: boolean; item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; items?: MenuDataChild[]; selected_index?: integer; on_search?: string|string[]; on_search_action?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; back_on_escape?: boolean; bind_keys?: string[]}
+---@alias MenuData {id?: string; type?: string; title?: string; hint?: string; min_width?: number; min_width_px?: boolean; fixed_columns?: boolean; uniform_title_size?: boolean; hint_max_ratio?: number; hint_fit_ratio?: number; hint_ellipsis_ratio?: number; hint_force_ellipsis_when_scaled?: boolean; center_root_when_closed?: boolean; footnote: string; content_padding_bottom?: number; search_style?: 'on_demand' | 'palette' | 'disabled'; search_action?: MenuSearchAction; search_cursor_blink?: boolean; search_focus_indicator?: boolean; item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; items?: MenuDataChild[]; selected_index?: integer; on_search?: string|string[]; on_search_action?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; back_on_escape?: boolean; bind_keys?: string[]}
 ---@alias MenuDataChild MenuDataItem|MenuData
 ---@alias MenuDataItem {title?: string; hint?: string; icon?: string; value: any; actions?: MenuAction[]; actions_place?: 'inside' | 'outside'; active?: boolean; keep_open?: boolean; selectable?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; opacity?: number; separator?: boolean; align?: 'left'|'center'|'right'; search_exact_hint?: boolean}
 ---@alias MenuOptions {mouse_nav?: boolean; anchor_x?: number; anchor_y?: number; item_height?: number; font_scale?: number;}
 
 -- Internal data structure created from `MenuData`.
----@alias MenuStack {id?: string; type?: string; title?: string; hint?: string; footnote: string; min_width?: number; min_width_px?: boolean; fixed_columns?: boolean; uniform_title_size?: boolean; hint_max_ratio?: number; hint_fit_ratio?: number; hint_ellipsis_ratio?: number; hint_force_ellipsis_when_scaled?: boolean; content_padding_bottom?: number; search_style?: 'on_demand' | 'palette' | 'disabled'; search_action?: MenuSearchAction; search_cursor_blink?: boolean; search_focus_indicator?: boolean; item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; selected_index?: number; action_index?: number; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; items: MenuStackChild[]; on_search?: string|string[]; on_search_action?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; back_on_escape?: boolean; bind_keys?: string[]; parent_menu?: MenuStack; submenu_path: integer[]; active?: boolean; width: number; height: number; top: number; scroll_y: number; scroll_height: number; title_width: number; hint_width: number; max_hint_width: number; max_item_width: number; max_width: number; is_root?: boolean; fling?: Fling, search?: Search, ass_safe_title?: string}
+---@alias MenuStack {id?: string; type?: string; title?: string; hint?: string; footnote: string; min_width?: number; min_width_px?: boolean; fixed_columns?: boolean; uniform_title_size?: boolean; hint_max_ratio?: number; hint_fit_ratio?: number; hint_ellipsis_ratio?: number; hint_force_ellipsis_when_scaled?: boolean; center_root_when_closed?: boolean; content_padding_bottom?: number; search_style?: 'on_demand' | 'palette' | 'disabled'; search_action?: MenuSearchAction; search_cursor_blink?: boolean; search_focus_indicator?: boolean; item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; selected_index?: number; action_index?: number; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; items: MenuStackChild[]; on_search?: string|string[]; on_search_action?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; back_on_escape?: boolean; bind_keys?: string[]; parent_menu?: MenuStack; submenu_path: integer[]; active?: boolean; width: number; height: number; top: number; scroll_y: number; scroll_height: number; title_width: number; hint_width: number; max_title_width: number; max_hint_width: number; max_item_width: number; max_width: number; is_root?: boolean; fling?: Fling, search?: Search, ass_safe_title?: string}
 ---@alias MenuStackChild MenuStackItem|MenuStack
 ---@alias MenuStackItem {title?: string; hint?: string; icon?: string; value: any; actions?: MenuAction[]; actions_place?: 'inside' | 'outside'; active?: boolean; keep_open?: boolean; selectable?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; opacity?: number; separator?: boolean; align?: 'left'|'center'|'right'; title_width: number; hint_width: number; ass_safe_hint?: string}
 ---@alias Fling {y: number, distance: number, time: number, easing: fun(x: number), duration: number, update_cursor?: boolean}
@@ -37,6 +37,11 @@ local menu_open_opacity = 0.82
 local menu_open_duration = 80
 local menu_close_duration = 60
 local wheel_scroll_rows = 2
+-- Ignore the few pixels a mouse commonly travels while a button is being
+-- released. A menu that replaced the clicked row must stay neutral until the
+-- pointer movement is deliberate, otherwise the new row under the pointer can
+-- inherit that click and immediately open its submenu.
+local mouse_nav_activation_distance = 4
 local wheel_scroll_duration = 0.09
 local wheel_hover_suppression = 0.12
 local search_cursor_blink_interval = 0.55
@@ -62,6 +67,25 @@ local function uses_fixed_columns(menu)
 		or (uses_uniform_title_size(menu) and (menu.max_hint_width or 0) > 0)
 end
 
+-- The default ratio keeps metadata from crowding long titles, but it should
+-- not discard the first glyph of a long hint when the title on that row is
+-- short. Let the hint borrow genuinely unused title space while preserving
+-- the configured ratio as the floor for rows where both columns are long.
+local function get_hint_reserve(menu, item, fixed_columns, available_width, item_padding)
+	if available_width <= 0 or (item.hint_width or 0) <= 0 then return 0 end
+	local hint_width = fixed_columns and menu.max_hint_width or item.hint_width
+	local title_width = fixed_columns and menu.max_title_width or item.title_width
+	local hint_max_ratio = clamp(menu.hint_max_ratio or 0.58, 0.30, 0.85)
+	local ratio_cap = available_width * hint_max_ratio
+	local unused_title_space = available_width
+		- (title_width or 0) - item_padding * 0.5
+	local adaptive_cap = math.max(ratio_cap, unused_title_space)
+	return math.min(
+		available_width,
+		math.min(hint_width + item_padding * 1.5, adaptive_cap)
+	)
+end
+
 local function get_responsive_width_bounds(menu)
 	if menu.type == 'recent_menu' then return nil, nil end
 
@@ -81,8 +105,16 @@ local function get_responsive_width_bounds(menu)
 		maximum_width = math.min(logical_display_width * 0.60, 760)
 		minimum_width = math.min(math.max(logical_content_width * 1.04, 560), maximum_width)
 	elseif menu.type == 'playlist' then
-		maximum_width = math.min(logical_display_width * 0.72, 1020)
-		minimum_width = math.min(math.max(logical_content_width * 1.22, 680), maximum_width)
+		if menu.center_root_when_closed then
+			-- Online playlists add a quality submenu.  Keep enough horizontal room
+			-- for that panel and ellipsize unusually long media titles instead of
+			-- letting the root consume nearly the whole viewport.
+			maximum_width = math.min(logical_display_width * 0.60, 840)
+			minimum_width = math.min(math.max(logical_content_width * 1.12, 680), maximum_width)
+		else
+			maximum_width = math.min(logical_display_width * 0.72, 1020)
+			minimum_width = math.min(math.max(logical_content_width * 1.22, 680), maximum_width)
+		end
 	elseif menu.uniform_title_size and (menu.search or menu.search_style == 'palette') then
 		maximum_width = math.min(logical_display_width * 0.60, 640)
 		minimum_width = math.min(math.max(logical_content_width * 1.06, 480), maximum_width)
@@ -222,11 +254,12 @@ function Menu:init(data, callback, opts)
 	self.opts = opts or {}
 	self.offset_x = 0 -- Used for submenu transition animation.
 	self.mouse_nav = self.opts.mouse_nav -- Stops pre-selecting items
+	self.mouse_nav_origin_x = nil
+	self.mouse_nav_origin_y = nil
 	-- Mouse-opened context menus keep the click position as their visual
 	-- anchor. Keyboard-opened menus leave these unset and remain centered.
 	self.anchor_x = tonumber(self.opts.anchor_x)
 	self.anchor_y = tonumber(self.opts.anchor_y)
-	self.mouse_hovered_index = nil -- Current menu item under the mouse, including non-selectable items.
 	self.item_height = nil
 	self.min_width = nil
 	self.item_spacing = 1
@@ -282,8 +315,10 @@ function Menu:init(data, callback, opts)
 	if self.mouse_nav then
 		self.current.selected_index = nil
 		-- A replacement menu can appear directly under the stationary pointer.
-		-- Keep it neutral until the next real mouse move, otherwise the row at
-		-- that screen coordinate is selected and its submenu opens immediately.
+		-- Keep it neutral until the pointer moves deliberately, otherwise the row
+		-- at that screen coordinate is selected and its submenu opens immediately.
+		self.mouse_nav_origin_x = cursor.x
+		self.mouse_nav_origin_y = cursor.y
 		self.current.hover_suppressed_until = math.huge
 	end
 
@@ -488,6 +523,7 @@ function Menu:update_content_dimensions()
 			if estimated_width > max_width then max_width = estimated_width end
 		end
 
+		menu.max_title_width = max_title_width
 		menu.max_hint_width = max_hint_width
 		if uses_fixed_columns(menu) and max_hint_width > 0 then
 			local column_spacings = 3 + (max_icon_width > 0 and 1 or 0)
@@ -616,6 +652,24 @@ function Menu:update_coordinates()
 			display.width - anchor_gap - chain_width)
 		root_left = clamp(anchor_gap, root_left, maximum_root_left)
 		ax = root_left + distance_from_root
+	elseif self.root.center_root_when_closed and self.current.parent_menu then
+		-- Once the online-quality submenu is open, treat the visible parent and
+		-- child as one composition.  When the pair fits, centering the chain
+		-- preserves the complete playlist instead of centering only the child and
+		-- clipping most of the long parent panel off the left edge.
+		local distance_from_root = 0
+		local parent = self.current.parent_menu
+		while parent do
+			distance_from_root = distance_from_root
+				+ parent.width + self.padding * 2 + self.gap
+			parent = parent.parent_menu
+		end
+		local chain_width = distance_from_root
+			+ self.current.width + self.padding * 2
+		local edge = round(2 * state.scale)
+		if chain_width <= display.width - edge * 2 then
+			ax = round((display.width - chain_width) / 2) + distance_from_root
+		end
 	end
 	ax = ax + self.offset_x
 	self:set_coordinates(
@@ -952,8 +1006,7 @@ end
 
 ---@param shortcut? Shortcut
 function Menu:handle_cursor_up(shortcut)
-	if self.proximity_raw <= -self.padding and self.drag_last_y and not self.is_dragging
-		and self.mouse_hovered_index == self.current.selected_index then
+	if self.proximity_raw <= -self.padding and self.drag_last_y and not self.is_dragging then
 		self:activate_pointer_item(shortcut)
 	end
 	if self.is_dragging then
@@ -1016,9 +1069,18 @@ function Menu:activate_pointer_item(shortcut, target_menu, target_index)
 end
 
 function Menu:on_global_mouse_move()
+	if self.mouse_nav_origin_x and self.mouse_nav_origin_y then
+		local dx = cursor.x - self.mouse_nav_origin_x
+		local dy = cursor.y - self.mouse_nav_origin_y
+		local threshold = math.max(mouse_nav_activation_distance,
+			mouse_nav_activation_distance * state.scale)
+		if dx * dx + dy * dy < threshold * threshold then return end
+		self.mouse_nav_origin_x = nil
+		self.mouse_nav_origin_y = nil
+	end
 	self.mouse_nav = true
-	-- A real pointer move is the signal that hover selection may resume after a
-	-- wheel fling. Until then, keep the row that opened the cascade stable.
+	-- A deliberate pointer move is the signal that hover selection may resume
+	-- after a replacement open or wheel fling. Until then, keep the row stable.
 	for _, menu in ipairs(self.all) do menu.hover_suppressed_until = 0 end
 	if self.drag_last_y then
 		self.is_dragging = self.is_dragging or math.abs(cursor.y - self.drag_last_y) >= 10
@@ -1710,7 +1772,6 @@ end
 function Menu:render()
 	self.pointer_menu = nil
 	self.pointer_index = nil
-	self.mouse_hovered_index = nil
 
 	for _, menu in ipairs(self.all) do
 		if menu.fling then
@@ -1827,11 +1888,8 @@ function Menu:render()
 						- (item.icon and icon_size + self.item_padding or 0)
 					if item.hint_width > 0 then
 						local width_before_hint = available_width - self.item_padding
-						local hint_width = fixed_columns and menu.max_hint_width or item.hint_width
-						local hint_max_ratio = clamp(menu.hint_max_ratio or 0.58, 0.30, 0.85)
-						local hint_reserve = math.min(
-							width_before_hint * hint_max_ratio,
-							hint_width + self.item_padding * 1.5
+						local hint_reserve = get_hint_reserve(
+							menu, item, fixed_columns, width_before_hint, self.item_padding
 						)
 						available_width = width_before_hint - hint_reserve
 					end
@@ -2038,7 +2096,7 @@ function Menu:render()
 
 						-- Select action on cursor hover
 						if self.mouse_nav and get_point_to_rectangle_proximity(cursor, rect) <= 0 then
-							bind_zone('primary_click', rect, self:create_action(function(shortcut)
+							bind_zone('primary_down', rect, self:create_action(function(shortcut)
 								self:activate_selected_item(shortcut, true)
 							end))
 							blur_action_index = false
@@ -2089,11 +2147,8 @@ function Menu:render()
 				-- metrics can render a few pixels wider than text_width reports,
 				-- so reserve an extra padding buffer and clip the title earlier.
 				local width = content_bx - content_ax - self.item_padding
-				local hint_width = fixed_columns and menu.max_hint_width or item.hint_width
-				local hint_max_ratio = clamp(menu.hint_max_ratio or 0.58, 0.30, 0.85)
-				local hint_reserve = math.min(
-					width * hint_max_ratio,
-					hint_width + self.item_padding * 1.5
+				local hint_reserve = get_hint_reserve(
+					menu, item, fixed_columns, width, self.item_padding
 				)
 				local title_width = width - hint_reserve
 				title_clip_bx = math.min(
@@ -2185,22 +2240,17 @@ function Menu:render()
 				ass:txt(title_x, item_center_y, align, rendered_title, title_style)
 			end
 
-			-- Track every hovered row, including non-selectable rows. This prevents
-			-- releasing the mouse over a label/separator from activating the
-			-- previously selected item.
-			if (is_current or is_submenu) and self.mouse_nav and not hover_frozen
-				and get_point_to_rectangle_proximity(cursor, item_rect_hitbox) <= 0 then
-				if is_current then self.mouse_hovered_index = index end
-				if item.selectable ~= false then
-					if submenu_is_hovered then
-						-- A deeper descendant already owns the pointer. Keep this ancestor
-						-- selected, but do not overwrite the deepest clickable target.
-						blur_selected_index = false
-					elseif submenu_rect and cursor:direction_to_rectangle_distance(submenu_rect)
-						or actions_rect and actions_rect.is_outside
-							and cursor:direction_to_rectangle_distance(actions_rect) then
-						blur_selected_index = false
-					else
+			-- Select hovered item
+			if (is_current or is_submenu) and self.mouse_nav and not hover_frozen and item.selectable ~= false then
+				if submenu_is_hovered then
+					-- A deeper descendant already owns the pointer. Keep this ancestor
+					-- selected, but do not overwrite the deepest clickable target.
+					blur_selected_index = false
+				elseif submenu_rect and cursor:direction_to_rectangle_distance(submenu_rect)
+					or actions_rect and actions_rect.is_outside and cursor:direction_to_rectangle_distance(actions_rect) then
+					blur_selected_index = false
+				else
+					if get_point_to_rectangle_proximity(cursor, item_rect_hitbox) <= 0 then
 						blur_selected_index = false
 						self.pointer_menu = menu
 						self.pointer_index = index
@@ -2499,9 +2549,14 @@ function Menu:render()
 		return bg_rect
 	end
 
-	-- Reserve the widest possible submenu path from the first frame. The value
-	-- is cached in update_dimensions() to keep menu animation/rendering cheap.
-	local cascade_width = self.anchor_x
+	-- Most command trees reserve their widest submenu path to avoid a lateral
+	-- jump on hover.  A playlist's optional online-quality row is different:
+	-- its root is the primary surface and can contain a very long media title.
+	-- Keep that closed root centered; reserve the cascade only after the user
+	-- actually enters the quality submenu.
+	local center_closed_root = self.current.is_root
+		and self.current.center_root_when_closed
+	local cascade_width = (self.anchor_x or center_closed_root)
 		and (self.current.width + self.padding * 2)
 		or self.current.cascade_width
 		or (self.current.width + self.padding * 2)

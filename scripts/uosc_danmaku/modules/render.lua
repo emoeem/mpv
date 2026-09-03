@@ -936,8 +936,8 @@ local function render_active_message()
     if not active_message then return end
     local width, height, font_size, x, y, border = layout_message(active_message)
     local message = string.format(
-        "{\\an%d\\pos(%d,%d)\\fs%d\\fn%s\\b1\\c&HFAB489&"
-            .. "\\3c&H1B1111&\\3a&H00&\\bord%d\\blur0.35\\shad0\\q2}%s",
+        "{\\an%d\\pos(%d,%d)\\fs%d\\fn%s\\b1\\c&HF2E655&"
+            .. "\\3c&H160B04&\\3a&H00&\\bord%d\\blur0.35\\shad0\\q2}%s",
         options.message_anlignment, x, y, font_size, options.fontname, border, active_message
     )
     message_overlay.res_x = width

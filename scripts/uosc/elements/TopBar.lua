@@ -29,12 +29,7 @@ function TopBar:init()
 		mp.command(state.fullormaxed and 'set fullscreen no;set window-maximized no' or 'set window-maximized yes')
 	end
 
-	local close = {
-		icon = 'close',
-		hover_bg = config.color.error,
-		hover_fg = fgt,
-		command = function() mp.command('quit') end,
-	}
+	local close = {icon = 'close', hover_bg = '2311e8', hover_fg = 'ffffff', command = function() mp.command('quit') end}
 	local max = {icon = 'crop_square', command = maximized_command, is_max = true}
 	local min = {icon = 'minimize', command = function() mp.command('cycle window-minimized') end}
 	local pin = {
@@ -163,9 +158,23 @@ function TopBar:select_current_chapter()
 	end
 end
 
+local function responsive_top_bar_scale()
+	local ui_scale = math.max(tonumber(state.scale) or 1, 0.01)
+	local logical_height = (tonumber(display.height) or 0) / ui_scale
+	if logical_height <= 1080 then return ui_scale end
+
+	-- Resolution supplements DPI instead of replacing it. At 100% scaling this
+	-- grows gradually from 1080p to about 1.15x at 1440p and 1.41x at 4K. If
+	-- Windows already reports 200% HiDPI, a 4K window has a logical 1080p height
+	-- and receives no duplicate enlargement.
+	local resolution_scale = clamp(1, math.sqrt(logical_height / 1080), 1.45)
+	return ui_scale * resolution_scale
+end
+
 function TopBar:update_dimensions()
-	self.size = round(options.top_bar_size * state.scale)
-	self.title_spacing = round(1 * state.scale)
+	local top_bar_scale = responsive_top_bar_scale()
+	self.size = round(options.top_bar_size * top_bar_scale)
+	self.title_spacing = round(1 * top_bar_scale)
 	self.icon_size = round(self.size * 0.5)
 	self.font_size = math.floor((self.size - (math.ceil(self.size * 0.25) * 2)) * options.font_scale)
 	self.alt_title_size = round(self.font_size * 1.2)
@@ -263,7 +272,7 @@ function TopBar:render()
 			local button_fg = is_hover and (button.hover_fg or bg) or fg
 			local button_bg = is_hover and (button.hover_bg or fg) or bg
 
-			cursor:zone('primary_click', rect, button.command)
+			cursor:zone('primary_down', rect, button.command)
 
 			local bg_size = self.size - margin
 			local bg_ax, bg_ay = rect.ax + (is_left and margin or 0), rect.ay + margin
@@ -316,7 +325,7 @@ function TopBar:render()
 			if left_aligned then title_bx = rect.ax - margin else title_ax = rect.bx + margin end
 
 			-- Click action
-			cursor:zone('primary_click', rect, function() mp.command('script-binding uosc/playlist') end)
+			cursor:zone('primary_down', rect, function() mp.command('script-binding uosc/playlist') end)
 		end
 
 		-- Skip rendering titles if there's not enough horizontal space
@@ -339,7 +348,7 @@ function TopBar:render()
 				local title_rect = {ax = ax, ay = title_ay, bx = ax + rect_width, by = by}
 
 				if options.top_bar_alt_title_place == 'toggle' then
-					cursor:zone('primary_click', title_rect, function() self:toggle_title() end)
+					cursor:zone('primary_down', title_rect, function() self:toggle_title() end)
 				end
 
 				ass:rect(title_rect.ax, title_rect.ay, title_rect.bx, title_rect.by, {
@@ -429,7 +438,7 @@ function TopBar:render()
 
 				-- Click action
 				rect.bx = time_bx
-				cursor:zone('primary_click', rect, function() mp.command('script-binding uosc/chapters') end)
+				cursor:zone('primary_down', rect, function() mp.command('script-binding uosc/chapters') end)
 
 				title_ay = rect.by + self.title_spacing
 			end

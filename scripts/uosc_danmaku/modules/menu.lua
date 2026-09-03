@@ -628,8 +628,8 @@ function open_add_menu_get()
     local function rebuild_menu_log(select_num)
         deal_value = {}
         menu_log = {
-            { text = "【既有弹幕源】", style = "{\\c&HF7A6CB&\\b1}" },
-            { text = "----------------------------", style = "{\\c&H86706C&}" }
+            { text = "【既有弹幕源】", style = "{\\c&H00CCFF&\\b1}" },
+            { text = "----------------------------", style = "{\\c&H888888&}" }
         }
 
         local serial = 0
@@ -640,21 +640,21 @@ function open_add_menu_get()
                     local action = source.blocked and "unblock" or "block"
                     local text = string.format("  [%02d] %s [来源：弹幕服务器%s]  ", serial, url,
                         source.blocked and "（已屏蔽）" or "（未屏蔽）")
-                    local style = (tonumber(select_num) == serial) and "{\\c&HAFE2F9&\\b1}" or (action == "unblock" and "{\\c&HA88BF3&\\b0}" or "{\\c&HF4D6CD&\\b0}")
+                    local style = (tonumber(select_num) == serial) and "{\\c&HFFDE7F&\\b1}" or (action == "unblock" and "{\\c&H4C4CC3&\\b0}" or "{\\c&HCCCCCC&\\b0}")
                     deal_value[serial] = {value = url, action = action}
                     table.insert(menu_log, {text = text, style = style})
                 else
                     serial = serial + 1
                     local action1 = source.blocked and "unblock" or "block"
                     local text1 = string.format("  [%02d] %s [来源：用户添加]%s  ", serial, url, source.blocked and " (已屏蔽)" or "（未屏蔽）")
-                    local style1 = (tonumber(select_num) == serial) and "{\\c&HAFE2F9&\\b1}" or (action1 == "unblock" and "{\\c&HA88BF3&\\b0}" or "{\\c&HF4D6CD&\\b0}")
+                    local style1 = (tonumber(select_num) == serial) and "{\\c&HFFDE7F&\\b1}" or (action1 == "unblock" and "{\\c&H4C4CC3&\\b0}" or "{\\c&HCCCCCC&\\b0}")
                     deal_value[serial] = {value = url, action = action1}
                     table.insert(menu_log, {text = text1, style = style1})
 
                     serial = serial + 1
                     local action2 = "delete"
                     local text2 = string.format("  [%02d] %s [来源：用户添加] (删除)  ", serial, url)
-                    local style2 = (tonumber(select_num) == serial) and "{\\c&HAFE2F9&\\b1}" or "{\\c&HF4D6CD&\\b0}"
+                    local style2 = (tonumber(select_num) == serial) and "{\\c&HFFDE7F&\\b1}" or "{\\c&HCCCCCC&\\b0}"
                     deal_value[serial] = {value = url, action = action2}
                     table.insert(menu_log, {text = text2, style = style2})
                 end
@@ -672,7 +672,7 @@ function open_add_menu_get()
 
         local display = {}
         for _, item in ipairs(menu_log) do table.insert(display, item) end
-        table.insert(display, { text = "----------------------------", style = "{\\c&H86706C&}" })
+        table.insert(display, { text = "----------------------------", style = "{\\c&H888888&}" })
 
         if extra_lines then
             if #extra_lines < 2 then table.insert(display, { text = "\n", style = "" }) end
@@ -681,7 +681,7 @@ function open_add_menu_get()
             table.insert(display, { text = "\n", style = "" })
             table.insert(display, {
                 text = "提示: 输入【选项数字】可屏蔽或删除既有弹幕源",
-                style = "{\\c&HB29993&}"
+                style = "{\\c&H999999&}"
             })
         end
 
@@ -715,8 +715,8 @@ function open_add_menu_get()
             local hint = get_hint(event and event.action)
 
             show_menu({
-                { text = string.format("已输入: %s", text), style = "{\\c&HF4D6CD&}" },
-                { text = hint, style = "{\\c&HB29993&}" }
+                { text = string.format("已输入: %s", text), style = "{\\c&HCCCCCC&}" },
+                { text = hint, style = "{\\c&H999999&}" }
             }, text)
         end,
         submit = function(text)
@@ -941,8 +941,8 @@ function open_style_menu_get(query, indicator)
 
     local function build_menu(source)
         menu_log = {
-            { text = "【弹幕样式菜单】", style = "{\\c&HF7A6CB&\\b1}" },
-            { text = ("-"):rep(33), style = "{\\c&H86706C&}" }
+            { text = "【弹幕样式菜单】", style = "{\\c&H00CCFF&\\b1}" },
+            { text = ("-"):rep(33), style = "{\\c&H888888&}" }
         }
 
         local serial = 0
@@ -951,20 +951,20 @@ function open_style_menu_get(query, indicator)
             local config = menu_items_config[key]
             local text = string.format("  [%02d] %s   [目前：%s] ", serial, config.title, config.hint)
             text = config.hint ~= config.original and text .. "⟳" or text
-            local style = serial == select_num and "{\\c&HAFE2F9&}" or "{\\c&HF4D6CD&}"
+            local style = serial == select_num and "{\\c&HFFDE7F&}" or "{\\c&HCCCCCC&}"
             local item_config = { text = text, style = style }
             table.insert(menu_log, item_config)
         end
 
-        table.insert(menu_log, { text = ("-"):rep(33), style = "{\\c&H86706C&}" })
+        table.insert(menu_log, { text = ("-"):rep(33), style = "{\\c&H888888&}" })
         if select_num == 0 then
             table.insert(menu_log, {
                 text = "注: 样式更改会自动保存到配置文件",
-                style = "{\\c&HAFE2F9&}"
+                style = "{\\c&HFFDE7F&}"
             })
             table.insert(menu_log, {
                 text = "提示: 输入【w】可上移选项，【s】可下移选项",
-                style = "{\\c&HB29993&}"
+                style = "{\\c&H999999&}"
             })
         else
             local input_text = source and source or ""
@@ -977,23 +977,23 @@ function open_style_menu_get(query, indicator)
 
             local scope = config and config.footnote or ""
             local hint_text = select_query == "bold" and "提示: 输入【y】切换状态" or "提示: " .. scope
-            local hint_style = "{\\c&HB29993&}"
+            local hint_style = "{\\c&H999999&}"
             if source and source:lower() == "\\r" then
                 hint_text = string.format("提示: 回车将恢复默认配置 < %s >", config.original)
             end
             if indicator == "refresh" or indicator == "updata" then
                 indicator = ""
                 hint_text = "提示: 样式更改成功"
-                hint_style = "{\\c&HAFE2F9&}"
+                hint_style = "{\\c&HFFDE7F&}"
                 mp.add_timeout(1.5, build_menu)
             elseif indicator == "error" then
                 indicator = ""
                 hint_text = "提示: 输入非数字字符或范围出错"
-                hint_style = "{\\c&HA88BF3&}"
+                hint_style = "{\\c&H4C4CC3&}"
                 mp.add_timeout(1.5, build_menu)
             end
 
-            table.insert(menu_log, { text = input_text, style = "{\\c&HF4D6CD&}" })
+            table.insert(menu_log, { text = input_text, style = "{\\c&HCCCCCC&}" })
             table.insert(menu_log, { text = hint_text, style = hint_style })
         end
         input.set_log(menu_log)
@@ -1119,19 +1119,19 @@ function open_delay_from_time_get(source, time, status)
 
     local function build_menu(query, input_text)
         menu_log = {
-            { text = "【从该时间起调整弹幕延迟】", style = "{\\c&HF7A6CB&\\b1}" },
-            { text = ("-"):rep(33), style = "{\\c&H86706C&}" }
+            { text = "【从该时间起调整弹幕延迟】", style = "{\\c&H00CCFF&\\b1}" },
+            { text = ("-"):rep(33), style = "{\\c&H888888&}" }
         }
 
         table.insert(menu_log, { text = "\n", style = "" })
         local hint_text = "提示：请输入数字，单位（秒）/ 或者按照形如\"14m15s\"的格式输入分钟数加秒数"
-        local hint_style = "{\\c&HB29993&}"
+        local hint_style = "{\\c&H999999&}"
         if status == "error" then
             hint_text = "提示: 输入非数字字符或范围出错"
-            hint_style = "{\\c&HA88BF3&}"
+            hint_style = "{\\c&H4C4CC3&}"
         end
 
-        table.insert(menu_log, { text = input_text and ("已输入：" .. input_text) or "", style = "{\\c&HF4D6CD&}" })
+        table.insert(menu_log, { text = input_text and ("已输入：" .. input_text) or "", style = "{\\c&HCCCCCC&}" })
         table.insert(menu_log, { text = hint_text, style = hint_style })
         input.set_log(menu_log)
     end
@@ -1213,8 +1213,8 @@ function open_delay_menu_get(source, status)
 
     local function build_menu(query, text)
         menu_log = {
-            { text = "【弹幕源延迟菜单】", style = "{\\c&HF7A6CB&\\b1}" },
-            { text = ("-"):rep(33), style = "{\\c&H86706C&}" }
+            { text = "【弹幕源延迟菜单】", style = "{\\c&H00CCFF&\\b1}" },
+            { text = ("-"):rep(33), style = "{\\c&H888888&}" }
         }
 
         serial, select_num = 0, 0
@@ -1233,7 +1233,7 @@ function open_delay_menu_get(source, status)
                 end
                 local hint = "当前弹幕源延迟: " .. string.format("%.1f", delay + 1e-10) .. "秒"
                 local text = string.format("  [%02d] %s   [%s] ", serial, url, hint)
-                local style = (serial == select_num) and "{\\c&HAFE2F9&}" or "{\\c&HF4D6CD&}"
+                local style = (serial == select_num) and "{\\c&HFFDE7F&}" or "{\\c&HCCCCCC&}"
                 table.insert(menu_log, { text = text, style = style })
                 select_url = serial == select_num and url or select_url
             end
@@ -1242,32 +1242,32 @@ function open_delay_menu_get(source, status)
             table.insert(menu_log, { text = "        无", style = "" })
         end
 
-        table.insert(menu_log, { text = ("-"):rep(33), style = "{\\c&H86706C&}" })
+        table.insert(menu_log, { text = ("-"):rep(33), style = "{\\c&H888888&}" })
         if select_num == 0 then
             table.insert(menu_log, { text = "\n", style = "" })
             table.insert(menu_log, {
                 text = "提示: 输入【w】可上移选项，【s】可下移选项",
-                style = "{\\c&HB29993&}"
+                style = "{\\c&H999999&}"
             })
         else
             local input_text = "已输入：" .. (text ~= nil and text or "")
 
             local hint_text = "提示：请输入数字，单位（秒）/ 或者按照形如\"14m15s\"的格式输入分钟数加秒数"
-            local hint_style = "{\\c&HB29993&}"
+            local hint_style = "{\\c&H999999&}"
             if status == "refresh" then
                 status = ""
                 hint_text = "提示: 样式更改成功"
-                hint_style = "{\\c&HAFE2F9&}"
+                hint_style = "{\\c&HFFDE7F&}"
                 mp.add_timeout(1.5, build_menu)
             elseif status == "error" then
                 status = ""
                 hint_text = "提示: 输入非数字字符或范围出错"
-                hint_style = "{\\c&HA88BF3&}"
+                hint_style = "{\\c&H4C4CC3&}"
                 mp.add_timeout(1.5, build_menu)
             end
 
---            table.insert(menu_log, { text = input_text, style = "{\\c&HF4D6CD&}" })
-            table.insert(menu_log, { text = input_text, style = "{\\c&HF4D6CD&}" })
+--            table.insert(menu_log, { text = input_text, style = "{\\c&HCCCCCC&}" })
+            table.insert(menu_log, { text = input_text, style = "{\\c&HCCCCCC&}" })
             table.insert(menu_log, { text = hint_text, style = hint_style })
         end
         input.set_log(menu_log)

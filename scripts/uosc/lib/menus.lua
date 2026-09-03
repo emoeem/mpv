@@ -141,10 +141,23 @@ local function update_menu_state_hints(items, image_subtitle_summary, media_load
 			local enabled = mp.get_property_native('user-data/minimize-pause-resume/pause-on-minimize') ~= 'no'
 			item.hint = enabled and '● 开启' or '○ 关闭'
 		elseif item.value == 'script-message codex-open-peak-menu' then
+			local output_mode = mp.get_property_native('user-data/hdr-mode/output-mode') or 'auto'
+			local source_gamma = tostring(mp.get_property('video-params/gamma', '')):lower()
+			local target_gamma = tostring(mp.get_property('video-target-params/gamma', '')):lower()
+			local source_is_hdr = source_gamma == 'pq' or source_gamma == 'hlg'
+			local output_is_hdr = target_gamma == 'pq' or target_gamma == 'hlg'
 			local status = tostring(mp.get_property_native('user-data/display-info/hdr-status') or '')
-			item.hint = status == 'on' and '● HDR'
-				or status == 'off' and '○ SDR'
-				or '不支持'
+			item.hint = output_mode == 'sdr' and 'HDR→SDR'
+				or output_is_hdr and '自动→HDR'
+				or source_is_hdr and '自动→SDR'
+				or status == 'on' and '自动→SDR'
+				or '自动'
+		elseif item.value == 'script-message codex-open-black-level-menu' then
+			local mode = mp.get_property_native('user-data/black-level/output-range-mode') or 'auto'
+			local target = mp.get_property_native('user-data/black-level/target-range') or 'unknown'
+			item.hint = mode == 'auto' and ('自动 → ' .. (target == 'unknown' and '检测中' or target))
+				or mode == 'full' and 'RGB Full'
+				or 'Limited'
 		elseif item.value == 'script-message codex-open-subtitle-color-menu' then
 			local mode = mp.get_property('sub-ass-vsfilter-color-compat', 'no')
 			item.hint = mode == 'no' and '原色优先'
@@ -307,7 +320,7 @@ end
 
 ---@alias TrackEventRemove {type: 'remove' | 'delete', index: number; value: any;}
 ---@alias TrackEventReload {type: 'reload', index: number; value: any;}
----@param opts {type: string; title: string; min_width?: number; list_prop: string; active_prop?: string; footnote?: string; serializer: fun(list: any, active: any): MenuDataItem[]; actions?: MenuAction[]; actions_place?: 'inside'|'outside'; on_paste: fun(event: MenuEventPaste); on_move?: fun(event: MenuEventMove); on_activate?: fun(event: MenuEventActivate); on_remove?: fun(event: TrackEventRemove); on_delete?: fun(event: TrackEventRemove); on_reload?: fun(event: TrackEventReload); on_key?: fun(event: MenuEventKey, close: fun())}
+---@param opts {type: string; title: string; min_width?: number; center_root_when_closed?: boolean; list_prop: string; active_prop?: string; footnote?: string; serializer: fun(list: any, active: any): MenuDataItem[]; actions?: MenuAction[]; actions_place?: 'inside'|'outside'; on_paste: fun(event: MenuEventPaste); on_move?: fun(event: MenuEventMove); on_activate?: fun(event: MenuEventActivate); on_remove?: fun(event: TrackEventRemove); on_delete?: fun(event: TrackEventRemove); on_reload?: fun(event: TrackEventReload); on_key?: fun(event: MenuEventKey, close: fun())}
 function create_self_updating_menu_opener(opts)
 	return function()
 		if Menu:is_open(opts.type) then
@@ -397,6 +410,7 @@ function create_self_updating_menu_opener(opts)
 			type = opts.type,
 			title = opts.title,
 			min_width = opts.min_width,
+			center_root_when_closed = opts.center_root_when_closed,
 			footnote = opts.footnote,
 			items = initial_items,
 			item_actions = actions,
@@ -409,15 +423,17 @@ function create_self_updating_menu_opener(opts)
 				if (event.action == 'move_up' or event.action == 'move_down') and opts.on_move then
 					local to_index = event.index + (event.action == 'move_up' and -1 or 1)
 					if to_index >= 1 and to_index <= #menu.current.items then
-						opts.on_move({
+						local moved = opts.on_move({
 							type = 'move',
 							from_index = event.index,
 							to_index = to_index,
 							menu_id = menu.current.id,
 						})
-						menu:select_index(to_index)
-						if not event.is_pointer then
-							menu:scroll_to_index(to_index, nil, true)
+						if moved ~= false then
+							menu:select_index(to_index)
+							if not event.is_pointer then
+								menu:scroll_to_index(to_index, nil, true)
+							end
 						end
 					end
 				elseif event.action == 'reload' and opts.on_reload then
@@ -863,8 +879,8 @@ function open_file_navigation_menu(directory_path, handle_activate, opts)
 
 	local function create_url_input_item()
 		return {
-			title = '打开视频链接',
-			hint = 'm3u8 / HTTP(S)',
+			title = '打开视频 / 直播链接',
+			hint = 'B站 · 抖音 · 斗鱼 · 虎牙 · m3u8',
 			value = '__open_url__',
 			separator = true,
 		}
@@ -974,7 +990,7 @@ function open_file_navigation_menu(directory_path, handle_activate, opts)
 	local menu_data = {
 		type = opts.type,
 		title = opts.title or '',
-		footnote = t('%s to go up in tree.', 'alt+up') .. ' ' .. t('Paste path or url to open.'),
+		footnote = t('%s to go up in tree.', 'alt+up') .. ' 支持 B站、抖音、斗鱼、虎牙与媒体直链。',
 		items = {},
 		on_paste = 'callback',
 	}
@@ -1013,7 +1029,7 @@ function open_file_navigation_menu(directory_path, handle_activate, opts)
 		url_input_active = true
 		menu:update({
 			type = opts.type,
-			title = '粘贴或输入视频链接',
+			title = '粘贴或输入视频 / 直播链接',
 			search_style = 'palette',
 			search_debounce = 'submit',
 			on_search = 'callback',
@@ -1029,10 +1045,10 @@ function open_file_navigation_menu(directory_path, handle_activate, opts)
 			search_placeholder_left_align = true,
 			content_padding_bottom = 5,
 			back_on_escape = true,
-			footnote = '支持一行一个链接批量导入；Esc 返回',
+			footnote = '支持 B站视频/直播、抖音/斗鱼/虎牙直播和媒体直链；一行一个；Esc 返回',
 			items = {
 				{
-					title = 'm3u8 / HTTP(S) · 一行一个 · Enter 导入',
+					title = 'B站 · 抖音 · 斗鱼 · 虎牙 · HTTP(S) · Enter 导入',
 					value = '__url_input_help__',
 					selectable = false,
 					muted = true,
@@ -1875,14 +1891,19 @@ mp.register_script_message('codex-open-dock-animation-menu', function()
 end)
 
 local video_enhancement_profiles = {
+	off = {
+		label = '全部关闭', backend = 'auto', hq = 'native', superres = 'off', smooth = 'off',
+	},
 	balanced = {
-		label = '智能推荐', backend = 'auto', superres = 'auto', smooth = 'auto',
+		label = '智能推荐', backend = 'auto', hq = 'native', superres = 'auto', smooth = 'auto',
 	},
 	ai_smooth = {
-		label = '优先流畅', backend = 'nvidia_hq', superres = 'off', smooth = 'quality',
+		label = '4K 流畅优先', backend = 'nvidia_hq', hq = 'uhd_2k',
+		superres = 'off', smooth = 'quality',
 	},
 	clarity = {
-		label = '优先清晰', backend = 'auto', superres = 'quality', smooth = 'performance',
+		label = 'AI 清晰优先', backend = 'nvidia_hq', hq = 'ai_superres',
+		superres = 'quality', smooth = 'performance',
 	},
 }
 
@@ -1891,6 +1912,8 @@ mp.register_script_message('codex-set-video-enhancement-profile', function(name)
 	if not profile then return end
 	mp.commandv('script-message-to', 'ai_interpolation', 'set-backend',
 		profile.backend, 'silent')
+	mp.commandv('script-message-to', 'ai_interpolation', 'set-hq-mode',
+		profile.hq, 'silent')
 	mp.commandv('script-message-to', 'adaptive_quality', 'set-profile',
 		profile.superres, profile.smooth, 'silent')
 	mp.add_timeout(0.12, function()
@@ -1910,28 +1933,10 @@ local open_video_enhancement_menu
 open_video_enhancement_menu = function()
 	local superres_mode = mp.get_property_native('user-data/video-enhancement/superres-mode') or 'auto'
 	local smooth_mode = mp.get_property_native('user-data/video-enhancement/smooth-mode') or 'auto'
-	local superres_effective = mp.get_property_native(
-		'user-data/video-enhancement/superres-effective'
-	) or '等待视频'
-	local smooth_effective = mp.get_property_native(
-		'user-data/video-enhancement/smooth-effective'
-	) or '等待视频'
+	local source_is_pq = tostring(mp.get_property('video-params/gamma', '')):lower() == 'pq'
 	local superres_detail = mp.get_property_native(
 		'user-data/video-enhancement/superres-detail'
-	) or superres_effective
-	local smooth_detail = mp.get_property_native(
-		'user-data/video-enhancement/smooth-detail'
-	) or smooth_effective
-	local ai_effective = mp.get_property_native(
-		'user-data/video-enhancement/ai-effective'
 	) or '等待视频'
-	local ai_detail = mp.get_property_native(
-		'user-data/video-enhancement/ai-detail'
-	) or ai_effective
-	local ai_ready = mp.get_property_native('user-data/video-enhancement/ai-ready') == 'yes'
-	local ai_safety_limit = mp.get_property_native(
-		'user-data/video-enhancement/ai-safety-limit'
-	) or '等待显卡与策略检测'
 	local protect_4k = mp.get_property_native(
 		'user-data/video-enhancement/protect-4k'
 	) ~= 'no'
@@ -1958,7 +1963,8 @@ open_video_enhancement_menu = function()
 		},
 		quality = {
 			title = '画质优先', superres_title = '更清晰', smooth_title = 'AI 补帧优先',
-			superres = '优先提高细节，性能不足时自动保护', smooth = '保留原始清晰度，能稳定运行时才补帧',
+			superres = '优先提高细节，性能不足时自动保护',
+			smooth = '优先补帧；重型超分冲突时自动换轻量增强',
 		},
 	}
 	local order = {'off', 'auto', 'performance', 'quality'}
@@ -1970,28 +1976,23 @@ open_video_enhancement_menu = function()
 			title = choice.superres_title,
 			hint = choice.superres,
 			active = superres_mode == mode,
+			selectable = true,
 			value = {'script-message-to', 'adaptive_quality', 'set-superres', mode},
 		}
 		smooth_items[#smooth_items + 1] = {
 			title = choice.smooth_title,
 			hint = choice.smooth,
 			active = smooth_mode == mode,
+			selectable = true,
 			value = {'script-message-to', 'adaptive_quality', 'set-smooth', mode},
 		}
 	end
-	local function selected_policy_hint(mode, effective, kind)
-		local choice = choices[mode] or choices.auto
-		local label = kind == 'superres' and choice.superres_title or choice.smooth_title
-		if mode == 'auto' then
-			label = kind == 'superres' and '按片源自适应' or '按性能自适应'
-		end
-		return string.format('%s · %s', label, effective)
-	end
-
 	local hq_pack_installed = mp.get_property_native(
 		'user-data/video-enhancement/hq-pack-installed') == 'yes'
 	local hq_pack_ready = mp.get_property_native(
 		'user-data/video-enhancement/hq-pack-ready') == 'yes'
+	local hq_rife_ready = mp.get_property_native(
+		'user-data/video-enhancement/hq-rife-ready') == 'yes'
 	local hq_gpu_supported = mp.get_property_native(
 		'user-data/video-enhancement/hq-gpu-supported') == 'yes'
 	local hq_status = mp.get_property_native(
@@ -2000,12 +2001,19 @@ open_video_enhancement_menu = function()
 		'user-data/video-enhancement/ai-backend-mode') or 'auto'
 	local backend_mode_label = mp.get_property_native(
 		'user-data/video-enhancement/ai-backend-mode-label') or '智能自动（推荐）'
-
-	local profile_name = backend_mode == 'nvidia_hq'
+	local hq_processing_mode = mp.get_property_native(
+		'user-data/video-enhancement/hq-processing-mode') or 'native'
+	local hq_processing_mode_label = mp.get_property_native(
+		'user-data/video-enhancement/hq-processing-mode-label') or '原生尺寸安全增强'
+	local profile_name = backend_mode == 'auto'
+		and hq_processing_mode == 'native'
+		and superres_mode == 'off' and smooth_mode == 'off' and 'off'
+		or backend_mode == 'nvidia_hq' and hq_processing_mode == 'uhd_2k'
 		and superres_mode == 'off' and smooth_mode == 'quality' and 'ai_smooth'
-		or backend_mode == 'auto'
+		or backend_mode == 'nvidia_hq' and hq_processing_mode == 'ai_superres'
 			and superres_mode == 'quality' and smooth_mode == 'performance' and 'clarity'
 		or backend_mode == 'auto'
+			and hq_processing_mode == 'native'
 			and superres_mode == 'auto' and smooth_mode == 'auto' and 'balanced'
 		or 'custom'
 	local profile_label = video_enhancement_profiles[profile_name]
@@ -2016,163 +2024,299 @@ open_video_enhancement_menu = function()
 		vulkan = '通用兼容补帧',
 	}
 	local backend_display_label = backend_display_labels[backend_mode] or backend_mode_label
-	local hq_pack_hint = not hq_pack_installed
-		and '○ 未安装 · 当前使用内置兼容方案，不影响正常播放'
-		or not hq_pack_ready
-			and ('⚠ 安装不完整 · ' .. hq_status)
-		or hq_gpu_supported
-			and '● 已安装 · 一键增强可用'
-		or '● 已安装 · 当前显卡使用内置兼容方案'
-	local hq_pack_help = not hq_pack_installed
-		and '高端补帧依赖包：未安装\n当前内置兼容方案可正常使用'
-		or not hq_pack_ready
-			and ('高端补帧依赖包：安装不完整\n' .. hq_status)
-		or hq_gpu_supported
-			and '高端补帧依赖包：已安装并可用\n建议从“一键增强模式”开始'
-		or '高端补帧依赖包：已安装\n当前显卡继续使用内置兼容方案'
-
 	local hq_profile_items = {
 		{
 			title = '智能推荐（推荐）',
 			hint = '自动平衡清晰度和流畅度，适合绝大多数视频',
 			active = profile_name == 'balanced',
+			selectable = true,
 			value = {'script-message', 'codex-set-video-enhancement-profile', 'balanced'},
 		},
-		{
-			title = '优先流畅',
-			hint = hq_gpu_supported and '适合高端 NVIDIA 显卡，让低帧率视频更顺滑'
-				or '当前显卡不支持此高端档位',
+	}
+	if hq_pack_ready and hq_gpu_supported then
+		hq_profile_items[#hq_profile_items + 1] = {
+			title = '4K 流畅优先',
+			hint = '4K 显式降至 2K 后增强流畅度；换取实时性能',
 			active = profile_name == 'ai_smooth',
-			selectable = hq_pack_ready and hq_gpu_supported,
-			muted = not (hq_pack_ready and hq_gpu_supported),
+			selectable = true,
 			value = {'script-message', 'codex-set-video-enhancement-profile', 'ai_smooth'},
-		},
-		{
-			title = '优先清晰',
-			hint = '优先保留画面细节，补帧不能稳定时自动让步',
+		}
+		hq_profile_items[#hq_profile_items + 1] = {
+			title = 'AI 清晰优先',
+			hint = '适合 SDR 低清视频；优先提升画面清晰度',
 			active = profile_name == 'clarity',
+			selectable = true,
 			value = {'script-message', 'codex-set-video-enhancement-profile', 'clarity'},
-		},
+		}
+	end
+	hq_profile_items[#hq_profile_items + 1] = {
+		title = '全部关闭',
+		hint = '关闭画质增强和补帧，恢复普通播放',
+		active = profile_name == 'off',
+		selectable = true,
+		value = {'script-message', 'codex-set-video-enhancement-profile', 'off'},
 	}
 	local hq_backend_items = {
 		{
 			title = '自动选择（推荐）',
 			hint = '由播放器选择当前设备最合适的补帧方式',
 			active = backend_mode == 'auto',
+			selectable = true,
 			value = {'script-message-to', 'ai_interpolation', 'set-backend', 'auto'},
 		},
 		{
 			title = 'NVIDIA 高画质补帧',
-			hint = hq_gpu_supported and '高端 RTX 专用 · TensorRT FP16'
+			hint = hq_gpu_supported and 'RTX 40/50 · TensorRT FP16'
 				or '当前显卡不支持此高端后端',
 			active = backend_mode == 'nvidia_hq',
-			selectable = hq_pack_ready and hq_gpu_supported,
-			muted = not (hq_pack_ready and hq_gpu_supported),
+			selectable = hq_rife_ready and hq_gpu_supported,
+			muted = not (hq_rife_ready and hq_gpu_supported),
 			value = {'script-message-to', 'ai_interpolation', 'set-backend', 'nvidia_hq'},
 		},
 		{
 			title = '通用兼容补帧',
 			hint = '跨显卡方案 · RIFE Vulkan · 保留安全保护',
 			active = backend_mode == 'vulkan',
+			selectable = true,
 			value = {'script-message-to', 'ai_interpolation', 'set-backend', 'vulkan'},
 		},
 		{
 			title = '关闭 AI 补帧',
 			hint = '恢复普通平滑，不再生成 AI 中间帧',
 			active = smooth_mode == 'performance',
+			selectable = true,
 			value = {'script-message-to', 'adaptive_quality', 'set-smooth', 'performance'},
 		},
 	}
+	local hq_processing_items = {
+		{
+			title = '原生尺寸安全增强（推荐）',
+			hint = '与基础包一致：不降低源分辨率，按能力启用 TensorRT RIFE',
+			active = hq_processing_mode == 'native',
+			selectable = true,
+			value = {'script-message-to', 'ai_interpolation', 'set-hq-mode', 'native'},
+		},
+		{
+			title = '4K→2K 高性能补帧',
+			hint = source_is_pq
+				and 'HDR10：原始帧保持 4K，仅中间帧以 2K 推理后还原'
+				or '显式质量取舍：4K 等比降至≤2560×1440，再执行 TensorRT RIFE 2×',
+			active = hq_processing_mode == 'uhd_2k',
+			selectable = hq_pack_ready and hq_gpu_supported,
+			muted = not (hq_pack_ready and hq_gpu_supported),
+			value = {'script-message-to', 'ai_interpolation', 'set-hq-mode', 'uhd_2k'},
+		},
+		{
+			title = 'AnimeJaNai TensorRT AI 超分',
+			hint = 'SDR ≤1920×1080，模型 x2 后按显示尺寸输出；不冒充普通缩放',
+			active = hq_processing_mode == 'ai_superres',
+			selectable = hq_pack_ready and hq_gpu_supported,
+			muted = not (hq_pack_ready and hq_gpu_supported),
+			value = {'script-message-to', 'ai_interpolation', 'set-hq-mode', 'ai_superres'},
+		},
+	}
+
+	local function status_item(title, hint, options)
+		options = options or {}
+		return {
+			title = title,
+			hint = hint,
+			selectable = false,
+			muted = options.muted ~= false,
+			separator = options.separator == true,
+			interaction_role = 'status',
+		}
+	end
+	local function action_item(title, hint, value, options)
+		options = options or {}
+		local enabled = options.enabled ~= false
+		return {
+			title = title,
+			hint = hint,
+			value = value,
+			active = options.active == true,
+			selectable = enabled,
+			muted = not enabled,
+			separator = options.separator == true,
+			interaction_role = 'action',
+		}
+	end
+
+	local source_width = mp.get_property_number('video-params/w', 0) or 0
+	local source_height = mp.get_property_number('video-params/h', 0) or 0
+	local source_size = source_width > 0 and source_height > 0
+		and string.format('%d×%d', source_width, source_height) or nil
+	local superres_active = mp.get_property_native(
+		'user-data/video-enhancement/superres-active') == 'yes'
+	local spatial_reason = tostring(mp.get_property_native(
+		'user-data/video-enhancement/spatial-reason-code') or 'detecting')
+	local temporal_reason = tostring(mp.get_property_native(
+		'user-data/video-enhancement/temporal-reason-code') or 'detecting')
+	local smooth_result_kind = tostring(mp.get_property_native(
+		'user-data/video-enhancement/smooth-result-kind') or 'source')
+	local ai_source_fps = mp.get_property_number(
+		'user-data/video-enhancement/ai-source-fps', 0) or 0
+	local ai_result_fps = mp.get_property_number(
+		'user-data/video-enhancement/ai-result-fps', 0) or 0
+	local ai_reason = tostring(mp.get_property_native(
+		'user-data/video-enhancement/ai-reason-code') or 'detecting')
+
+	local function compact_fps(value)
+		value = tonumber(value) or 0
+		if value <= 0 then return nil end
+		if math.abs(value - math.floor(value + 0.5)) < 0.005 then
+			return tostring(math.floor(value + 0.5))
+		end
+		return string.format('%.3f', value):gsub('0+$', ''):gsub('%.$', '')
+	end
+	local function size_transition(detail)
+		return tostring(detail or ''):match('(%d+×%d+%s*→%s*%d+×%d+)')
+	end
+	local function friendly_superres_hint()
+		if spatial_reason == 'active-ai-superres'
+			or spatial_reason == 'active-managed-shader' or superres_active then
+			local transition = size_transition(superres_detail)
+			return transition and ('已增强 · ' .. transition) or '已启用画质增强'
+		elseif spatial_reason == 'manual-owner' then
+			return '使用自定义画质处理'
+		elseif spatial_reason == 'user-disabled' or superres_mode == 'off' then
+			return source_size and (source_size .. ' · 已关闭') or '已关闭'
+		elseif spatial_reason == 'not-needed' then
+			return source_size and (source_size .. ' · 当前无需增强') or '当前无需增强'
+		elseif not source_size or spatial_reason == 'detecting' then
+			return '等待播放视频'
+		end
+		return '兼容模式 · 保持稳定画质'
+	end
+	local function friendly_smooth_hint()
+		if temporal_reason == 'active-rife' or smooth_result_kind == 'ai-fps' then
+			local source_fps = compact_fps(ai_source_fps)
+			local result_fps = compact_fps(ai_result_fps)
+			return source_fps and result_fps
+				and string.format('已补帧 · %s → %s FPS', source_fps, result_fps)
+				or 'AI 补帧已启用'
+		elseif temporal_reason == 'active-display-resample' then
+			return '已平滑显示 · 自动适配刷新率'
+		elseif temporal_reason == 'user-disabled' or smooth_mode == 'off' then
+			return '已关闭'
+		elseif temporal_reason == 'detecting' or not source_size then
+			return '等待片源与显示器'
+		elseif temporal_reason == 'cadence-not-needed' then
+			return '当前无需补帧'
+		elseif temporal_reason == 'passthrough-guard' then
+			return '已自动保护 · 音频直通'
+		elseif temporal_reason == 'uhd-guard' then
+			return '已自动保护 · 高分辨率视频'
+		elseif temporal_reason == 'speed-guard' then
+			return '倍速播放 · 暂停补帧'
+		elseif temporal_reason == 'runtime-budget' then
+			return '性能不足 · 已自动回退'
+		end
+		return '兼容模式 · 保持稳定播放'
+	end
+	local function friendly_protection_hint()
+		if temporal_reason == 'uhd-guard' then return '高分辨率保护已触发' end
+		if temporal_reason == 'passthrough-guard' then return '音频直通保护已触发' end
+		if temporal_reason == 'speed-guard' then return '倍速播放保护已触发' end
+		if temporal_reason == 'runtime-budget' then return '性能保护已触发' end
+		if ai_reason:find('guard', 1, true) then return '兼容性保护已触发' end
+		return '自动保护已启用 · 当前未限制'
+	end
+	local environment_hint = not hq_pack_installed
+		and '内置方案可用 · 未安装完整依赖'
+		or not hq_pack_ready
+			and ('完整依赖不完整 · ' .. hq_status)
+		or hq_gpu_supported
+			and '完整依赖可用'
+		or '完整依赖已安装 · 当前设备使用兼容方案'
+	local processing_display_labels = {
+		native = '原生画质（推荐）',
+		uhd_2k = '4K→2K 流畅增强',
+		ai_superres = 'AI 清晰增强',
+	}
+	local advanced_items = {
+		status_item('设备与性能', string.format('%s · %s',
+			gpu, tier_labels[tier] or tier), {muted = false}),
+		status_item('运行环境', environment_hint,
+			{muted = not (hq_pack_ready and hq_gpu_supported)}),
+		status_item('保护状态', friendly_protection_hint()),
+	}
+	if hq_pack_installed then
+		advanced_items[#advanced_items + 1] = action_item('高性能处理',
+			processing_display_labels[hq_processing_mode] or hq_processing_mode_label,
+			{'script-message', 'codex-open-video-enhancement-full'})
+	end
+	advanced_items[#advanced_items + 1] = action_item('补帧引擎',
+		backend_mode == 'auto' and '自动选择（推荐）' or backend_display_label,
+		{'script-message', 'codex-open-video-enhancement-backends'})
+	advanced_items[#advanced_items + 1] = action_item('诊断详情',
+		'查看实际处理、未生效原因与技术信息',
+		{'script-message-to', 'ai_interpolation', 'show-diagnostics'})
+	advanced_items[#advanced_items + 1] = action_item('重新检测',
+		'安装依赖或更换设备后使用',
+		{'script-message', 'codex-refresh-video-enhancement'})
+	for _, item in ipairs(advanced_items) do
+		if item.interaction_role == 'action' then
+			item.separator = true
+			break
+		end
+	end
 	video_enhancement_pages = {
 		profiles = {
-			title = '一键增强模式',
+			title = '增强方案',
 			items = hq_profile_items,
-			footnote = '不确定怎么选就用“智能推荐”；所有档位都保留原始画质',
+			footnote = '不确定怎么选就用“智能推荐”；高性能方案只在设备支持时出现',
+		},
+		full = {
+			title = '高性能处理',
+			items = hq_processing_items,
+			footnote = '仅完整依赖包可用；4K→2K 是用户显式选择，不会由自动档偷偷触发',
 		},
 		backends = {
-			title = '专业设置',
+			title = '补帧引擎',
 			items = hq_backend_items,
 			footnote = '普通用户无需修改；播放器始终只启用一种补帧后端',
 		},
 		superres = {
-			title = '画质模式',
+			title = '画质增强',
 			items = superres_items,
 			footnote = '不确定怎么选就用“自动（推荐）”',
 		},
 		smooth = {
-			title = '流畅模式',
+			title = '流畅增强',
 			items = smooth_items,
 			footnote = '不确定怎么选就用“自动（推荐）”；基础平滑不是 AI 补帧',
+		},
+		advanced = {
+			title = '高级设置',
+			items = advanced_items,
+			footnote = '设备、依赖与技术信息不会改变自动推荐；排查问题时再进入',
 		},
 	}
 
 	local menu_items = {
-		{title = '当前画质增强', hint = superres_detail, selectable = false},
-		{title = '当前流畅处理', hint = smooth_detail, selectable = false},
-		{
-			title = 'AI 补帧状态',
-			hint = ai_ready and ai_detail or '运行库不可用 · 使用原生回退',
-			selectable = false,
-			muted = ai_effective ~= 'RIFE AI 2×',
-		},
-		{
-			title = '高端补帧依赖包',
-			hint = hq_pack_hint,
-			value = {'show-text', hq_pack_help, '4000'},
-			muted = not (hq_pack_ready and hq_gpu_supported),
-		},
+		action_item('增强方案', profile_label,
+			{'script-message', 'codex-open-video-enhancement-profiles'}),
+		action_item('画质增强', friendly_superres_hint(),
+			{'script-message', 'codex-open-video-enhancement-superres'}),
+		action_item('流畅增强', friendly_smooth_hint(),
+			{'script-message', 'codex-open-video-enhancement-smooth'}),
 	}
-	if hq_pack_installed then
-		menu_items[#menu_items + 1] = {
-			title = '一键增强模式',
-			hint = profile_label,
-			value = {'script-message', 'codex-open-video-enhancement-profiles'},
-			muted = not hq_pack_ready,
-		}
-		menu_items[#menu_items + 1] = {
-			title = '专业设置',
-			hint = backend_mode == 'auto' and '一般无需修改' or backend_display_label,
-			value = {'script-message', 'codex-open-video-enhancement-backends'},
-			muted = not hq_pack_ready,
-		}
-	end
-	menu_items[#menu_items + 1] = {
-		title = '安全保护', hint = ai_safety_limit, selectable = false, muted = true,
-	}
-	menu_items[#menu_items + 1] = {
-		title = '设备性能',
-		hint = string.format('%s · %s', gpu, tier_labels[tier] or tier),
-		selectable = false, muted = true,
-	}
-	menu_items[#menu_items + 1] = {
-		title = '4K 补帧保护',
-		hint = protect_4k and '● 开启（推荐）' or '○ 关闭 · 按显卡性能尝试',
-		value = {'script-message-to', 'adaptive_quality', 'set-protect-4k', 'toggle'},
-		active = protect_4k,
-	}
-	menu_items[#menu_items + 1] = {
-		title = '画质模式',
-		hint = selected_policy_hint(superres_mode, superres_effective, 'superres'),
-		value = {'script-message', 'codex-open-video-enhancement-superres'},
-	}
-	menu_items[#menu_items + 1] = {
-		title = '流畅模式',
-		hint = selected_policy_hint(smooth_mode, smooth_effective, 'smooth'),
-		value = {'script-message', 'codex-open-video-enhancement-smooth'},
-	}
-	menu_items[#menu_items + 1] = {
-		title = '重新检测',
-		hint = '刷新片源、显卡与实时性能策略',
-		value = {'script-message', 'codex-refresh-video-enhancement'},
-	}
+	menu_items[#menu_items + 1] = action_item('高分辨率保护',
+		hq_processing_mode == 'uhd_2k'
+			and '由“4K→2K 流畅增强”接管'
+			or protect_4k and '● 开启（推荐）' or '○ 关闭 · 将尝试更高负载处理',
+		{'script-message-to', 'adaptive_quality', 'set-protect-4k', 'toggle'},
+		{active = protect_4k, enabled = hq_processing_mode ~= 'uhd_2k'})
+	menu_items[#menu_items + 1] = action_item('高级设置',
+		'设备、依赖与诊断',
+		{'script-message', 'codex-open-video-enhancement-advanced'})
 
 	open_command_menu({
 		type = 'codex_video_enhancement',
 		title = '超分与补帧',
-		min_width = 600,
-		-- Keep the dependency status visible on compact windows instead of
-		-- initially scrolling to the active 4K-protection row.
-		selected_index = 4,
+		min_width = 520,
+		selected_index = 1,
 		-- Status text carries mixed Latin/CJK model, clock and HDR metadata.
 		-- Give that column deliberate room and ellipsize at the readable edge;
 		-- a silently clipped first glyph is much harder to understand.
@@ -2181,9 +2325,7 @@ open_video_enhancement_menu = function()
 		hint_ellipsis_ratio = 0.78,
 		hint_force_ellipsis_when_scaled = true,
 		items = menu_items,
-		footnote = hq_pack_installed
-			and '建议先用“一键增强模式”；任何档位都不会先降低原始画质再补帧'
-			or '无需高端依赖包也可正常使用；“画质模式 / 流畅模式”建议保持自动',
+		footnote = '保持“智能推荐”即可；播放器会按片源和设备自动保护',
 	}, {mouse_nav = true})
 end
 
@@ -2199,8 +2341,16 @@ local function open_video_enhancement_page(page_name)
 		title = '返回超分与补帧',
 		hint = '继续调整其他选项',
 		separator = true,
+		selectable = true,
 		value = {'script-message', 'codex-open-video-enhancement-menu'},
 	}
+	local selected_index = 1
+	for index, item in ipairs(items) do
+		if item.selectable ~= false then
+			selected_index = index
+			break
+		end
+	end
 	open_command_menu({
 		type = 'codex_video_enhancement_' .. page_name,
 		title = page.title,
@@ -2209,6 +2359,7 @@ local function open_video_enhancement_page(page_name)
 		hint_fit_ratio = 0.84,
 		hint_ellipsis_ratio = 0.76,
 		hint_force_ellipsis_when_scaled = true,
+		selected_index = selected_index,
 		items = items,
 		footnote = page.footnote,
 	}, {mouse_nav = true})
@@ -2224,6 +2375,9 @@ end)
 mp.register_script_message('codex-open-video-enhancement-profiles', function()
 	schedule_video_enhancement_page('profiles')
 end)
+mp.register_script_message('codex-open-video-enhancement-full', function()
+	schedule_video_enhancement_page('full')
+end)
 mp.register_script_message('codex-open-video-enhancement-backends', function()
 	schedule_video_enhancement_page('backends')
 end)
@@ -2233,11 +2387,105 @@ end)
 mp.register_script_message('codex-open-video-enhancement-smooth', function()
 	schedule_video_enhancement_page('smooth')
 end)
+mp.register_script_message('codex-open-video-enhancement-advanced', function()
+	schedule_video_enhancement_page('advanced')
+end)
 
 mp.register_script_message('codex-refresh-video-enhancement', function()
 	mp.commandv('script-message-to', 'adaptive_quality', 'refresh')
 	mp.commandv('script-message-to', 'ai_interpolation', 'refresh')
 	mp.osd_message('视频增强：正在重新检测', 2)
+end)
+
+-- 黑位与输出范围：状态行只读；只有明确标为输出模式或诊断的行可点击。
+-- 默认不改 Gamma/亮度/对比度，避免把范围错误掩盖成主观“更黑”。
+mp.register_script_message('codex-open-black-level-menu', function()
+	local function label_range(value)
+		value = tostring(value or ''):lower()
+		return value == 'full' and 'Full'
+			or value == 'limited' and 'Limited'
+			or '检测中'
+	end
+	local requested = mp.get_property_native(
+		'user-data/black-level/output-range-mode') or 'auto'
+	local source_params = mp.get_property_native('video-params', {})
+	local target_params = mp.get_property_native('video-target-params', {})
+	local source_range = type(source_params) == 'table' and source_params.colorlevels or 'unknown'
+	local target_range = type(target_params) == 'table' and target_params.colorlevels or 'unknown'
+	local source_trc = type(source_params) == 'table' and source_params.gamma or 'unknown'
+	local target_trc = type(target_params) == 'table' and target_params.gamma or 'unknown'
+	local reason = mp.get_property_native('user-data/black-level/reason-code') or 'detecting'
+	local detail = mp.get_property_native('user-data/black-level/detail') or '等待视频输出链稳定'
+	local manual_equalizer = mp.get_property_native(
+		'user-data/black-level/manual-equalizer') == 'yes'
+	local brightness = mp.get_property_number('brightness', 0) or 0
+	local contrast = mp.get_property_number('contrast', 0) or 0
+	local gamma = mp.get_property_number('gamma', 0) or 0
+	local status = tostring(mp.get_property_native('user-data/display-info/hdr-status') or 'unknown')
+	local items = {
+		{
+			title = '片源范围',
+			hint = label_range(source_range) .. ' · ' .. source_trc,
+			selectable = false, interaction_role = 'status',
+		},
+		{
+			title = '实际输出目标',
+			hint = label_range(target_range) .. ' · ' .. target_trc,
+			selectable = false, interaction_role = 'status',
+		},
+		{
+			title = '输出链', hint = detail,
+			selectable = false, interaction_role = 'status',
+		},
+		{
+			title = 'Windows HDR / 决策',
+			hint = status .. ' · ' .. reason,
+			selectable = false, muted = true, interaction_role = 'status',
+		},
+		{
+			title = '画面调节状态',
+			hint = manual_equalizer
+				and string.format('已启用 · 亮度 %.2f / 对比度 %.2f / Gamma %.2f',
+					brightness, contrast, gamma)
+				or '亮度/对比度/Gamma 均为 0 · 未手动修改',
+			selectable = false, muted = not manual_equalizer, interaction_role = 'status',
+		},
+		{
+			title = '自动协商（推荐）',
+			hint = '由 gpu-next / D3D11 / 系统选择正确输出范围',
+			active = requested == 'auto', selectable = true, separator = true,
+			interaction_role = 'action',
+			value = {'script-message-to', 'hdr_mode', 'set-output-range', 'auto', 'refresh'},
+		},
+		{
+			title = 'RGB Full（0–255）',
+			hint = '仅用于明确按 Full 接收的 PC 显示链',
+			active = requested == 'full', selectable = true, interaction_role = 'action',
+			value = {'script-message-to', 'hdr_mode', 'set-output-range', 'full', 'refresh'},
+		},
+		{
+			title = 'Limited（16–235）',
+			hint = '仅用于明确按 Limited 接收的电视/采集链',
+			active = requested == 'limited', selectable = true, interaction_role = 'action',
+			value = {'script-message-to', 'hdr_mode', 'set-output-range', 'limited', 'refresh'},
+		},
+		{
+			title = '显示完整诊断',
+			hint = '显示范围、色彩、VO、HDR、目标黑点与手动画面校正',
+			selectable = true, interaction_role = 'action',
+			value = {'script-message-to', 'hdr_mode', 'show-black-level-diagnostics'},
+		},
+	}
+	open_command_menu({
+		type = 'codex_black_level',
+		title = '黑位与输出范围',
+		min_width = 600,
+		selected_index = 6,
+		hint_max_ratio = 0.70,
+		hint_fit_ratio = 0.86,
+		items = items,
+		footnote = 'HDR10 10-bit Limited 基准：64 应与背景同黑，66 应开始闪烁；不要用 Gamma 掩盖范围不匹配',
+	}, {mouse_nav = true})
 end)
 
 -- ASS/SSA 特效字幕色彩矩阵。默认优先保持脚本中写明的 RGB 原色；
@@ -2541,6 +2789,13 @@ end)
 
 -- 杳知HDR - 安全 HDR 输出与峰值亮度菜单
 mp.register_script_message('codex-open-peak-menu', function()
+	-- When this page replaces the command tree, preserve how that tree was
+	-- opened. Mouse activation must start neutral so the first row cannot open
+	-- merely because it appears under the click; keyboard activation keeps its
+	-- normal first-row selection. Direct script-message opens default to neutral.
+	local source_menu = Menu:is_open()
+	local mouse_nav = source_menu and source_menu.mouse_nav
+	if mouse_nav == nil then mouse_nav = true end
 	local force_active = mp.get_property('user-data/hdr-mode/manual-force', 'no') == 'yes'
 	local output_mode = mp.get_property('user-data/hdr-mode/output-mode', 'auto')
 	local force_sdr = output_mode == 'sdr'
@@ -2557,6 +2812,9 @@ mp.register_script_message('codex-open-peak-menu', function()
 	local hdr_unsupported = not output_is_hdr and (hdr_supported_raw == false or hdr_supported_raw == 'false'
 		or hdr_status == 'unsupported'
 	)
+	local can_force_hdr = source_is_hdr and not force_sdr and not hdr_unsupported
+	local can_adjust_peak = not force_sdr and (force_active or output_is_hdr
+		or (source_is_hdr and hdr_supported and not hdr_unsupported))
 	local current_raw = mp.get_property('target-peak', 'auto')
 	local current_number = tonumber(current_raw)
 	local current_label = current_number
@@ -2566,72 +2824,80 @@ mp.register_script_message('codex-open-peak-menu', function()
 	if not source_is_hdr then
 		unavailable_hint = '当前片源为 SDR'
 	elseif hdr_unsupported then
-		unavailable_hint = 'HDR 检测失败 · 可手动强制'
+		unavailable_hint = '当前屏幕不支持 HDR · 请使用 HDR→SDR'
 	elseif not hdr_supported then
-		unavailable_hint = 'HDR 能力未知 · 可手动强制'
+		unavailable_hint = 'HDR 能力尚未确认'
 	elseif not output_is_hdr and hdr_status ~= 'on' then
-		unavailable_hint = '屏幕尚未进入 HDR · 可手动强制'
+		unavailable_hint = '屏幕尚未进入 HDR'
 	end
 	local items = {}
 	items[#items + 1] = {
-		title = 'HDR 输出模式',
-		hint = force_sdr and '关闭 HDR（映射为 SDR）' or '自动（默认）',
+		title = '播放器输出模式',
+		hint = force_sdr and 'HDR→SDR（不改系统）' or '自动选择 HDR/SDR',
 		items = {
 			{
-				title = '自动（默认）',
-				hint = '保持当前自动 HDR 行为',
+				title = '自动选择 HDR/SDR（默认）',
+				hint = '按片源和显示能力自动输出',
 				value = {'script-message-to', 'hdr_mode', 'set-output-mode', 'auto', 'refresh'},
 				active = not force_sdr,
 			},
 			{
-				title = '关闭 HDR 输出',
-				hint = 'HDR 片源安全映射为 SDR',
+				title = '播放器 HDR→SDR',
+				hint = '只转换本播放器画面，不修改 Windows HDR',
 				value = {'script-message-to', 'hdr_mode', 'set-output-mode', 'sdr', 'refresh'},
 				active = force_sdr,
 			},
 		},
 	}
 	items[#items + 1] = {
-		title = '强制 HDR 输出',
-		hint = force_sdr and '已关闭 HDR 输出 · 请先恢复自动'
+		title = '强制 HDR 直出',
+		hint = force_sdr and '已启用播放器 HDR→SDR · 请先恢复自动'
 			or force_active and '已开启 · 仅当前视频'
 			or (unavailable_hint or (output_is_hdr and '自动 HDR 已生效' or '异常设备兜底')),
 		value = {'script-message-to', 'hdr_mode', 'manual-force-toggle', 'refresh'},
-		selectable = not force_sdr and (force_active or source_is_hdr),
-		muted = force_sdr or (not force_active and not source_is_hdr),
+		selectable = force_active or can_force_hdr,
+		muted = not (force_active or can_force_hdr),
 	}
-	items[#items + 1] = {
-		title = '当前目标峰值：' .. current_label,
-		selectable = false,
-		muted = true,
-		italic = true,
-	}
-	items[#items + 1] = {
-		title = '自动',
-		hint = force_active and '使用系统/显示器报告值' or '选择后自动启用强制 HDR',
-		value = {'script-message-to', 'hdr_mode', 'manual-force-peak', 'auto', 'refresh'},
-		active = not current_number,
-		selectable = source_is_hdr and not force_sdr,
-		muted = not source_is_hdr or force_sdr,
-	}
-	for _, val in ipairs(presets) do
+	if can_adjust_peak then
 		items[#items + 1] = {
-			title = val .. ' nits',
-			value = {'script-message-to', 'hdr_mode', 'manual-force-peak', tostring(val), 'refresh'},
-			active = current_number and math.floor(current_number + 0.5) == val,
-			selectable = source_is_hdr and not force_sdr,
-			muted = not source_is_hdr or force_sdr,
+			title = '当前目标峰值：' .. current_label,
+			selectable = false,
+			muted = true,
+			italic = true,
+		}
+		items[#items + 1] = {
+			title = '自动',
+			hint = force_active and '使用系统/显示器报告值' or '使用屏幕检测值',
+			value = {'script-message-to', 'hdr_mode', 'manual-force-peak', 'auto', 'refresh'},
+			active = not current_number,
+		}
+		for _, val in ipairs(presets) do
+			items[#items + 1] = {
+				title = val .. ' nits',
+				value = {'script-message-to', 'hdr_mode', 'manual-force-peak', tostring(val), 'refresh'},
+				active = current_number and math.floor(current_number + 0.5) == val,
+			}
+		end
+	else
+		items[#items + 1] = {
+			title = 'HDR 峰值亮度',
+			hint = force_sdr and '播放器 HDR→SDR 不需要设置'
+				or '仅支持 HDR 的屏幕直出时可调',
+			selectable = false,
+			muted = true,
 		}
 	end
-	local footnote = '默认自动 HDR；不需要 HDR 时可持久切换为 SDR 输出'
+	local footnote = '默认自动选择；播放器 HDR→SDR 只改视频渲染，不改 Windows HDR 开关'
 	if force_sdr then
-		footnote = 'HDR 输出已关闭；HDR 片源将由 gpu-next 安全映射为 SDR'
+		footnote = 'HDR 片源由 gpu-next 映射到 BT.709/gamma2.2/203 nit；Windows HDR 保持原状'
 	elseif force_active then
 		footnote = '强制模式关闭时会完整恢复自动设置'
 	elseif not source_is_hdr then
 		footnote = '仅 PQ/HLG HDR 片源可使用强制输出'
+	elseif hdr_unsupported then
+		footnote = '当前为 SDR 屏：HDR 直出与峰值手动调节已禁用，HDR→SDR 仍可正常使用'
 	elseif unavailable_hint then
-		footnote = '选择强制或峰值会直接覆盖检测；非 HDR 屏请勿使用'
+		footnote = '显示能力尚未确认，暂不强制 HDR 直出'
 	else
 		footnote = '选择峰值会自动启用强制 HDR，并在关闭时恢复'
 	end
@@ -2640,6 +2906,6 @@ mp.register_script_message('codex-open-peak-menu', function()
 		title = 'HDR 输出与峰值亮度',
 		items = items,
 		footnote = footnote,
-	})
+	}, {mouse_nav = mouse_nav})
 end)
 

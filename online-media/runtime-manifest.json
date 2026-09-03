@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-01",
+  "architecture": "windows-x86_64",
+  "components": {
+    "python": {
+      "version": "3.14.6",
+      "distribution": "official-embeddable",
+      "archiveSha256": "DF901E84A896FF1EE720AD03377E0C8D8C2244FDA79808AEEAFF6316DF1CB75C"
+    },
+    "streamlink": {
+      "version": "8.5.0",
+      "distribution": "PyPI-wheel"
+    },
+    "websocket-client": {
+      "version": "1.9.2",
+      "distribution": "PyPI-wheel",
+      "scope": "Streamlink dependency and official platform live danmaku connections"
+    },
+    "yt-dlp": {
+      "version": "2026.08.19",
+      "distribution": "PyPI-wheel + isolated PyInstaller executable",
+      "executableSha256": "26FE106DB4C49A15BB8E33C6BCB4DD1BB905BC7168340DD424683CBD16673558"
+    },
+    "pyinstaller": {
+      "version": "6.22.0",
+      "scope": "yt-dlp.exe bootloader/build only"
+    },
+    "qrcodegen": {
+      "distribution": "vendored Nayuki source",
+      "license": "MIT",
+      "scope": "local Bilibili login QR rendering only"
+    }
+  },
+  "runtime": {
+    "pythonExeSha256": "03168C01B7B7491423350E82C26FEE71F35B43694D1319D3C668BDA6903A0C38",
+    "pythonStdlibSha256": "E13E610C2E56173CC933986F38C56C7439E4E1519DDF98829E92C5D348F1C376",
+    "siteImportEnabled": false,
+    "packageDirectory": "runtime/pkgs",
+    "helpers": {
+      "resolve_bilibili.py": "DC6101365CF3038FDEE24AFAC2C35E88E8275485C75E28AA7007C4F663C24C3B",
+      "resolve_live.py": "F0EF3870768EA3DD579171076F1270CEF1E0D973785C01D00B60974ECFFD746F",
+      "bilibili_live_danmaku.py": "885C0FA0568D4255F8A662E469482FCF55C2D258406F4ACCC12E66DEFF07BDEE",
+      "platform_live_danmaku.py": "AEEE745097E89F278FCA1AD339909EE56D6BEF8135C9E96DB2E7CAAB58F104CC",
+      "bilibili_qr_login.py": "6DEE258D125461D8768945F340766AC409FFA100879B2ACFB9E5C7E4E773038A",
+      "qrcodegen.py": "9F4ED1DD201DCB92B1BC0D6E14F46C754BCFF0CE48580C5D7E8ACE8F6926C8EF"
+    }
+  }
+}

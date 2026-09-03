@@ -71,6 +71,10 @@ end)()
 
 local rebuild_convert_timer = nil
 local auto_load_generation = 0
+local LIVE_DANMAKU_SOURCE = "__bilibili_live__"
+local live_danmaku_active = false
+local live_danmaku_max_messages = 800
+local live_danmaku_window = 45
 
 local function delay_auto_load(callback)
     local delay = tonumber(options.auto_load_delay) or 0
@@ -798,6 +802,82 @@ function init(path)
     end
 end
 
+local function refresh_live_danmaku(no_render)
+    convert_danmaku_to_ass_events(true)
+    local count = type(COMMENTS) == "table" and #COMMENTS or 0
+    mp.set_property_native(DANMAKU_COUNT, count)
+    mp.set_property_bool(HAS_DANMAKU, count > 0)
+    if no_render then return end
+    if get_danmaku_visibility() then
+        ENABLED = true
+        toggle_danmaku_switch("on")
+        refresh_danmaku_renderer()
+    end
+end
+
+local function reset_live_danmaku(source)
+    DANMAKU.sources[LIVE_DANMAKU_SOURCE] = {
+        from = source == "bilibili" and "bilibili_live" or "live",
+        data = {},
+    }
+    COMMENTS = {}
+    live_danmaku_active = true
+    mp.set_property_native(DANMAKU_COUNT, 0)
+    mp.set_property_bool(HAS_DANMAKU, false)
+end
+
+local function stop_live_danmaku()
+    local had_source = DANMAKU.sources[LIVE_DANMAKU_SOURCE] ~= nil
+    DANMAKU.sources[LIVE_DANMAKU_SOURCE] = nil
+    live_danmaku_active = false
+    if had_source then refresh_live_danmaku(false) end
+end
+
+local function append_live_danmaku(payload)
+    if not live_danmaku_active or type(payload) ~= "string" or #payload > 262144 then return end
+    local incoming = utils.parse_json(payload)
+    if type(incoming) ~= "table" then return end
+
+    local now = mp.get_property_number("time-pos", 0) or 0
+    local source = DANMAKU.sources[LIVE_DANMAKU_SOURCE]
+    if type(source) ~= "table" then
+        reset_live_danmaku("bilibili")
+        source = DANMAKU.sources[LIVE_DANMAKU_SOURCE]
+    end
+    local current = type(source.data) == "table" and source.data or {}
+    local retained = {}
+    local cutoff = now - live_danmaku_window
+    for _, item in ipairs(current) do
+        if type(item) == "table" and tonumber(item.time) and item.time >= cutoff then
+            retained[#retained + 1] = item
+        end
+    end
+
+    for index, item in ipairs(incoming) do
+        if index > 240 then break end
+        if type(item) == "table" and type(item.text) == "string" and item.text ~= "" then
+            local danmaku_type = math.floor(tonumber(item.type) or 1)
+            if danmaku_type < 1 or danmaku_type > 5 then danmaku_type = 1 end
+            retained[#retained + 1] = {
+                time = now + math.min(index * 0.003, 0.24),
+                type = danmaku_type,
+                size = math.max(12, math.min(64, tonumber(item.size) or 25)),
+                color = math.max(0, math.min(0xFFFFFF, tonumber(item.color) or 0xFFFFFF)),
+                text = item.text,
+            }
+        end
+    end
+
+    if #retained > live_danmaku_max_messages then
+        local bounded = {}
+        local first = #retained - live_danmaku_max_messages + 1
+        for index = first, #retained do bounded[#bounded + 1] = retained[index] end
+        retained = bounded
+    end
+    source.data = retained
+    refresh_live_danmaku(false)
+end
+
 mp.register_event("file-loaded", function()
     auto_load_generation = auto_load_generation + 1
     local path = mp.get_property("path")
@@ -873,6 +953,10 @@ mp.register_script_message("danmaku-delay", function(...)
         set_danmaku_delay(dly, time)
     end
 end)
+
+mp.register_script_message("live-danmaku-reset", reset_live_danmaku)
+mp.register_script_message("live-danmaku-batch", append_live_danmaku)
+mp.register_script_message("live-danmaku-stop", stop_live_danmaku)
 
 mp.register_script_message("show_danmaku_keyboard", function()
     ENABLED = not ENABLED

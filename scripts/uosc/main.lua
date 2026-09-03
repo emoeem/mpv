@@ -28,9 +28,9 @@ defaults = {
 	timeline_persistency = '',
 	timeline_border = 1,
 	timeline_step = '5',
+	timeline_mbtn_right = '',
 	timeline_cache = true,
 	timeline_heatmap = 'overlay',
-	timeline_mbtn_right = '',
 
 	controls =
 	'menu,gap,<video,audio>subtitles,<has_many_audio>audio,<has_many_video>video,<has_many_edition>editions,<stream>stream-quality,gap,space,<video,audio>speed,space,shuffle,loop-playlist,loop-file,gap,prev,items,next,gap,fullscreen',
@@ -509,7 +509,7 @@ state = {
 	radius = 0,
 }
 buttons = require('lib/buttons')
-thumbnail = {width = 0, height = 0, disabled = false}
+thumbnail = {width = 0, height = 0, disabled = false, ready = false}
 external = {} -- Properties set by external scripts
 key_binding_overwrites = {} -- Table of key_binding:mpv_command
 Elements = require('elements/Elements')
@@ -970,18 +970,71 @@ local function safe_playlist_url_title(filename)
 	return url_decode(sanitized)
 end
 
+local function online_quality_menu_item()
+	if not mp.get_property_bool('user-data/online-media/matched', false) then return nil end
+	local raw = mp.get_property_native('user-data/online-media/quality-options-json', '')
+	local qualities = raw ~= '' and utils.parse_json(raw) or nil
+	if type(qualities) ~= 'table' or #qualities == 0 then return nil end
+
+	local current_id = mp.get_property_native('user-data/online-media/quality-id', '')
+	local current_label = mp.get_property_native('user-data/online-media/quality', '')
+	local items = {}
+	for _, quality in ipairs(qualities) do
+		local id = tostring(quality.id or '')
+		local label = tostring(quality.label or id)
+		if id ~= '' then
+			items[#items + 1] = {
+				title = label,
+				hint = quality.hint and tostring(quality.hint) or nil,
+				value = 'online-quality:' .. id,
+				active = id == current_id,
+				selectable = quality.selectable ~= false,
+				muted = quality.selectable == false,
+				actions = {},
+			}
+		end
+	end
+	if #items == 0 then return nil end
+	if #items == 1 then
+		return {
+			title = '清晰度',
+			hint = current_label ~= '' and current_label or items[1].title,
+			icon = 'high_quality',
+			selectable = false,
+			actions = {},
+		}
+	end
+
+	return {
+		title = '清晰度',
+		hint = current_label ~= '' and current_label or '最高可用',
+		icon = 'high_quality',
+		items = items,
+		actions = {},
+	}
+end
+
+local function playlist_online_quality_offset()
+	return online_quality_menu_item() and 1 or 0
+end
+
 bind_command('playlist', create_self_updating_menu_opener({
 	title = t('Playlist'),
 	type = 'playlist',
+	center_root_when_closed = true,
 	list_prop = 'playlist',
 	footnote = t('Paste path or url to add.') .. ' ' .. t('%s to reorder.', 'ctrl+up/down/pgup/pgdn/home/end'),
 	serializer = function(playlist)
 		local items = {}
+		local quality_item = online_quality_menu_item()
+		if quality_item then
+			items[#items + 1] = quality_item
+		end
 		local playlist_titles = mp.get_property_native('user-data/playlistmanager/titles') or {}
 		for index, item in ipairs(playlist) do
 			local is_url = is_protocol(item.filename)
 			local title = type(item.title) == 'string' and #item.title > 0 and item.title or false
-			items[index] = {
+			items[#items + 1] = {
 				title = is_url and (playlist_titles[item.filename] or title or safe_playlist_url_title(item.filename)) or
 				serialize_path(item.filename).basename,
 				hint = tostring(index),
@@ -991,19 +1044,33 @@ bind_command('playlist', create_self_updating_menu_opener({
 		end
 		return items
 	end,
-	on_activate = function(event) mp.commandv('set', 'playlist-pos-1', tostring(event.value)) end,
+	on_activate = function(event)
+		if type(event.value) == 'string' and event.value:match('^online%-quality:') then
+			mp.commandv('script-message-to', 'online_media', 'online-media-select-quality',
+				event.value:gsub('^online%-quality:', ''))
+		elseif type(event.value) == 'number' then
+			mp.commandv('set', 'playlist-pos-1', tostring(event.value))
+		end
+	end,
 	on_paste = function(event) mp.commandv('loadfile', tostring(event.value), 'append') end,
 	on_key = function(event)
-		if event.id == 'ctrl+c' and event.selected_item then
+		if event.id == 'ctrl+c' and event.selected_item
+				and type(event.selected_item.value) == 'number' then
 			local payload = mp.get_property_native('playlist/' .. (event.selected_item.value - 1) .. '/filename')
 			set_clipboard(payload)
 		end
 	end,
 	on_move = function(event)
-		local from, to = event.from_index, event.to_index
+		local offset = playlist_online_quality_offset()
+		if event.from_index <= offset or event.to_index <= offset then return false end
+		local from, to = event.from_index - offset, event.to_index - offset
 		mp.commandv('playlist-move', tostring(from - 1), tostring(to - (to > from and 0 or 1)))
 	end,
-	on_remove = function(event) mp.commandv('playlist-remove', tostring(event.value - 1)) end,
+	on_remove = function(event)
+		if type(event.value) == 'number' then
+			mp.commandv('playlist-remove', tostring(event.value - 1))
+		end
+	end,
 }))
 bind_command('chapters', create_self_updating_menu_opener({
 	title = t('Chapters'),

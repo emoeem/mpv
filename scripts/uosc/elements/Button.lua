@@ -44,7 +44,7 @@ function Button:render()
 	local visibility = self:get_visibility()
 	if visibility <= 0 then return end
 	if visibility >= 0.08 then
-		cursor:zone('primary_click', self, function() self:handle_cursor_click() end)
+		cursor:zone('primary_down', self, function() self:handle_cursor_click() end)
 		cursor:zone('secondary_down', self, function() self:handle_cursor_secondary_click() end)
 	end
 

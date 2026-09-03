@@ -7,3 +7,7 @@ files/
 
 # 运行时个人备忘记录（含本地文件路径，不入库）
 memo-history.log
+
+# Yaozhi online-media Linux 移植：Python venv 与登录 Cookie 不入库
+online-media/runtime/
+online-media/bilibili-cookies.txt
