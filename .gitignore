@@ -11,3 +11,7 @@ memo-history.log
 # Yaozhi online-media Linux 移植：Python venv 与登录 Cookie 不入库
 online-media/runtime/
 online-media/bilibili-cookies.txt
+
+# Python 运行时缓存（resolve_*.py 等在线解析辅助）
+__pycache__/
+*.py[cod]

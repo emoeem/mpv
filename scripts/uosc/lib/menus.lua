@@ -6,27 +6,67 @@ function open_command_menu(data, opts)
 	local menu
 
 	local function run_command(command)
+		local args
 		if type(command) == 'table' then
-			---@diagnostic disable-next-line: deprecated
-			mp.commandv(unpack(command))
+			args = {}
+			local argument_count = 0
+			local max_index = 0
+			for index, value in pairs(command) do
+				if type(index) ~= 'number' or index < 1 or index % 1 ~= 0 then
+					msg.error('Rejected menu command with a non-array key')
+					mp.osd_message('菜单数据异常，已保留播放器界面', 3)
+					return false
+				end
+				local value_type = type(value)
+				if value_type ~= 'string' and value_type ~= 'number' and value_type ~= 'boolean' then
+					msg.error('Rejected unsafe menu command argument at index ' .. tostring(index)
+						.. ' (' .. value_type .. ')')
+					mp.osd_message('菜单数据异常，已保留播放器界面', 3)
+					return false
+				end
+				args[index] = tostring(value)
+				argument_count = argument_count + 1
+				max_index = math.max(max_index, index)
+			end
+			if argument_count == 0 or argument_count ~= max_index or args[1] == '' then
+				msg.error('Rejected empty menu command')
+				mp.osd_message('菜单数据异常，已保留播放器界面', 3)
+				return false
+			end
 		else
-			mp.command(tostring(command))
+			args = tostring(command or '')
+			if args == '' then return false end
 		end
+
+		local ok, error = pcall(function()
+			if type(args) == 'table' then
+				---@diagnostic disable-next-line: deprecated
+				mp.commandv(unpack(args))
+			else
+				mp.command(args)
+			end
+		end)
+		if not ok then
+			msg.error('Menu command failed safely: ' .. tostring(error))
+			mp.osd_message('菜单操作失败，播放器界面已安全保留', 3)
+		end
+		return ok
 	end
 
 	local function callback(event)
+		local command_ok = true
 		if type(menu.root.callback) == 'table' then
-			---@diagnostic disable-next-line: deprecated
-			mp.commandv(unpack(itable_join({'script-message-to'}, menu.root.callback, {utils.format_json(event)})))
+			command_ok = run_command(itable_join(
+				{'script-message-to'}, menu.root.callback, {utils.format_json(event)}))
 		elseif event.type == 'activate' then
 			-- Modifiers and actions are not available on basic non-callback mode menus.
 			-- `alt` modifier should activate without closing the menu.
 			if (event.modifiers == 'alt' or not event.modifiers) and not event.action then
-				run_command(event.value)
+				command_ok = run_command(event.value)
 			end
 			-- Convention: Only pure item activations should close the menu.
 			-- Using modifiers or triggering item actions should not.
-			if not event.keep_open and not event.modifiers and not event.action then
+			if command_ok and not event.keep_open and not event.modifiers and not event.action then
 				menu:close()
 			end
 		end
@@ -331,7 +371,22 @@ function create_self_updating_menu_opener(opts)
 		local active = opts.active_prop and mp.get_property_native(opts.active_prop) or nil
 		local menu
 
-		local function update() menu:update_items(opts.serializer(list, active)) end
+		local refresh_timer
+		local function update()
+			if Menu:is_open(opts.type) == menu then
+				menu:update_items(opts.serializer(list, active))
+			end
+		end
+		-- Resolver metadata can arrive after the playlist itself stops changing.
+		-- Coalesce related fields so labels and selected quality update together.
+		local function handle_extra_prop_change()
+			if not refresh_timer then
+				refresh_timer = mp.add_timeout(0, function()
+					refresh_timer = nil
+					update()
+				end)
+			end
+		end
 
 		local ignore_initial_list = true
 		local function handle_list_prop_change(name, value)
@@ -356,6 +411,8 @@ function create_self_updating_menu_opener(opts)
 		local function cleanup_and_close()
 			mp.unobserve_property(handle_list_prop_change)
 			mp.unobserve_property(handle_active_prop_change)
+			mp.unobserve_property(handle_extra_prop_change)
+			if refresh_timer then refresh_timer:kill(); refresh_timer = nil end
 			menu:close()
 		end
 
@@ -471,6 +528,9 @@ function create_self_updating_menu_opener(opts)
 		mp.observe_property(opts.list_prop, 'native', handle_list_prop_change)
 		if opts.active_prop then
 			mp.observe_property(opts.active_prop, 'native', handle_active_prop_change)
+		end
+		for _, prop in ipairs(opts.extra_props or {}) do
+			mp.observe_property(prop, 'native', handle_extra_prop_change)
 		end
 	end
 end

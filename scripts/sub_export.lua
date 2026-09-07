@@ -31,9 +31,10 @@ local o = {
 options.read_options(o)
 ------------------------
 
-local is_windows = package.config:sub(1, 1) == "\\" -- detect path separator, windows uses backslashes
-
 local TEMP_DIR = os.getenv("TEMP") or "/tmp"
+local args = nil
+local subtitles_file = nil
+local process
 local function is_writable(path)
     local file = io.open(path, "w")
     if file then
@@ -103,11 +104,14 @@ local function export_selected_subtitles()
                 mp.osd_message("Exporting selected subtitles")
             end
 
-            cmd = string.format("%s -y -hide_banner -loglevel error -i '%s' -map '%s' -vn -an -c:s copy '%s'",
-                o.ffmpeg_path, video_file, index, subtitles_file)
-            windows_args = { 'powershell', '-NoProfile', '-Command', cmd }
-            unix_args = { '/bin/bash', '-c', cmd }
-            args = is_windows and windows_args or unix_args
+            args = {
+                o.ffmpeg_path,
+                '-y', '-hide_banner', '-loglevel', 'error',
+                '-i', video_file,
+                '-map', index,
+                '-vn', '-an', '-c:s', 'copy',
+                subtitles_file,
+            }
 
             mp.add_timeout(mp.get_property_number("osd-duration") * 0.001, process)
 
@@ -118,11 +122,17 @@ local function export_selected_subtitles()
     end
 end
 
-function process()
+process = function()
     local screenx, screeny, aspect = mp.get_osd_size()
 
     mp.set_osd_ass(screenx, screeny, "{\\an9}● ")
-    local res = mp.command_native({ name = "subprocess", capture_stdout = true, playback_only = false, args = args })
+    local res = mp.command_native({
+        name = "subprocess",
+        capture_stdout = true,
+        capture_stderr = true,
+        playback_only = false,
+        args = args,
+    })
     mp.set_osd_ass(screenx, screeny, "")
     if res.status == 0 then
         if o.language == 'chs' then
@@ -136,10 +146,10 @@ function process()
         mp.set_property("sub-visibility", "yes")
     else
         if o.language == 'chs' then
-            msg.info("当前字幕导出失败")
+            msg.error("当前字幕导出失败: " .. tostring(res.stderr or res.error or "未知错误"))
             mp.osd_message("当前字幕导出失败, 查看控制台获取更多信息.")
         else
-            msg.info("Failed to export subtitles")
+            msg.error("Failed to export subtitles: " .. tostring(res.stderr or res.error or "unknown error"))
             mp.osd_message("Failed to export subtitles, check console for more info.")
         end
     end

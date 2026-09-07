@@ -106,6 +106,28 @@ local function resolve_render_mode()
     return active_render_mode
 end
 
+local published_layout_key
+local function publish_danmaku_layout()
+    local width, height, top, bottom = get_osd_vertical_geometry()
+    if not width then return end
+    local visible = HAS_DANMAKU and mp.get_property_native(HAS_DANMAKU) == true
+    local occupied = 0
+    if visible then
+        local area = math.max(0, math.min(1, tonumber(options.displayarea) or 0))
+        if is_ass_track_mode() then
+            occupied = top + (bottom - top) * area
+                + (tonumber(options.fontsize) or 50) * (bottom - top) / 1080
+        else
+            occupied = height * area + get_overlay_font_height(width, height)
+        end
+    end
+    local fraction = math.max(0, math.min(1, occupied / height))
+    local key = tostring(visible)..':'..string.format('%.5f', fraction)
+    if key == published_layout_key then return end
+    published_layout_key = key
+    mp.set_property_native('user-data/uosc_danmaku/layout', {visible=visible, top=fraction})
+end
+
 local function clear_array(items)
     for i = #items, 1, -1 do
         items[i] = nil
@@ -792,6 +814,7 @@ function show_danmaku_func()
     end
     sync_danmaku_fps_filter()
     sync_overlay_display_mode()
+    publish_danmaku_layout()
 end
 
 function hide_danmaku_func()
@@ -800,6 +823,7 @@ function hide_danmaku_func()
     unload_ass_track(true)
     mp.set_property_bool(HAS_DANMAKU, false)
     set_danmaku_visibility(false)
+    publish_danmaku_layout()
     overlay_low:remove()
     remove_overlay_high()
     if filter_state("danmaku") then
@@ -814,6 +838,21 @@ function refresh_danmaku_renderer()
     if ENABLED and COMMENTS ~= nil and get_danmaku_visibility() then
         show_danmaku_func()
     end
+end
+
+function reset_danmaku_association_render()
+    COMMENTS = {}
+    stop_overlay_timer()
+    unload_ass_track(true)
+    clear_overlay_clock()
+    clear_array(ass_events_low)
+    clear_array(ass_events_high)
+    overlay_low:remove()
+    remove_overlay_high()
+    ass_track_dirty, ass_track_failed = true, false
+    mp.set_property_bool(HAS_DANMAKU, false)
+    mp.set_property_native(DANMAKU_COUNT, 0)
+    publish_danmaku_layout()
 end
 
 local layout_mode_timer = mp.add_timeout(0.08, function()
@@ -845,6 +884,7 @@ local layout_mode_timer = mp.add_timeout(0.08, function()
 	-- after the new mode is active; overlay remains protected by the hard guard.
 	sync_danmaku_fps_filter()
     sync_overlay_display_mode()
+    publish_danmaku_layout()
 end, true)
 
 local function schedule_layout_mode_refresh()
@@ -971,6 +1011,7 @@ end)
 mp.observe_property('osd-dimensions', 'native', function()
     render_active_message()
     schedule_layout_mode_refresh()
+    publish_danmaku_layout()
 end)
 mp.observe_property('fullscreen', 'bool', function()
     render_active_message()

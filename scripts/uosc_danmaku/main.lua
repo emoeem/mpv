@@ -83,7 +83,7 @@ local function delay_auto_load(callback)
         callback()
         return
     end
-    mp.add_timeout(delay, function()
+    add_danmaku_timeout(delay, function()
         if generation == auto_load_generation then callback() end
     end)
 end
@@ -285,7 +285,7 @@ local function set_danmaku_delay(dly, time, specific_source)
         rebuild_convert_timer:kill()
         rebuild_convert_timer = nil
     end
-    rebuild_convert_timer = mp.add_timeout(0.1, function()
+    rebuild_convert_timer = add_danmaku_timeout(0.1, function()
         if convert_danmaku_to_ass_events then
             convert_danmaku_to_ass_events(true)
         end
@@ -518,6 +518,7 @@ function add_source_to_history(add_url, add_source)
 
     local record = history[path]["sources"][add_url]
     record.from = add_source.from or "user_custom"
+    record.association = add_source.association == true or nil
     record.blocked = add_source.blocked or false
 
    local delay_segments = shallow_copy(add_source.delay_segments or {})
@@ -569,6 +570,7 @@ function read_danmaku_source_record(path)
 
             DANMAKU.sources[source] = {
                 from = from,
+                association = data.association == true or nil,
                 blocked = blocked,
                 delay_segments = delay_segments,
                 from_history = true,

@@ -137,17 +137,10 @@ local function open_files(path, type, i, is_clip)
     elseif type == 'aid' and (not is_clip or file_types['audio']:match(ext)) then
         mp.commandv('audio-add', path, 'cached')
     elseif file_types['iso']:match(ext) then
-        local idle = mp.get_property('idle')
-        if idle ~= 'yes' then mp.set_property('idle', 'yes') end
-        mp.register_event("end-file", end_file)
-        open_bluray(path)
-        mp.add_timeout(1.0, function()
-            if idle ~= 'yes' then mp.set_property('idle', idle) end
-            if loaded_fail then
-                loaded_fail = false
-                open_dvd(path)
-            end
-        end)
+        -- Keep ISO files on the normal loadfile path. auto_iso_loader.lua will
+        -- rewrite them to bd:// or dvd://, which also makes ISO A -> ISO B
+        -- switching behave the same as uosc's built-in file browser.
+        mp.commandv('loadfile', path, i == 1 and 'replace' or 'append')
     else
         mp.commandv('loadfile', path, i == 1 and 'replace' or 'append')
     end

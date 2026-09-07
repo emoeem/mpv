@@ -1,4 +1,4 @@
--- Keep explicit audio-track and subtitle-position choices only while moving
+-- Keep explicit audio/subtitle-track and subtitle-position choices while moving
 -- through the same episode group. A different playlist/directory, a standalone
 -- title, or a new mpv process starts from the normal configured defaults.
 
@@ -13,6 +13,8 @@ local generation = 0
 local arm_timer = nil
 local disable_audio_timer = nil
 local last_stable_aid = nil
+local last_stable_sid = nil
+local subtitle_timer = nil
 local last_sub_pos = nil
 local last_speed = nil
 
@@ -184,6 +186,56 @@ local function find_matching_audio(saved)
     return best_id
 end
 
+local function subtitle_signature(track)
+    local lang = normalize_text(track.lang):gsub('_', '-')
+    local title = normalized_track_title(track)
+    local hans = lang == 'chs' or lang == 'sc' or lang:find('hans', 1, true)
+        or lang == 'zh-cn' or lang == 'zh-sg'
+        or title:find('简', 1, true) or title:find('簡', 1, true)
+        or title:find('simplified', 1, true) or title:match('%f[%a]chs%f[%A]')
+        or title:match('%f[%a]sc%f[%A]')
+    local hant = lang == 'cht' or lang == 'tc' or lang:find('hant', 1, true)
+        or lang == 'zh-tw' or lang == 'zh-hk' or lang == 'zh-mo'
+        or title:find('繁', 1, true) or title:find('traditional', 1, true)
+        or title:match('%f[%a]cht%f[%A]') or title:match('%f[%a]tc%f[%A]')
+    local variant = hans and not hant and 'hans' or hant and not hans and 'hant' or ''
+    return {lang = variant ~= '' and 'zh' or canonical_language(lang),
+        variant = variant, title = title, codec = normalize_text(track.codec),
+        external = track.external == true, forced = track.forced == true,
+        hearing_impaired = track['hearing-impaired'] == true}
+end
+
+local function find_matching_subtitle(saved)
+    if not saved then return nil end
+    if saved.disabled then return 'no' end
+    local best_id, best_score, tied = nil, -math.huge, false
+    for _, track in ipairs(mp.get_property_native('track-list') or {}) do
+        if track.type == 'sub' and track.codec ~= 'null' then
+            local candidate = subtitle_signature(track)
+            local eligible = candidate.external == saved.external and candidate.forced == saved.forced
+                and candidate.hearing_impaired == saved.hearing_impaired
+            if saved.variant ~= '' then eligible = eligible and candidate.variant == saved.variant end
+            if saved.lang ~= '' then eligible = eligible and candidate.lang == saved.lang end
+            if saved.variant == '' and saved.title ~= '' then
+                eligible = eligible and candidate.title == saved.title
+            end
+            -- Without language/title identity, changing IDs is not enough to
+            -- identify a subtitle. Leave the normal selection policy in charge.
+            if saved.lang == '' and saved.title == '' then eligible = false end
+            if eligible then
+                local score = (candidate.title == saved.title and saved.title ~= '' and 100 or 0)
+                    + (candidate.codec == saved.codec and 10 or 0)
+                if score > best_score then
+                    best_id, best_score, tied = tostring(track.id), score, false
+                elseif score == best_score then
+                    tied = true
+                end
+            end
+        end
+    end
+    return not tied and best_id or nil
+end
+
 local function ensure_preference()
     local group = current_episode_group() or current_group
     if not group then return nil end
@@ -209,6 +261,36 @@ local function remember_audio(aid)
         saved.audio = signature
         msg.verbose('remembered manual audio track for the current episode group')
     end
+end
+
+local function remember_subtitle(sid)
+    local saved = ensure_preference()
+    if not saved then return end
+    if sid == 'no' then saved.subtitle = {disabled = true}; return end
+    for _, track in ipairs(mp.get_property_native('track-list') or {}) do
+        if track.type == 'sub' and tostring(track.id) == sid then
+            saved.subtitle = subtitle_signature(track)
+            msg.verbose('remembered manual subtitle identity for the current episode group')
+            return
+        end
+    end
+end
+
+local function on_sid_change(_, value)
+    if not file_active or mp.get_property_native('disc-menu-active') then return end
+    local sid = normalize_aid(value)
+    if sid == '' or sid == 'auto' or sid == last_stable_sid then return end
+    kill_timer(subtitle_timer)
+    local expected_generation = generation
+    subtitle_timer = mp.add_timeout(0.20, function()
+        subtitle_timer = nil
+        if file_active and generation == expected_generation
+            and normalize_aid(mp.get_property_native('sid')) == sid
+        then
+            last_stable_sid = sid
+            remember_subtitle(sid)
+        end
+    end)
 end
 
 local function cancel_disable_audio_timer()
@@ -261,7 +343,10 @@ local function deactivate_file()
     kill_timer(arm_timer)
     arm_timer = nil
     cancel_disable_audio_timer()
+    kill_timer(subtitle_timer)
+    subtitle_timer = nil
     last_stable_aid = nil
+    last_stable_sid = nil
     last_sub_pos = nil
     last_speed = nil
 end
@@ -281,6 +366,8 @@ local function on_preloaded()
 
     local aid = find_matching_audio(preference.audio)
     if aid then mp.set_property('file-local-options/aid', aid) end
+    local sid = find_matching_subtitle(preference.subtitle)
+    if sid then mp.set_property('file-local-options/sid', sid) end
     if preference.sub_pos ~= nil then
         mp.set_property('file-local-options/sub-pos', tostring(preference.sub_pos))
     end
@@ -308,6 +395,7 @@ local function on_file_loaded()
             preference.group = current_group
         end
         last_stable_aid = normalize_aid(mp.get_property_native('aid'))
+        last_stable_sid = normalize_aid(mp.get_property_native('sid'))
         last_sub_pos = tonumber(mp.get_property_native('sub-pos'))
         last_speed = tonumber(mp.get_property_native('speed'))
         file_active = true
@@ -324,6 +412,7 @@ local function on_speed_change(_, value)
 end
 
 mp.observe_property('aid', 'native', on_aid_change)
+mp.observe_property('sid', 'native', on_sid_change)
 mp.observe_property('sub-pos', 'number', on_sub_pos_change)
 mp.observe_property('speed', 'number', on_speed_change)
 mp.add_hook('on_preloaded', 40, on_preloaded)

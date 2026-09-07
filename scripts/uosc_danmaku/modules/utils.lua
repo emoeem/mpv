@@ -768,6 +768,58 @@ end
 
 -- 内部的异步运行计数
 local async_running_count = 0
+local request_generation = 0
+local request_cancellations = {}
+
+local function track_request(cancel)
+    local key = {}
+    request_cancellations[key] = cancel
+    return function() request_cancellations[key] = nil end
+end
+
+function invalidate_danmaku_requests()
+    request_generation = request_generation + 1
+    local pending = request_cancellations
+    request_cancellations = {}
+    for _, cancel in pairs(pending) do pcall(cancel) end
+end
+
+function begin_danmaku_association()
+    invalidate_danmaku_requests()
+    -- Replace the selected primary source, preserving deliberate user additions
+    -- and each source's delay/filter settings for the current video.
+    for url, source in pairs(DANMAKU.sources) do
+        if source.association then
+            DANMAKU.sources[url] = nil
+            remove_source_from_history(url)
+        elseif source.from == 'api_server' then
+            if source.from_history then source.data = nil else DANMAKU.sources[url] = nil end
+        end
+    end
+    reset_danmaku_association_render()
+end
+
+-- Cancellation alone does not remove callbacks already queued by mpv. Every
+-- continuation also checks its generation, including timers and batch workers.
+function add_danmaku_timeout(delay, callback)
+    local generation = request_generation
+    local timer, release
+    release = track_request(function() if timer then timer:kill() end end)
+    timer = mp.add_timeout(delay, function()
+        release()
+        if generation == request_generation then callback() end
+    end)
+    local kill = timer.kill
+    timer.kill = function(self)
+        release()
+        return kill(self)
+    end
+    return timer
+end
+
+mp.register_event('start-file', invalidate_danmaku_requests)
+mp.register_event('end-file', invalidate_danmaku_requests)
+mp.add_hook('on_unload', 40, invalidate_danmaku_requests)
 
 function mark_async_start()
     async_running_count = async_running_count + 1
@@ -788,16 +840,27 @@ end
 function call_cmd_async(args, callback)
     -- 标记异步开始
     mark_async_start()
-
-    local abort_signal = mp.command_native_async({
+    local generation = request_generation
+    local settled, abort_signal, release = false, nil, nil
+    local function settle()
+        if settled then return false end
+        settled = true
+        if release then release() end
+        mark_async_end()
+        return true
+    end
+    local function abort()
+        if settle() and abort_signal then mp.abort_async_command(abort_signal) end
+    end
+    release = track_request(abort)
+    abort_signal = mp.command_native_async({
         name = 'subprocess',
         capture_stderr = true,
         capture_stdout = true,
         playback_only = true,
         args = args,
     }, function(success, result, error)
-        -- 标记异步结束
-        mark_async_end()
+        if not settle() or generation ~= request_generation then return end
 
         if not success or not result or result.status ~= 0 then
             local exit_code = (result and result.status or 'unknown')
@@ -812,14 +875,12 @@ function call_cmd_async(args, callback)
         return callback(nil, json)
     end)
 
-    return function()
-        mp.abort_async_command(abort_signal)
-    end
+    return abort
 end
 
 local function yield_once()
     local co = coroutine.running()
-    mp.add_timeout(0, function()
+    add_danmaku_timeout(0, function()
         coroutine.resume(co)
     end)
     coroutine.yield()
@@ -827,9 +888,10 @@ end
 
 local function make_safe_resume(co, timer_ref)
     local resumed = false
+    local generation = request_generation
 
     return function(...)
-        if resumed then return end
+        if resumed or generation ~= request_generation then return end
         resumed = true
 
         if timer_ref.timer then
@@ -859,7 +921,7 @@ function await_call_cmd(args, timeout, on_start)
     end
 
     if timeout and type(timeout) == 'number' and timeout > 0 then
-        timer_ref.timer = mp.add_timeout(timeout, function()
+        timer_ref.timer = add_danmaku_timeout(timeout, function()
             if abort_fn then pcall(abort_fn) end
             safe_resume("timeout", nil)
         end)
@@ -889,11 +951,25 @@ function parallel_requests(servers, build_args_fn, per_response_cb, final_cb, op
     local aborted = false
     local idx = 1
     local monitor = nil
+    local generation = request_generation
+    local release
+    local function cancel()
+        if aborted then return end
+        aborted = true
+        if release then release() end
+        if monitor then monitor:kill() end
+        for i, abort_fn in pairs(in_flight_abort) do
+            if abort_fn then pcall(abort_fn) end
+            in_flight_abort[i] = nil
+        end
+        in_flight_count = 0
+    end
+    release = track_request(cancel)
 
     -- worker 协程
     local function worker()
         while true do
-            if aborted then return end
+            if aborted or generation ~= request_generation then return end
 
             local i = idx
             if i > #servers then return end
@@ -922,7 +998,7 @@ function parallel_requests(servers, build_args_fn, per_response_cb, final_cb, op
                     in_flight_count = in_flight_count - 1
                 end
 
-                if aborted then return end
+                if aborted or generation ~= request_generation then return end
 
                 if not ok then
                     pcall(per_response_cb, server, tostring(err), nil)
@@ -946,7 +1022,7 @@ function parallel_requests(servers, build_args_fn, per_response_cb, final_cb, op
 
     -- monitor（完成检测）
     monitor = mp.add_periodic_timer(0.05, function()
-        if aborted then
+        if aborted or generation ~= request_generation then
             monitor:kill()
             return
         end
@@ -956,25 +1032,11 @@ function parallel_requests(servers, build_args_fn, per_response_cb, final_cb, op
 
         if all_assigned and not any_inflight then
             monitor:kill()
+            release()
             if final_cb then pcall(final_cb) end
         end
     end)
 
     -- 返回取消函数
-    return function()
-        if aborted then return end
-        aborted = true
-
-        for i, abort_fn in pairs(in_flight_abort) do
-            if abort_fn then pcall(abort_fn) end
-            in_flight_abort[i] = nil
-        end
-
-        in_flight_count = 0
-
-        if monitor then
-            monitor:kill()
-            monitor = nil
-        end
-    end
+    return cancel
 end

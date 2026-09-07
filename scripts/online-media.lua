@@ -16,21 +16,28 @@ local o = {
     live_danmaku_poll = 0.35,
     live_danmaku_max_reconnects = 3,
     bilibili_cookie_file = '~~/online-media/bilibili-cookies.txt',
+    youtube_cookie_file = '~~/online-media/youtube-cookies.txt',
+    youtube_js_runtime = '~~/online-media/runtime/deno.exe',
+    youtube_ytdl = '~~/online-media/yt-dlp.exe',
+    youtube_resolver = '~~/online-media/resolve_youtube.py',
     bilibili_resolver = '~~/online-media/resolve_bilibili.py',
     live_resolver = '~~/online-media/resolve_live.py',
     bilibili_live_danmaku = '~~/online-media/bilibili_live_danmaku.py',
     platform_live_danmaku = '~~/online-media/platform_live_danmaku.py',
+    python_runtime = '~~/online-media/runtime/python.exe',
 }
 options.read_options(o, 'online_media')
 
--- Linux port: Yaozhi bundles a Windows embeddable Python at runtime/python.exe;
--- this machine uses a system-site-packages venv at the same runtime directory.
-local python_path = mp.command_native({'expand-path', '~~/online-media/runtime/bin/python3'})
+local python_path = mp.command_native({'expand-path', o.python_runtime})
 local live_resolver_path = mp.command_native({'expand-path', o.live_resolver})
 local bilibili_resolver_path = mp.command_native({'expand-path', o.bilibili_resolver})
 local bilibili_live_danmaku_path = mp.command_native({'expand-path', o.bilibili_live_danmaku})
 local platform_live_danmaku_path = mp.command_native({'expand-path', o.platform_live_danmaku})
 local cookie_path = mp.command_native({'expand-path', o.bilibili_cookie_file})
+local youtube_cookie_path = mp.command_native({'expand-path', o.youtube_cookie_file})
+local youtube_js_path = mp.command_native({'expand-path', o.youtube_js_runtime})
+local youtube_ytdl_path = mp.command_native({'expand-path', o.youtube_ytdl})
+local youtube_resolver_path = mp.command_native({'expand-path', o.youtube_resolver})
 
 local generation = 0
 local resolve_request = nil
@@ -67,6 +74,7 @@ local state = {
     resume_paused = false,
     display_title = '',
     live_danmaku_status = 'off',
+    failure_kind = '',
 }
 
 local function set_user_data(name, value)
@@ -92,6 +100,7 @@ local function publish()
     set_user_data('candidate-count', state.candidates and #state.candidates or 0)
     set_user_data('reconnect-attempt', state.reconnect_attempt)
     set_user_data('live-danmaku-status', state.live_danmaku_status)
+    set_user_data('failure-kind', state.failure_kind)
 end
 
 local function reset_state(reconnect_attempt, pending)
@@ -117,6 +126,7 @@ local function reset_state(reconnect_attempt, pending)
         resume_paused = pending.resume_paused == true,
         display_title = '',
         live_danmaku_status = 'off',
+        failure_kind = '',
     }
     publish()
 end
@@ -127,6 +137,49 @@ local function file_exists(path)
     if not handle then return false end
     handle:close()
     return true
+end
+
+local function sanitize_http_proxy(value)
+    value = tostring(value or ''):match('^%s*(.-)%s*$') or ''
+    if value == '' then return '' end
+    if not value:match('^[%a][%w+%.%-]*://') then value = 'http://' .. value end
+    if value:find('@', 1, true) or value:find('[%s\r\n]') then return '' end
+    if not value:match('^https?://[^/]+:%d+/?$') then return '' end
+    return value:gsub('/$', '')
+end
+
+local function registry_value(name)
+    local result = mp.command_native({
+        name = 'subprocess', playback_only = false,
+        capture_stdout = true, capture_stderr = false,
+        args = {
+            'reg.exe', 'query',
+            'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
+            '/v', name,
+        },
+    })
+    if type(result) ~= 'table' or tonumber(result.status) ~= 0 then return '' end
+    return tostring(result.stdout or '')
+end
+
+local function detect_system_proxy()
+    local proxy = sanitize_http_proxy(mp.get_property('http-proxy', ''))
+    if proxy ~= '' then return proxy end
+    for _, name in ipairs({'HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy',
+            'HTTP_PROXY', 'http_proxy'}) do
+        proxy = sanitize_http_proxy(os.getenv(name))
+        if proxy ~= '' then return proxy end
+    end
+    if package.config:sub(1, 1) ~= '\\' then return '' end
+
+    local enabled = registry_value('ProxyEnable')
+    if not enabled:match('0x0*1%s*$') then return '' end
+    local output = registry_value('ProxyServer')
+    local server = output:match('ProxyServer%s+REG_%w+%s+([^\r\n]+)') or ''
+    if server:find(';', 1, true) then
+        server = server:match('https=([^;]+)') or server:match('http=([^;]+)') or ''
+    end
+    return sanitize_http_proxy(server)
 end
 
 local function set_live_danmaku_status(status)
@@ -244,7 +297,10 @@ local function start_live_danmaku()
     stop_live_danmaku(true)
     live_danmaku_ticket = live_danmaku_ticket + 1
     local ticket = live_danmaku_ticket
-    local temp_root = os.getenv('TEMP') or os.getenv('TMP') or '.'
+    -- Linux port: use the platform temp directory instead of the Windows TEMP
+    -- convention (which would fall back to "." on Unix).
+    local temp_root = os.getenv('TMPDIR') or os.getenv('TEMP')
+        or os.getenv('TMP') or '/tmp'
     local process_id = utils.getpid and utils.getpid()
         or mp.get_property_number('pid', 0) or 0
     local pid = tostring(process_id):gsub('[^%d]', '')
@@ -303,6 +359,7 @@ end
 
 local function platform_label()
     local labels = {
+        youtube = 'YouTube',
         bilibili = 'B站',
         douyin = '抖音',
         douyu = '斗鱼',
@@ -344,6 +401,121 @@ local function configure_bilibili_ytdl()
     end
     mp.set_property_native('file-local-options/ytdl-raw-options', raw)
 end
+
+local function configure_youtube_playback()
+    local proxy = detect_system_proxy()
+    -- YouTube uses independent DASH video/audio requests. Build enough memory
+    -- runway for bursty residential proxies without changing local files,
+    -- AList/WebDAV, or unrelated HTTP streams.
+    mp.set_property('file-local-options/cache', 'yes')
+    mp.set_property('file-local-options/cache-on-disk', 'no')
+    mp.set_property('file-local-options/cache-pause', 'yes')
+    mp.set_property('file-local-options/cache-pause-initial', 'yes')
+    mp.set_property('file-local-options/cache-pause-wait', '5')
+    mp.set_property('file-local-options/cache-secs', '60')
+    mp.set_property('file-local-options/demuxer-max-bytes', '256MiB')
+    mp.set_property('file-local-options/demuxer-max-back-bytes', '64MiB')
+    mp.set_property('file-local-options/network-timeout', '20')
+    mp.set_property_bool('file-local-options/cookies', false)
+    if proxy ~= '' then
+        mp.set_property('file-local-options/http-proxy', proxy)
+        mp.set_property_native('file-local-options/stream-lavf-o', {http_proxy = proxy})
+        -- Keep this compatibility exception scoped to proxied ephemeral Google
+        -- media URLs. yt-dlp webpage/API requests still verify TLS.
+        mp.set_property_bool('file-local-options/tls-verify', false)
+    end
+    msg.info('[online-media] YouTube network route: ' .. (proxy ~= '' and 'system-proxy' or 'direct'))
+    return proxy
+end
+
+local function configure_youtube_ytdl()
+    local proxy = configure_youtube_playback()
+    -- Prefer separate direct-HTTPS DASH tracks at the highest available
+    -- resolution. Manifest-only variants remain a fallback, but avoiding them
+    -- first makes proxy playback more reliable and preserves 4K/AV1 when the
+    -- video exposes those direct tracks.
+    mp.set_property('file-local-options/ytdl-format',
+        'bestvideo[protocol=https]+bestaudio[protocol=https]/bestvideo+bestaudio/best')
+    local raw = {
+        ['ignore-config'] = '',
+        ['no-playlist'] = '',
+        ['socket-timeout'] = tostring(o.resolver_timeout),
+        retries = '2',
+        ['fragment-retries'] = '2',
+        ['extractor-retries'] = '2',
+        ['js-runtimes'] = 'deno:' .. youtube_js_path,
+    }
+    if proxy ~= '' then
+        raw.proxy = proxy
+        mp.set_property('file-local-options/http-proxy', proxy)
+    end
+    if file_exists(youtube_cookie_path) then
+        raw.cookies = youtube_cookie_path
+    else
+        -- Linux port: mpv.conf already reads Firefox cookies for yt-dlp; keep
+        -- the same route here when no dedicated cookie file has been exported.
+        raw['cookies-from-browser'] = 'firefox'
+    end
+    mp.set_property_native('file-local-options/ytdl-raw-options', raw)
+end
+
+local youtube_failure_priority = {
+    generic = 0,
+    network = 1,
+    js_runtime = 2,
+    login_required = 3,
+}
+
+local function record_youtube_failure(kind)
+    if not state.matched or state.platform ~= 'youtube' then return end
+    local current = youtube_failure_priority[state.failure_kind] or -1
+    if (youtube_failure_priority[kind] or 0) > current then
+        state.failure_kind = kind
+    end
+end
+
+local function youtube_failure_message()
+    if not file_exists(youtube_ytdl_path) or not file_exists(youtube_js_path) then
+        return 'YouTube 解析组件不完整，请重新解压完整播放器'
+    end
+    if state.failure_kind == 'login_required' then
+        return file_exists(youtube_cookie_path)
+            and 'YouTube 登录已失效：请确认 Firefox 中的 YouTube 登录状态后重试'
+            or 'YouTube 要求登录验证：请用 Firefox 登录 YouTube 后重试'
+    end
+    if state.failure_kind == 'js_runtime' then
+        return 'YouTube JavaScript 验证失败，请更新完整播放器组件'
+    end
+    if state.failure_kind == 'network' then
+        return 'YouTube 连接超时：请检查代理线路或出口质量后重试'
+    end
+    return file_exists(youtube_cookie_path)
+        and 'YouTube 视频解析失败：请检查网络、登录状态或更新播放器'
+        or 'YouTube 视频解析失败：请检查网络后重试；若提示人机验证请登录'
+end
+
+mp.enable_messages('warn')
+mp.register_event('log-message', function(event)
+    if not state.matched or state.platform ~= 'youtube' then return end
+    local text = tostring(event and event.text or ''):lower()
+    if text == '' then return end
+    if text:find('sign in to confirm', 1, true)
+            or text:find('login_required', 1, true)
+            or text:find('use --cookies-from-browser', 1, true)
+            or text:find('account cookies are no longer valid', 1, true) then
+        record_youtube_failure('login_required')
+    elseif text:find('no supported javascript runtime', 1, true)
+            or text:find('javascript challenge solving failed', 1, true)
+            or text:find('js challenge provider', 1, true) and text:find('unavailable', 1, true) then
+        record_youtube_failure('js_runtime')
+    elseif text:find('timed out', 1, true)
+            or text:find('timeout was reached', 1, true)
+            or text:find('unable to download webpage', 1, true)
+            or text:find('proxyerror', 1, true)
+            or text:find('connectionerror', 1, true) then
+        record_youtube_failure('network')
+    end
+end)
 
 local function remove_cancel_binding()
     if not cancel_binding then return end
@@ -394,12 +566,9 @@ local function apply_candidate(index)
     end
     state.candidate_index = index
     state.quality_id = tostring(candidate.quality_id or '')
-    -- Linux port: Yaozhi's Windows build relies on a global yt-dlp hook exclude
-    -- rule (exclude=.*) so the hook never touches resolved CDN URLs. This config
-    -- still wants yt-dlp for YouTube etc., so disable the hook per-file instead.
-    mp.set_property('file-local-options/ytdl', 'no')
-    local proxy = tostring(candidate.http_proxy or '')
-    if proxy ~= '' and not proxy:match('^https?://127%.0%.0%.1:%d+$')
+    local proxy = sanitize_http_proxy(candidate.http_proxy)
+    if state.platform ~= 'youtube' and proxy ~= ''
+            and not proxy:match('^https?://127%.0%.0%.1:%d+$')
             and not proxy:match('^https?://localhost:%d+$')
             and not proxy:match('^https?://%[::1%]:%d+$') then
         proxy = ''
@@ -414,6 +583,7 @@ local function apply_candidate(index)
     -- account/API requests continue to use normal certificate verification.
     local compatibility_media = state.platform == 'bilibili'
         or state.platform == 'douyu' or state.platform == 'huya'
+        or (state.platform == 'youtube' and proxy ~= '')
     if compatibility_media then
         mp.set_property_bool('file-local-options/tls-verify', false)
         mp.set_property_bool('file-local-options/cookies', false)
@@ -473,7 +643,11 @@ local function apply_descriptor(data)
         mp.set_property('file-local-options/force-media-title', title)
         remember_playlist_title(title)
     end
-    configure_live_playback()
+    if state.content_type == 'live' then
+        configure_live_playback()
+    elseif state.platform == 'youtube' then
+        configure_youtube_playback()
+    end
     return apply_candidate(1)
 end
 
@@ -485,7 +659,7 @@ local function stop_failed_load(message)
     mp.add_timeout(0, function() mp.commandv('stop') end)
 end
 
-local function resolve_platform(kind, hook, purpose, resolver_path, fallback_to_ytdl)
+local function resolve_platform(kind, hook, purpose, resolver_path, fallback_to_ytdl, extra_args)
     resolver_path = resolver_path or live_resolver_path
     if not file_exists(python_path) or not file_exists(resolver_path) then
         stop_failed_load('在线解析组件不完整，请重新解压播放器')
@@ -530,6 +704,9 @@ local function resolve_platform(kind, hook, purpose, resolver_path, fallback_to_
         args[#args + 1] = '--quality-id'
         args[#args + 1] = state.requested_quality
     end
+    for _, value in ipairs(extra_args or {}) do
+        args[#args + 1] = value
+    end
     if resolver_path == bilibili_resolver_path and file_exists(cookie_path) then
         args[#args + 1] = '--cookie-file'
         args[#args + 1] = cookie_path
@@ -564,10 +741,16 @@ local function resolve_platform(kind, hook, purpose, resolver_path, fallback_to_
         if fallback_to_ytdl then
             state.resolver = 'yt-dlp-hook'
             state.status = 'opening'
-            configure_bilibili_ytdl()
+            if fallback_to_ytdl == 'youtube' then
+                configure_youtube_ytdl()
+            else
+                configure_bilibili_ytdl()
+            end
             mp.set_property('stream-open-filename', 'ytdl://' .. state.source_url)
             publish()
-            mp.osd_message('正在切换 B站兼容解析模式…', 4)
+            mp.osd_message(fallback_to_ytdl == 'youtube'
+                and '正在切换 YouTube 原生兼容解析模式…'
+                or '正在切换 B站兼容解析模式…', 4)
             continue_hook()
             return
         end
@@ -582,10 +765,16 @@ local function resolve_platform(kind, hook, purpose, resolver_path, fallback_to_
         if fallback_to_ytdl then
             state.resolver = 'yt-dlp-hook'
             state.status = 'opening'
-            configure_bilibili_ytdl()
+            if fallback_to_ytdl == 'youtube' then
+                configure_youtube_ytdl()
+            else
+                configure_bilibili_ytdl()
+            end
             mp.set_property('stream-open-filename', 'ytdl://' .. state.source_url)
             publish()
-            mp.osd_message('B站异步解析超时，正在切换兼容模式…', 5)
+            mp.osd_message(fallback_to_ytdl == 'youtube'
+                and 'YouTube 清晰度解析超时，正在切换兼容模式…'
+                or 'B站异步解析超时，正在切换兼容模式…', 5)
             continue_hook()
         else
             stop_failed_load(media_label .. '连接超时，请检查网络后重试')
@@ -605,6 +794,14 @@ mp.register_event('start-file', function()
     end
 
     local path = mp.get_property('path', '')
+    -- ytdl_hook may internally reopen our explicit pseudo URL after extraction
+    -- fails. Keep the owning YouTube state long enough to publish a useful
+    -- authentication error instead of resetting to an unrelated raw URL.
+    if state.matched and state.platform == 'youtube'
+            and path == 'ytdl://' .. state.source_url then
+        publish()
+        return
+    end
     local attempt = 0
     local pending = nil
     if pending_open and pending_open.url == path then
@@ -632,6 +829,30 @@ mp.add_hook('on_load', 5, function(hook)
 
     if state.content_type == 'video' and state.resume_time > 0 then
         mp.set_property_number('file-local-options/start', state.resume_time)
+    end
+
+    if route.kind == 'youtube-video' then
+        if not file_exists(youtube_ytdl_path) or not file_exists(youtube_js_path)
+                or not file_exists(youtube_resolver_path) then
+            state.failure_kind = 'js_runtime'
+            stop_failed_load('YouTube 解析组件不完整，请重新解压完整播放器')
+            return
+        end
+        state.resolver = 'yt-dlp-direct'
+        local extra_args = {'--js-runtime', youtube_js_path}
+        if file_exists(youtube_cookie_path) then
+            extra_args[#extra_args + 1] = '--cookie-file'
+            extra_args[#extra_args + 1] = youtube_cookie_path
+        end
+        local proxy = detect_system_proxy()
+        if proxy ~= '' then
+            extra_args[#extra_args + 1] = '--proxy'
+            extra_args[#extra_args + 1] = proxy
+        end
+        configure_youtube_playback()
+        publish()
+        resolve_platform(route.kind, hook, 'initial', youtube_resolver_path, 'youtube', extra_args)
+        return
     end
 
     if route.kind == 'bilibili-video' or route.kind == 'bilibili-short'
@@ -671,7 +892,13 @@ mp.add_hook('on_load_fail', 5, function(hook)
     if state.content_type == 'video' then
         state.status = 'error'
         publish()
-        mp.osd_message('B站视频解析失败：可能需要登录 Cookie，或平台暂时限制访问', 7)
+        if state.platform == 'youtube' then
+            if state.failure_kind == '' then state.failure_kind = 'generic' end
+            publish()
+            mp.osd_message(youtube_failure_message(), 9)
+        else
+            mp.osd_message('B站视频解析失败：可能需要登录 Cookie，或平台暂时限制访问', 7)
+        end
     elseif state.content_type == 'live' then
         state.status = 'error'
         publish()
@@ -683,6 +910,7 @@ mp.register_event('file-loaded', function()
     if not state.matched then return end
     state.file_loaded = true
     state.status = 'playing'
+    state.failure_kind = ''
     if state.canonical_url == '' then state.canonical_url = state.source_url end
     if state.display_title ~= '' then
         mp.set_property('force-media-title', state.display_title)
@@ -698,9 +926,20 @@ end)
 mp.register_event('end-file', function(event)
     safe_abort_request()
     stop_live_danmaku(true)
+    if state.matched and state.platform == 'youtube' and event.reason == 'error' then
+        if state.status ~= 'error' then
+            state.status = 'error'
+            publish()
+            if state.failure_kind == '' then state.failure_kind = 'generic' end
+            publish()
+            mp.osd_message(youtube_failure_message(), 9)
+        end
+        return
+    end
     if not state.matched or state.content_type ~= 'live' then return end
 
-    if event.reason == 'error' and state.file_loaded
+    local recoverable_live_end = event.reason == 'error' or event.reason == 'eof'
+    if recoverable_live_end and state.file_loaded
             and state.reconnect_attempt < o.live_reconnect_attempts then
         local next_attempt = state.reconnect_attempt + 1
         local delay = next_attempt == 1 and 2 or 5
@@ -709,7 +948,9 @@ mp.register_event('end-file', function(event)
         reconnect_ticket = ticket
         state.status = 'reconnecting'
         publish()
-        mp.osd_message(string.format('直播连接中断，%d 秒后自动重连（%d/%d）',
+        state.failure_kind = event.reason == 'eof' and 'live_stream_eof' or 'live_network_error'
+        publish()
+        mp.osd_message(string.format('直播意外断流，%d 秒后自动恢复（%d/%d）',
             delay, next_attempt, o.live_reconnect_attempts), delay + 1)
         reconnect_timer = mp.add_timeout(delay, function()
             reconnect_timer = nil
@@ -722,6 +963,7 @@ mp.register_event('end-file', function(event)
 
     if event.reason == 'eof' then
         state.status = 'ended'
+        state.failure_kind = 'live_stream_eof'
         publish()
         mp.osd_message('直播已结束', 4)
     elseif event.reason == 'error' and state.file_loaded then

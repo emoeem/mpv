@@ -62,7 +62,10 @@ local output_directory = mp.command_native({ "expand-path", options.dir })
 if output_directory ~= '' then
     local meta, meta_error = utils.file_info(output_directory)
     if not meta or not meta.is_dir then
-        local windows_args = { 'powershell', '-NoProfile', '-Command', 'mkdir', string.format("\"%s\"", output_directory) }
+        local windows_args = {
+            'powershell', '-NoProfile', '-Command',
+            '[IO.Directory]::CreateDirectory($args[0]) | Out-Null', output_directory
+        }
         local unix_args = { 'mkdir', '-p', output_directory }
         local args = is_windows and windows_args or unix_args
         local res = mp.command_native({name = "subprocess", capture_stdout = true, playback_only = false, args = args})
@@ -187,6 +190,7 @@ function make_animated_internal(burn_subtitles)
 
     -- make the animated
     local file_path = utils.join_path(output_directory, filename)
+    local animated_name = nil
 
     -- increment filename
     for i = 0, 999 do
@@ -201,26 +205,43 @@ function make_animated_internal(burn_subtitles)
         return
     end
 
-    local copyts = ""
-
-    if burn_subtitles then
-        copyts = "-copyts"
-    end
-
+    local args = {
+        options.ffmpeg_path,
+        '-y', '-hide_banner', '-loglevel', 'error',
+        '-ss', tostring(position),
+    }
+    if burn_subtitles then args[#args + 1] = '-copyts' end
+    args[#args + 1] = '-t'
+    args[#args + 1] = tostring(duration)
+    args[#args + 1] = '-i'
+    args[#args + 1] = pathname
+    args[#args + 1] = '-lavfi'
     if options.type == "webp" then
-        arg = string.format("%s -y -hide_banner -loglevel error -ss %s %s -t %s -i '%s' -lavfi %s -lossless %s -q:v %s -compression_level %s -loop %s '%s'", options.ffmpeg_path, position, copyts, duration, pathname, trim_filters, options.lossless, options.quality, options.compression_level, options.loop, animated_name)
+        args[#args + 1] = trim_filters
+        args[#args + 1] = '-lossless'
+        args[#args + 1] = tostring(options.lossless)
+        args[#args + 1] = '-q:v'
+        args[#args + 1] = tostring(options.quality)
+        args[#args + 1] = '-compression_level'
+        args[#args + 1] = tostring(options.compression_level)
     else
-        arg = string.format("%s -y -hide_banner -loglevel error -ss %s %s -t %s -i '%s' -lavfi %s,'split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse' -loop %s '%s'", options.ffmpeg_path, position, copyts, duration, pathname, trim_filters, options.loop, animated_name)
+        args[#args + 1] = trim_filters .. ',split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse'
     end
-    local windows_args = { 'powershell', '-NoProfile', '-Command', arg }
-    local unix_args = { '/bin/bash', '-c', arg }
-    local args = is_windows and windows_args or unix_args
+    args[#args + 1] = '-loop'
+    args[#args + 1] = tostring(options.loop)
+    args[#args + 1] = animated_name
     local screenx, screeny, aspect = mp.get_osd_size()
     mp.set_osd_ass(screenx, screeny, "{\\an9}● ")
-    local res = mp.command_native({name = "subprocess", capture_stdout = true, playback_only = false, args = args})
+    local res = mp.command_native({
+        name = "subprocess",
+        capture_stdout = true,
+        capture_stderr = true,
+        playback_only = false,
+        args = args,
+    })
     mp.set_osd_ass(screenx, screeny, "")
     if res.status ~= 0 then
-        msg.info("Failed to creat " .. animated_name)
+        msg.error("Failed to create " .. animated_name .. ": " .. tostring(res.stderr or res.error or "unknown error"))
         mp.osd_message("Error creating " .. text .. ", check console for more info.")
         return
     end

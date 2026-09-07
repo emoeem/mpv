@@ -38,6 +38,10 @@ local function load_audio_stats_info()
 end
 
 local AudioStatsInfo = load_audio_stats_info()
+local release_path = mp.find_config_file('script-modules/yaozhi-release.lua')
+local release_ok, release_info = pcall(dofile, release_path or '')
+local release = release_ok and type(release_info) == 'table' and release_info or nil
+if release then mp.set_property_native('user-data/mpv-yaozhi/release', release) end
 
 -- Options
 local o = {
@@ -99,6 +103,7 @@ local o = {
     border_size_fullscreen = 0,
     position_x_fullscreen = -1,
     position_y_fullscreen = -1,
+    auto_layout = true,
 
     -- Custom header for ASS tags to style the text output.
     -- Specifying this will ignore the text style values above and just
@@ -174,6 +179,9 @@ local process_key_binding
 -- an independent position without changing the layout of the other pages.
 local perf_page_overlay = mp.create_osd_overlay("ass-events")
 local perf_page_overlay_visible = false
+local release_overlay = mp.create_osd_overlay("ass-events")
+local stats_measure = mp.create_osd_overlay("ass-events")
+stats_measure.compute_bounds, stats_measure.hidden = true, true
 local PERF_PAGE_RES_Y = 288
 local PERF_PAGE_MAX_COLUMNS = 4
 local PERF_PAGE_MIN_COLUMN_WIDTH = 112
@@ -1517,6 +1525,81 @@ local function convert_osd_ass_controls(text)
     return table.concat(output)
 end
 
+-- Keep statistics above the dock and its media badges, even while the dock is
+-- transiently hovered (osc/margins only describes persistent controls).
+local function stats_safe_bottom()
+    local margins = mp.get_property_native('user-data/osc/margins') or {}
+    local has_uosc = mp.get_property('user-data/uosc/dock-animation-mode') ~= nil
+    return 288 * (1 - max(tonumber(margins.b) or 0, has_uosc and 0.18 or 0.025))
+end
+
+local function show_release_badge()
+    if not release or not o.use_ass or not has_vo_window() then
+        release_overlay:remove()
+        return
+    end
+    local w, h = mp.get_osd_size()
+    if not w or not h or h <= 0 then return end
+    release_overlay.res_x, release_overlay.res_y = 288 * w / h, 288
+    -- Independent upper-right label: no extra row in any statistics page.
+    local x = release_overlay.res_x - max(position_x, 6)
+    local y = position_y
+    if mp.get_property('user-data/startup-format-logos/visible') == 'yes' then
+        y = max(y, 288 * 0.15)
+    end
+    if w < h * 1.2 then y = max(4, position_y - font_size * 1.6) end
+    local label = mp.command_native({'escape-ass', tostring(release.name)..'  '..tostring(release.version)})
+    release_overlay.data = text_style():gsub('\\pos%b()', ''):gsub('\\an%d', '\\an9')
+        .. format('{\\an9\\pos(%.2f,%.2f)\\fs%.2f\\b1\\1a&H18&}%s',
+            x, y, font_size * 1.05, label)
+    release_overlay:update()
+end
+
+local function balance_stats_content(content, bottom)
+    if not o.auto_layout then return content end
+    -- Final placement uses the display canvas: font rasterization on the tall
+    -- overflow probe can accumulate a small line-height difference.
+    stats_measure.res_y = 288
+    stats_measure.data = convert_osd_ass_controls(content)
+    local bounds = stats_measure:update()
+    if not bounds or not bounds.y0 or not bounds.y1 then return content end
+    local height = bounds.y1 - bounds.y0
+    local target = position_y + max(0, bottom - position_y - height) / 2
+    if mp.get_property_native('user-data/uosc_danmaku/has-danmaku') ~= true then
+        -- With no danmaku, balance the visible free space around the frame's
+        -- centre. Only move upward if a long page would collide with the dock.
+        target = max(position_y, min((288 - height) / 2, bottom - height))
+    end
+    local shift = target - bounds.y0
+    return content:gsub('\\pos%(([%d%.%-]+),([%d%.%-]+)%)', function(x, y)
+        return format('\\pos(%s,%.3f)', x, tonumber(y) + shift)
+    end)
+end
+
+local function fit_stats_page(page, after_scroll)
+    local content = pages[page].f(after_scroll)
+    if not o.use_ass or not o.auto_layout or (o.custom_header and o.custom_header ~= '') then return content end
+    local w, h = mp.get_osd_size()
+    if not w or not h or h <= 0 then return content end
+    local saved_font, saved_border, saved_y = font_size, border_size, position_y
+    local bottom = stats_safe_bottom()
+    -- A taller measurement canvas prevents clipping from hiding overflow.
+    stats_measure.res_x, stats_measure.res_y = 288 * w / h, 576
+    for _ = 1, 3 do
+        stats_measure.data = convert_osd_ass_controls(content)
+        local bounds = stats_measure:update()
+        if not bounds or not bounds.y1 or bounds.y1 <= bottom then break end
+        local height = bounds.y1 - position_y
+        if height <= 0 then break end
+        local ratio = min(0.98, max(0.5, (bottom - position_y - 3) / height))
+        font_size, border_size = font_size * ratio, border_size * ratio
+        content = pages[page].f(after_scroll)
+    end
+    content = balance_stats_content(content, bottom)
+    font_size, border_size, position_y = saved_font, saved_border, saved_y
+    return content
+end
+
 local function trim_perf_line_prefix(line)
     if line:sub(1, #o.nl) == o.nl then
         line = line:sub(#o.nl + 1)
@@ -1578,8 +1661,19 @@ local function render_perf_page_overlay()
     local content_y = position_y + max(font_size, content_font_size) * 1.35
     local bottom_margin = max(6, border_size * 2)
     local row_height = max(1, content_font_size * PERF_PAGE_ROW_HEIGHT)
+    -- Use the actual font's line advance; the nominal font size can
+    -- underestimate Chinese font metrics and put the last row under the dock.
+    stats_measure.res_x, stats_measure.res_y = res_x, 576
+    local sample_style = perf_page_style_at(position_x, content_y, content_font_size, 100)
+    stats_measure.data = sample_style .. '统计 Ag'
+    local single = stats_measure:update()
+    stats_measure.data = sample_style .. '统计 Ag' .. o.nl .. '统计 Ag'
+    local double = stats_measure:update()
+    if single and double and single.y1 and double.y1 then
+        row_height = max(row_height, double.y1 - single.y1)
+    end
     local rows_per_column = max(1,
-        math.floor((PERF_PAGE_RES_Y - content_y - bottom_margin) / row_height))
+        math.floor((stats_safe_bottom() - content_y - bottom_margin) / row_height))
     local capacity = max_columns * rows_per_column
     local page = pages[o.key_page_0]
     local max_offset = max(1, #content - capacity + 1)
@@ -1626,7 +1720,7 @@ local function render_perf_page_overlay()
 
     perf_page_overlay.res_x = res_x
     perf_page_overlay.res_y = PERF_PAGE_RES_Y
-    perf_page_overlay.data = table.concat(events, "\n")
+    perf_page_overlay.data = balance_stats_content(table.concat(events, "\n"), stats_safe_bottom())
     perf_page_overlay:update()
     perf_page_overlay_visible = true
     return true
@@ -1800,6 +1894,8 @@ end
 local function print_page(page, after_scroll)
     -- the page functions assume we start in ass-enabled mode.
     -- that's true for mp.set_osd_ass, but not for mp.osd_message.
+    eval_ass_formatting()
+    show_release_badge()
     if page == o.key_page_0 then
         local was_visible = perf_page_overlay_visible
         if render_perf_page_overlay() then
@@ -1815,7 +1911,7 @@ local function print_page(page, after_scroll)
     end
 
     hide_perf_page_overlay()
-    local ass_content = pages[page].f(after_scroll)
+    local ass_content = fit_stats_page(page, after_scroll)
     if o.persistent_overlay then
         mp.set_osd_ass(0, 0, ass_content)
     else
@@ -1855,6 +1951,21 @@ update_scale = function ()
     shadow_y_offset = o.shadow_y_offset * scale
     position_x = raw_position_x * scale
     position_y = raw_position_y * scale
+    if o.auto_layout then
+        local margins = mp.get_property_native('user-data/osc/margins') or {}
+        local has_uosc = mp.get_property('user-data/uosc/dock-animation-mode') ~= nil
+        position_y = max(4, 288 * max(tonumber(margins.t) or 0, has_uosc and 0.055 or 0) + 3)
+        if mp.get_property_native('user-data/uosc_danmaku/has-danmaku') == true then
+            local layout = mp.get_property_native('user-data/uosc_danmaku/layout')
+            local top = type(layout) == 'table' and layout.visible and tonumber(layout.top)
+            -- Large/fullscreen danmaku areas cannot consume the entire stats
+            -- viewport. Keep a useful foreground view in that configuration.
+            position_y = max(position_y, top and min(0.35, top) * 288 + 3 or raw_position_y * scale)
+        end
+        if mp.get_property_number('osd-width', 0) < mp.get_property_number('osd-height', 0) * 1.2 then
+            position_y = max(position_y, font_size * 2.2 + 4)
+        end
+    end
     plot_bg_border_width = o.plot_bg_border_width * scale
     if display_timer:is_enabled() then
         print_page(curr_page)
@@ -1863,6 +1974,8 @@ end
 
 local function clear_screen()
     hide_perf_page_overlay()
+    release_overlay:remove()
+    stats_measure:remove()
     if o.persistent_overlay then mp.set_osd_ass(0, 0, "") else mp.osd_message("", 0) end
 end
 
@@ -2147,6 +2260,11 @@ end
 mp.observe_property("osd-height", "native", update_scale)
 mp.observe_property("osd-scale-by-window", "native", update_scale)
 mp.observe_property("fullscreen", "native", update_scale)
+mp.observe_property('user-data/uosc_danmaku/has-danmaku', 'native', update_scale)
+mp.observe_property('user-data/uosc_danmaku/layout', 'native', update_scale)
+mp.observe_property('user-data/osc/margins', 'native', update_scale)
+mp.observe_property('user-data/uosc/dock-animation-mode', 'native', update_scale)
+mp.observe_property('user-data/startup-format-logos/visible', 'native', update_scale)
 
 local function update_property_cache(name, value)
     property_cache[name] = value

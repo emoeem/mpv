@@ -22,13 +22,50 @@ local function parse_http_url(url)
     end
 
     host = host:lower():gsub('%.$', '')
-    return {scheme = scheme, host = host, path = path ~= '' and path or '/'}
+    return {
+        scheme = scheme,
+        host = host,
+        path = path ~= '' and path or '/',
+        query = url:match('%?([^#]*)') or '',
+    }
+end
+
+local function query_value(query, target)
+    for field in tostring(query or ''):gmatch('[^&]+') do
+        local key, value = field:match('^([^=]+)=?(.*)$')
+        if key == target then return value end
+    end
 end
 
 function M.classify(url)
     local parsed = parse_http_url(url)
     if not parsed then return nil end
     local host, path = parsed.host, parsed.path
+
+    local youtube_id
+    if host == 'youtu.be' then
+        youtube_id = path:match('^/([A-Za-z0-9_%-]+)/?$')
+    else
+        local youtube_hosts = {
+            ['youtube.com'] = true,
+            ['www.youtube.com'] = true,
+            ['m.youtube.com'] = true,
+            ['music.youtube.com'] = true,
+        }
+        if youtube_hosts[host] then
+            if path == '/watch' or path == '/watch/' then
+                youtube_id = query_value(parsed.query, 'v')
+            else
+                youtube_id = path:match('^/shorts/([A-Za-z0-9_%-]+)/?$')
+                    or path:match('^/live/([A-Za-z0-9_%-]+)/?$')
+                    or path:match('^/embed/([A-Za-z0-9_%-]+)/?$')
+            end
+        end
+    end
+    if youtube_id and #youtube_id == 11
+            and youtube_id:match('^[A-Za-z0-9_%-]+$') then
+        return {platform = 'youtube', kind = 'youtube-video', content_type = 'video'}
+    end
 
     if host == 'live.bilibili.com' and path:match('^/[A-Za-z0-9_%-]+/?') then
         return {platform = 'bilibili', kind = 'bilibili-live', content_type = 'live'}

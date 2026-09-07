@@ -161,13 +161,24 @@ end
 local function responsive_top_bar_scale()
 	local ui_scale = math.max(tonumber(state.scale) or 1, 0.01)
 	local logical_height = (tonumber(display.height) or 0) / ui_scale
-	if logical_height <= 1080 then return ui_scale end
-
-	-- Resolution supplements DPI instead of replacing it. At 100% scaling this
-	-- grows gradually from 1080p to about 1.15x at 1440p and 1.41x at 4K. If
-	-- Windows already reports 200% HiDPI, a 4K window has a logical 1080p height
-	-- and receives no duplicate enlargement.
-	local resolution_scale = clamp(1, math.sqrt(logical_height / 1080), 1.45)
+	local resolution_scale
+	if logical_height < 1080 then
+		-- Compact windows need a quieter title bar without becoming tiny. Grow
+		-- smoothly from an 0.8x floor at 540p to the established 1x at 1080p;
+		-- a 701px-high window lands near 0.86x (31px instead of 36px).
+		local compact_progress = math.min(1, math.max(0, (logical_height - 540) / 540))
+		resolution_scale = 0.8 + compact_progress * 0.2
+	else
+		-- Above 1080p, retain direct height scaling and progressively add the
+		-- requested high-resolution emphasis: about 1.556x at 1440p and 3x at
+		-- 4K (the former 2x 4K geometry enlarged by another 1.5x).
+		local height_ratio = logical_height / 1080
+		local four_k_progress = math.min(1, math.max(0, height_ratio - 1))
+		resolution_scale = height_ratio * (1 + four_k_progress * 0.5)
+	end
+	-- Resolution supplements DPI instead of replacing it. If Windows already
+	-- reports 200% HiDPI, physical dimensions are converted to logical height
+	-- first, so the result is not enlarged twice.
 	return ui_scale * resolution_scale
 end
 

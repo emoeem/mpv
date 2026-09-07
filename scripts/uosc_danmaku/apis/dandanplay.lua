@@ -158,17 +158,7 @@ end
 function set_episode_id(input, from_menu, api_server, episode_number, request_options)
     from_menu = from_menu or false
     request_options = request_options or {}
-    DANMAKU.source = "dandanplay"
     local selected_server = api_server
-    for url, source in pairs(DANMAKU.sources) do
-        if source.from == "api_server" then
-            if not source.from_history then
-                DANMAKU.sources[url] = nil
-            else
-                DANMAKU.sources[url]["data"] = nil
-            end
-        end
-    end
 
     if not api_server then
         if DANMAKU.api_server ~= nil then
@@ -189,6 +179,9 @@ function set_episode_id(input, from_menu, api_server, episode_number, request_op
         msg.warn("弹幕关联缺少有效 episodeId 或服务器")
         return
     end
+
+    begin_danmaku_association()
+    DANMAKU.source = "dandanplay"
 
     episode_request_generation = episode_request_generation + 1
     local request = {

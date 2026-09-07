@@ -84,6 +84,10 @@ local function read_snapshot()
         video_track = read_selected_track('video'),
         audio_track = read_selected_track('audio'),
         video_codec = mp.get_property('video-codec', ''),
+        detected_dv_profile = mp.get_property_number(
+            'user-data/media-format/dolby-vision-profile', 0),
+        detected_dv_level = mp.get_property_number(
+            'user-data/media-format/dolby-vision-level', 0),
         audio_codec = mp.get_property('audio-codec', ''),
         hwdec = mp.get_property('hwdec-current', ''),
         fps = mp.get_property_number('estimated-vf-fps', 0),
@@ -96,11 +100,15 @@ end
 local function dolby_vision_label(snapshot, context)
     local track = snapshot.video_track or {}
     local params = snapshot.video_params or {}
+    local colormatrix = lower(params.colormatrix or params['color-matrix'])
     local profile = tonumber(track['dolby-vision-profile'])
         or tonumber(params['dolby-vision-profile'])
+        or tonumber(snapshot.detected_dv_profile)
     local detected = positive(profile)
         or track['dolby-vision-level'] ~= nil
         or params['dolby-vision-level'] ~= nil
+        or positive(snapshot.detected_dv_level)
+        or colormatrix == 'dolbyvision'
         or contains(context, 'dolbyvision')
         or contains(context, 'dovi')
         or contains(context, 'dvhe')
@@ -185,6 +193,23 @@ local function detect_video_codec(context)
         for _, needle in ipairs(rule[2]) do
             if contains(context, needle) then return rule[1] end
         end
+    end
+    return ''
+end
+
+local function detect_snapshot_video_codec(snapshot)
+    local track = type(snapshot.video_track) == 'table' and snapshot.video_track or {}
+    local candidates = {
+        snapshot.video_codec or '',
+        track.codec or '',
+        track['demux-codec'] or '',
+        track['codec-desc'] or '',
+        track['decoder-desc'] or '',
+        track.format or '',
+    }
+    for _, value in ipairs(candidates) do
+        local label = detect_video_codec(compact(value))
+        if label ~= '' then return label end
     end
     return ''
 end
@@ -366,7 +391,11 @@ function M.from_snapshot(snapshot)
         resolution = resolution,
         resolution_long = resolution_long,
         interlaced = interlaced,
-        video_codec = detect_video_codec(video_context),
+        -- A filename can describe an older encode (for example x265 after an
+        -- AV1 transcode). Codec badges must therefore use only real selected
+        -- track/decoder fields; filename fallback remains available to HDR
+        -- metadata detection, where containers may omit a brand marker.
+        video_codec = detect_snapshot_video_codec(snapshot),
         dynamic_range = detect_dynamic_range(snapshot, video_context),
         fps = fps,
         fps_label = format_fps(fps),

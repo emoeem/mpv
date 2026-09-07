@@ -970,11 +970,31 @@ local function safe_playlist_url_title(filename)
 	return url_decode(sanitized)
 end
 
+local function current_online_quality_item()
+	local path = mp.get_property('path', ''):gsub('^ytdl://', '')
+	local host = path:match('^https?://([^/:?#]+)')
+	if not host then return nil end
+	host = host:lower()
+	local supported = false
+	for _, domain in ipairs({'youtube.com', 'youtu.be', 'douyin.com', 'iesdouyin.com', 'douyu.com', 'huya.com'}) do
+		if host == domain or host:sub(-#domain - 1) == '.' .. domain then supported = true; break end
+	end
+	if not supported then return nil end
+	local params = mp.get_property_native('video-params')
+	if type(params) ~= 'table' or not params.w or not params.h then return nil end
+	local label = string.format('%d×%d', params.w, params.h)
+	local fps = mp.get_property_number('container-fps', 0)
+	if fps > 0 then label = label .. string.format(' · %.0ffps', fps) end
+	return {title = '清晰度', hint = label, icon = 'high_quality', selectable = false, actions = {}}
+end
+
 local function online_quality_menu_item()
-	if not mp.get_property_bool('user-data/online-media/matched', false) then return nil end
+	if not mp.get_property_bool('user-data/online-media/matched', false) then
+		return current_online_quality_item()
+	end
 	local raw = mp.get_property_native('user-data/online-media/quality-options-json', '')
-	local qualities = raw ~= '' and utils.parse_json(raw) or nil
-	if type(qualities) ~= 'table' or #qualities == 0 then return nil end
+	local qualities = type(raw) == 'string' and raw ~= '' and utils.parse_json(raw) or nil
+	if type(qualities) ~= 'table' or #qualities == 0 then return current_online_quality_item() end
 
 	local current_id = mp.get_property_native('user-data/online-media/quality-id', '')
 	local current_label = mp.get_property_native('user-data/online-media/quality', '')
@@ -1023,6 +1043,14 @@ bind_command('playlist', create_self_updating_menu_opener({
 	type = 'playlist',
 	center_root_when_closed = true,
 	list_prop = 'playlist',
+	extra_props = {
+		'user-data/online-media/matched',
+		'user-data/online-media/quality-options-json',
+		'user-data/online-media/quality-id',
+		'user-data/online-media/quality',
+		'user-data/playlistmanager/titles',
+		'path', 'video-params', 'container-fps',
+	},
 	footnote = t('Paste path or url to add.') .. ' ' .. t('%s to reorder.', 'ctrl+up/down/pgup/pgdn/home/end'),
 	serializer = function(playlist)
 		local items = {}

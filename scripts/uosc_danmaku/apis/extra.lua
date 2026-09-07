@@ -3,6 +3,21 @@ local msg = require 'mp.msg'
 
 local cached_series_playlinks = {}
 
+local function safe_command_text(value)
+    local value_type = type(value)
+    if value_type ~= "string" and value_type ~= "number" and value_type ~= "boolean" then
+        return nil
+    end
+    local text = tostring(value):gsub("[%z\r\n]", " "):match("^%s*(.-)%s*$")
+    return text ~= "" and text or nil
+end
+
+local function safe_playlink(value)
+    local text = safe_command_text(value)
+    if not text or not text:match("^https?://") then return nil end
+    return text
+end
+
 local Source = {
     ["b 站"] = "bilibili1",
     ["芒果TV"] = "imgo",
@@ -35,6 +50,8 @@ local function load_extra_danmaku(url, episode, number, class, id, site, title, 
         play_url = url:gsub("%?bsource=360ogvys$",""):gsub("&.*$","")
     end
 
+    begin_danmaku_association()
+    DANMAKU.sources[play_url] = {from = 'user_custom', association = true}
     ENABLED = true
     DANMAKU.anime = title .. " (" .. year .. ")"
     DANMAKU.episode = "第" .. episode .. "话"
@@ -98,9 +115,9 @@ end
 local function extract_episode_url(item, playlink)
     if not item then return nil end
     if type(item) == 'string' then
-        return playlink or item
+        return safe_playlink(playlink) or safe_playlink(item)
     elseif type(item) == 'table' then
-        return item.url or nil
+        return safe_playlink(item.url)
     end
     return nil
 end
@@ -177,7 +194,11 @@ local function get_episodes_v1(cat, id, site, number)
         local result = utils.parse_json(res.stdout)
         if result and result.data and result.data.allepidetail and result.data.allepidetail[site] then
             for _, it in ipairs(result.data.allepidetail[site]) do
-                table.insert(episodes, { index = tostring(it.playlink_num), url = it.url })
+                local episode_index = type(it) == "table" and safe_command_text(it.playlink_num) or nil
+                local episode_url = type(it) == "table" and safe_playlink(it.url) or nil
+                if episode_index and episode_url then
+                    table.insert(episodes, { index = episode_index, url = episode_url })
+                end
             end
         end
 
@@ -221,7 +242,7 @@ local function get_episodes_v2(cat, id, site)
             local rows = build_episode_rows(seriesHTML.seriesPlaylinks)
             if rows then
                 for _, r in ipairs(rows) do
-                    table.insert(episodes, { index = tonumber(r.index), url = r.url })
+                    table.insert(episodes, { index = r.index, url = r.url })
                 end
             end
         end
@@ -403,31 +424,36 @@ local function parse_extra_search_items(stdout)
     local items = {}
     if result and result.data and result.data.longData and result.data.longData.rows then
         for _, item in ipairs(result.data.longData.rows) do
-            if item.playlinks then
+            if type(item) == "table" and type(item.playlinks) == "table" then
                 -- 如果搜索结果中包含 seriesPlaylinks，则缓存它（使用 en_id 作为 key）
                 if item.seriesPlaylinks and item.en_id then
-                    local playlink = nil
-                    if item.playlinks and item.seriesSite then
-                        playlink = item.playlinks[item.seriesSite]
+                    local cache_id = safe_command_text(item.en_id)
+                    local cache_site = safe_command_text(item.seriesSite)
+                    local playlink = cache_site and safe_playlink(item.playlinks[cache_site]) or nil
+                    if cache_id and cache_site then
+                        cached_series_playlinks[cache_id] = {
+                            seriesPlaylinks = item.seriesPlaylinks,
+                            seriesSite = cache_site,
+                            playlink = playlink,
+                        }
                     end
-                    cached_series_playlinks[tostring(item.en_id)] = {
-                        seriesPlaylinks = item.seriesPlaylinks,
-                        seriesSite = item.seriesSite,
-                        playlink = playlink,
-                    }
                 end
                 for _, source in ipairs(SourceOrder) do
                     local source_name, source_id = source.name, source.id
-                    if item.playlinks[source_id] then
+                    local playlink = safe_playlink(item.playlinks[source_id])
+                    local cat = safe_command_text(item.cat_name)
+                    local id = safe_command_text(item.en_id)
+                    local title = safe_command_text(item.titleTxt)
+                    local year = safe_command_text(item.year) or "未知年份"
+                    if playlink and cat and id and title then
                         table.insert(items, {
-                            title = item.titleTxt,
-                            hint = item.cat_name .. " | " .. item.year .. " | 来源：" .. source_name,
+                            title = title,
+                            hint = cat .. " | " .. year .. " | 来源：" .. source_name,
                             value = {
                                 "script-message-to",
                                 mp.get_script_name(),
                                 "get-extra-event",
-                                item.cat_name, item.en_id, item.playlinks[source_id], source_id,
-                                item.titleTxt, item.year,
+                                cat, id, playlink, source_id, title, year,
                             },
                         })
                     end
@@ -731,6 +757,17 @@ function query_extra(name, class)
 end
 
 mp.register_script_message("get-extra-event", function(cat, id, playlink, source_id, title, year)
+    cat = safe_command_text(cat)
+    id = safe_command_text(id)
+    playlink = safe_playlink(playlink)
+    source_id = safe_command_text(source_id)
+    title = safe_command_text(title)
+    year = safe_command_text(year) or "未知年份"
+    if not cat or not id or not playlink or not source_id or not title then
+        msg.error("拒绝了格式异常的 360 弹幕来源")
+        mp.osd_message("弹幕来源数据异常，已取消加载", 3)
+        return
+    end
     if uosc_available then
         mp.commandv("script-message-to", "uosc", "close-menu", "menu_anime")
     end
@@ -740,6 +777,8 @@ mp.register_script_message("get-extra-event", function(cat, id, playlink, source
         else
             playlink = playlink:gsub("%?bsource=360ogvys$","")
         end
+        begin_danmaku_association()
+        DANMAKU.sources[playlink] = {from = 'user_custom', association = true}
         DANMAKU.anime = title .. " (" .. year .. ")"
         DANMAKU.episode = "电影"
         DANMAKU.source = source_id

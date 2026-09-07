@@ -48,9 +48,8 @@ local function open_menu()
 
     local menu = {
         type = MENU_TYPE,
-        title = '字幕内容',
-        search_style = 'on_demand',
-        search_suggestion = '搜索字幕内容',
+        title = '搜索字幕内容',
+        search_style = 'palette',
         fixed_columns = true,
         selected_index = selected_index or 1,
         callback = {mp.get_script_name(), 'menu-event'},

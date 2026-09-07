@@ -7,9 +7,11 @@ cookies, authorization headers, or signed stream URLs in error details.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 import sys
+from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -72,6 +74,30 @@ def redact_url_match(match: re.Match[str]) -> str:
         return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
     except ValueError:
         return "<redacted-url>"
+
+
+def douyu_room_from_page(body: str) -> tuple[str | None, str | None]:
+    """Read the actual player room, never a recommendation elsewhere in the page."""
+    room_ids: set[str] = set()
+
+    class PlayerParser(HTMLParser):
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            values = dict(attrs)
+            classes = (values.get("class") or "").split()
+            if any(name == "playerWrap" or name.startswith("playerWrap__") for name in classes):
+                room = values.get("data-room-id") or ""
+                if re.fullmatch(r"[1-9][0-9]{0,11}", room):
+                    room_ids.add(room)
+
+    PlayerParser().feed(body)
+    # Both are assignments to the current page's player, not generic room_id keys.
+    for pattern in [r"\$ROOM\.room_id\s*=\s*['\"]?([1-9][0-9]{0,11})\b",
+                    r"getLegacyFirstStream\(\s*\{\s*roomID\s*:\s*([1-9][0-9]{0,11})\b"]:
+        room_ids.update(re.findall(pattern, body))
+    if len(room_ids) != 1:
+        return None, None
+    title = re.search(r"<title>(.*?)</title>", body, re.I | re.S)
+    return next(iter(room_ids)), clean_text(html.unescape(title[1]).split("_", 1)[0]) if title else None
 
 
 def canonicalize(url: str, kind: str) -> tuple[str | None, str | None]:
@@ -230,11 +256,213 @@ def captured_quality_labels(response: Any, kind: str) -> dict[str, str]:
     return labels
 
 
+def captured_douyin_stream_info(
+    response: Any,
+) -> tuple[str | None, dict[str, dict[str, Any]]]:
+    """Extract Douyin origin HLS and actual quality parameters from its page."""
+    quality_ids = {
+        "origin": "origin",
+        "uhd": "full_hd1",
+        "full_hd1": "full_hd1",
+        "hd": "hd1",
+        "hd1": "hd1",
+        "sd": "sd2",
+        "sd2": "sd2",
+        "ld": "sd1",
+        "sd1": "sd1",
+    }
+    metadata: dict[str, dict[str, Any]] = {}
+    metadata_scores: dict[str, tuple[int, int, int]] = {}
+
+    def dictionary(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                return parsed if isinstance(parsed, dict) else {}
+            except (ValueError, TypeError):
+                return {}
+        return {}
+
+    def bounded_number(value: Any, maximum: float) -> float | None:
+        number = float(value)
+        return number if 0 < number <= maximum else None
+
+    def normalized_resolution(*values: Any) -> str | None:
+        for value in values:
+            resolution = clean_text(value, 32)
+            if resolution and re.fullmatch(r"\d{2,5}[xX×]\d{2,5}", resolution):
+                return resolution.lower().replace("x", "×")
+        return None
+
+    try:
+        response_url = str(getattr(response, "url", ""))
+        if "live.douyin.com/" not in response_url:
+            return None, metadata
+        body = bytes(getattr(response, "content", b"")).decode("utf-8", "strict")
+        matches = re.findall(
+            r'self\.__pace_f\.push\(\[\d+,("\w+:.+?")]\)</script>',
+            body,
+        )
+        for encoded in reversed(matches):
+            if "state" not in encoded or "streamStore" not in encoded:
+                continue
+            outer = json.loads(encoded)
+            nodes = json.loads(re.sub(r"^\w+:", "", outer))
+            for node in nodes if isinstance(nodes, list) else []:
+                state = node.get("state") if isinstance(node, dict) else None
+                room = ((((state or {}).get("roomStore") or {}).get("roomInfo") or {}).get("room") or {})
+                if room.get("status") != 2:
+                    continue
+                stream_url = room.get("stream_url") or {}
+                origin = stream_url.get("hls_pull_url")
+                if not isinstance(origin, str) or not origin.startswith(("https://", "http://")):
+                    continue
+                parts = urlsplit(origin)
+                if parts.username or parts.password or not parts.hostname:
+                    continue
+                # Douyin can omit a top-tier resolution in room.stream_url
+                # while publishing the same sdk_key with complete metadata in
+                # room.web_stream_url. Merge only identical sdk tiers. The
+                # primary stream keeps its codec/fps/bitrate; the web stream
+                # may only fill fields which are genuinely absent.
+                stream_sources = [(1, stream_url)]
+                web_stream_url = dictionary(room.get("web_stream_url"))
+                if web_stream_url:
+                    stream_sources.append((0, web_stream_url))
+
+                for source_priority, source_stream in stream_sources:
+                    sdk_data = dictionary(source_stream.get("live_core_sdk_data"))
+                    pull_data = dictionary(sdk_data.get("pull_data"))
+                    options = dictionary(pull_data.get("options"))
+                    qualities = options.get("qualities")
+                    for item in qualities if isinstance(qualities, list) else []:
+                        if not isinstance(item, dict):
+                            continue
+                        sdk_key = (clean_text(item.get("sdk_key"), 32) or "").lower()
+                        quality_id = quality_ids.get(sdk_key)
+                        if not quality_id:
+                            continue
+
+                        details: dict[str, Any] = {}
+                        display_name = clean_text(item.get("name"), 32)
+                        if display_name:
+                            details["name"] = display_name
+                        resolution = normalized_resolution(item.get("resolution"))
+                        if resolution:
+                            details["resolution"] = resolution
+                        try:
+                            fps = bounded_number(item.get("fps"), 240)
+                            if fps is not None:
+                                details["fps"] = fps
+                        except (TypeError, ValueError):
+                            pass
+                        try:
+                            bitrate = bounded_number(item.get("v_bit_rate"), 1_000_000_000)
+                            if bitrate is not None:
+                                details["bitrate"] = int(bitrate)
+                        except (TypeError, ValueError):
+                            pass
+                        codec = (clean_text(item.get("v_codec"), 24) or "").lower()
+                        codec_names = {
+                            "264": "H.264", "h264": "H.264", "avc": "H.264",
+                            "265": "HEVC", "h265": "HEVC", "hevc": "HEVC",
+                        }
+                        if codec:
+                            details["codec"] = codec_names.get(codec, codec.upper())
+                        try:
+                            level = int(item.get("level", 0))
+                        except (TypeError, ValueError):
+                            level = 0
+                        score = (
+                            source_priority,
+                            sum(key in details for key in ("resolution", "fps", "bitrate")),
+                            level,
+                        )
+                        existing = metadata.get(quality_id, {})
+                        if score > metadata_scores.get(quality_id, (-1, -1, -1)):
+                            merged = dict(existing)
+                            merged.update(details)
+                            metadata[quality_id] = merged
+                            metadata_scores[quality_id] = score
+                        else:
+                            merged = metadata.setdefault(quality_id, {})
+                            for key, value in details.items():
+                                merged.setdefault(key, value)
+
+                    # Some live rooms publish a same-tier resolution in
+                    # stream_data.main/sdk_params instead of options.qualities.
+                    stream_data = dictionary(pull_data.get("stream_data"))
+                    stream_entries = dictionary(stream_data.get("data"))
+                    for stream_key, raw_item in stream_entries.items():
+                        item = dictionary(raw_item)
+                        sdk_key = (clean_text(item.get("sdk_key"), 32)
+                                   or clean_text(stream_key, 32) or "").lower()
+                        quality_id = quality_ids.get(sdk_key)
+                        if not quality_id:
+                            continue
+                        main = dictionary(item.get("main"))
+                        sdk_params = dictionary(main.get("sdk_params"))
+                        resolution = normalized_resolution(
+                            item.get("resolution"), main.get("resolution"),
+                            sdk_params.get("resolution"),
+                        )
+                        if resolution:
+                            details = metadata.setdefault(quality_id, {})
+                            details.setdefault("resolution", resolution)
+
+                # Some H.264 room payloads leave the top quality's resolution
+                # blank in both option lists. The same stream_url publishes
+                # its actual source width/height in `extra`; this belongs only
+                # to the top/origin tier and is therefore safe to merge there.
+                extra = dictionary(stream_url.get("extra"))
+                try:
+                    width = int(extra.get("width", 0))
+                    height = int(extra.get("height", 0))
+                except (TypeError, ValueError):
+                    width = height = 0
+                if 16 <= width <= 32768 and 16 <= height <= 32768:
+                    metadata.setdefault("origin", {}).setdefault(
+                        "resolution", f"{width}×{height}")
+
+                # Streamlink names Douyin's highest FLV URL FULL_HD1, while
+                # the page's SDK metadata calls that exact top tier `origin`.
+                # Copy only missing fields when the matching FLV key exists;
+                # this is a same-tier alias, not a resolution guess.
+                flv_keys = {
+                    str(key).lower()
+                    for key in dictionary(stream_url.get("flv_pull_url"))
+                }
+                if "full_hd1" in flv_keys and metadata.get("origin"):
+                    full_hd = metadata.setdefault("full_hd1", {})
+                    for key, value in metadata["origin"].items():
+                        full_hd.setdefault(key, value)
+                return origin, metadata
+    except (UnicodeDecodeError, ValueError, TypeError, AttributeError):
+        pass
+    return None, metadata
+
+
+def captured_douyin_origin(response: Any) -> str | None:
+    """Compatibility wrapper for callers that only need the origin HLS URL."""
+    return captured_douyin_stream_info(response)[0]
+
+
+def format_bitrate(bitrate: int) -> str:
+    if bitrate >= 1_000_000:
+        return f"{bitrate / 1_000_000:.1f}".rstrip("0").rstrip(".") + " Mbps"
+    if bitrate >= 1_000:
+        return f"{bitrate / 1_000:.0f} Kbps"
+    return f"{bitrate} bps"
+
+
 def quality_label(
     name: str,
     kind: str,
     index: int,
     platform_labels: dict[str, str] | None = None,
+    douyin_quality_params: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     if kind == "bilibili-live":
         protocol = "FLV" if name.startswith("httpstream") else "HLS" if name.startswith("hls") else name.upper()
@@ -265,12 +493,27 @@ def quality_label(
             kbps = int(bitrate.group(1))
             return f"{kbps / 1000:g} Mbps" if kbps >= 1000 else f"{kbps} Kbps"
     labels = {
-        "full_hd1": "原画 / 最高画质",
+        "origin": "原画",
+        "full_hd1": "蓝光",
         "hd1": "高清",
         "sd2": "标清",
         "sd1": "流畅",
     }
-    return labels.get(name, name.replace("_", " ").upper())
+    label = labels.get(name, name.replace("_", " ").upper())
+    if kind != "douyin-live":
+        return label
+
+    details = (douyin_quality_params or {}).get(name, {})
+    parts = [clean_text(details.get("name"), 32) or label]
+    if details.get("resolution"):
+        parts.append(str(details["resolution"]))
+    if details.get("fps"):
+        fps = float(details["fps"])
+        parts.append(f"{fps:g}fps")
+    if details.get("bitrate"):
+        parts.append(format_bitrate(int(details["bitrate"])))
+    parts.append("HLS" if name == "origin" else "FLV")
+    return " · ".join(parts)
 
 
 def semantic_quality(name: str, kind: str) -> str:
@@ -375,10 +618,29 @@ def resolve(
     session.set_option("stream-timeout", max(timeout, 20.0))
     session.set_option("user-input-requester", None)
     session.http.headers.update({"User-Agent": USER_AGENT})
+    page_title = None
+    if kind == "douyu-live":
+        # Public short room numbers can differ from the API's actual room ID.
+        # The retired betard endpoint can return HTML, so use the page's player.
+        try:
+            page = session.http.get(canonical_url)
+            room_id, page_title = douyu_room_from_page(page.text)
+            if room_id:
+                canonical_url = f"https://www.douyu.com/{room_id}"
+        except (PluginError, requests.RequestException, ValueError):
+            pass  # Keep the existing direct-room path if the page is unavailable.
     platform_labels: dict[str, str] = {}
-    if kind in {"douyu-live", "huya-live"}:
+    douyin_origin: dict[str, str] = {}
+    douyin_quality_params: dict[str, dict[str, Any]] = {}
+    if kind in {"douyin-live", "douyu-live", "huya-live"}:
         def capture_labels(response: Any, *args: Any, **kwargs: Any) -> Any:
-            platform_labels.update(captured_quality_labels(response, kind))
+            if kind == "douyin-live":
+                origin, params = captured_douyin_stream_info(response)
+                if origin:
+                    douyin_origin["url"] = origin
+                douyin_quality_params.update(params)
+            else:
+                platform_labels.update(captured_quality_labels(response, kind))
             return response
 
         session.http.hooks.setdefault("response", []).append(capture_labels)
@@ -407,13 +669,29 @@ def resolve(
         seen_urls: set[str] = set()
         quality_order = ordered_streams(plugin, streams, None, kind)
         ordered = ordered_streams(plugin, streams, preferred_quality, kind)
+        origin_url = douyin_origin.get("url")
+        if origin_url:
+            quality_order = [("origin", None), *quality_order]
+            origin_entry = ("origin", None)
+            if preferred_quality and preferred_quality != "origin" and ordered:
+                ordered = [ordered[0], origin_entry, *ordered[1:]]
+            else:
+                ordered = [origin_entry, *ordered]
+
         for quality, stream in ordered:
             if len(candidates) >= max_candidates:
                 break
-            try:
-                stream_url = stream.to_url()
-            except (TypeError, ValueError, AttributeError):
-                continue
+            if quality == "origin" and stream is None:
+                stream_url = origin_url
+                stream_type = "hls"
+                stream_headers = {"User-Agent": USER_AGENT, "Referer": canonical_url}
+            else:
+                try:
+                    stream_url = stream.to_url()
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                stream_type = clean_text(stream.shortname(), 40) or "http"
+                stream_headers = safe_headers(stream, canonical_url)
             if not isinstance(stream_url, str) or not stream_url.startswith(("https://", "http://")):
                 continue
             if stream_url in seen_urls:
@@ -423,10 +701,11 @@ def resolve(
                 {
                     "quality_id": clean_text(quality, 80) or "best",
                     "quality": quality_label(
-                        clean_text(quality, 80) or "best", kind, len(candidates), platform_labels),
-                    "type": clean_text(stream.shortname(), 40) or "http",
+                        clean_text(quality, 80) or "best", kind, len(candidates),
+                        platform_labels, douyin_quality_params),
+                    "type": stream_type,
                     "url": stream_url,
-                    "headers": safe_headers(stream, canonical_url),
+                    "headers": stream_headers,
                 }
             )
 
@@ -448,7 +727,7 @@ def resolve(
             }[kind],
             "content_type": "live",
             "canonical_url": canonical_url,
-            "title": clean_text(plugin.get_title()),
+            "title": clean_text(plugin.get_title()) or page_title,
             "author": clean_text(plugin.get_author()),
             "resolver": "streamlink",
             "resolver_version": streamlink.__version__,
@@ -457,7 +736,7 @@ def resolve(
             # misrepresent them as user-selectable resolutions.
             "qualities": ([] if kind == "bilibili-live" else [
                 {"id": quality, "label": quality_label(
-                    quality, kind, index, platform_labels)}
+                    quality, kind, index, platform_labels, douyin_quality_params)}
                 for index, quality in enumerate(dict.fromkeys(
                     item[0] for item in quality_order
                 ))

@@ -423,6 +423,10 @@ function normalize(path)
     return normalize(path)
 end
 
+local function is_online_live()
+	return mp.get_property_native('user-data/online-media/content-type', '') == 'live'
+end
+
 function get_file()
 	function hex_to_char(x)
 		return string.char(tonumber(x, 16))
@@ -467,7 +471,7 @@ function get_file()
 
 	if not path:match('^%a[%a%d-_]+://') then path = normalize(path) end
 	
-	local length = (mp.get_property_number('duration') or 0)
+	local length = is_online_live() and 0 or (mp.get_property_number('duration') or 0)
 	
 	local title = mp.get_property('media-title'):gsub("\"", "")
 	
@@ -2138,6 +2142,9 @@ function write_log(target_time, update_seekTime, entry_limit)
 	if target_time then
 		seekTime = target_time
 	end
+	-- 直播历史只保存可重新解析的直播间网页地址，不保存短期 CDN
+	-- 地址或没有意义的直播时间点。
+	if is_online_live() then seekTime = 0 end
 	if seekTime < 0 then seekTime = 0 end
 	
 	delete_log_entry(false, true, filePath, math.floor(seekTime), entry_limit)
@@ -2199,6 +2206,7 @@ function history_incognito_mode()
 end
 
 function history_resume_option()
+	if is_online_live() then return end
 	if o.resume_option == 'notification' or o.resume_option == 'force' then
 		local video_time = mp.get_property_number('time-pos')
 		local video_path = mp.get_property('path') --1.1.4# local variable instead of filePath

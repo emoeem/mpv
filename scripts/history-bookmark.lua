@@ -40,6 +40,8 @@ o.excluded_dir = utils.parse_json(o.excluded_dir)
 o.included_dir = utils.parse_json(o.included_dir)
 
 local file_loaded = false
+local hash_cache = {}
+local last_hash_dir = nil
 
 local locals = {
     ['eng'] = {
@@ -75,27 +77,12 @@ local wait_msg
 local on_key = false
 
 if o.history_dir:find('^/:dir%%mpvconf%%') then
-    local config_dir = mp.find_config_file('.')
-    if config_dir then
-        history_dir = o.history_dir:gsub('/:dir%%mpvconf%%', config_dir)
-    else
-        history_dir = o.history_dir:gsub('/:dir%%mpvconf%%', '')
-    end
+    history_dir = o.history_dir:gsub('/:dir%%mpvconf%%', mp.find_config_file('.'))
 elseif o.history_dir:find('^/:dir%%script%%') then
-    local script_dir = mp.find_config_file('scripts')
-    if script_dir then
-        history_dir = o.history_dir:gsub('/:dir%%script%%', script_dir)
-    else
-        history_dir = o.history_dir:gsub('/:dir%%script%%', '')
-    end
+    history_dir = o.history_dir:gsub('/:dir%%script%%', mp.find_config_file('scripts'))
 elseif o.history_dir:find('/:var%%(.*)%%') then
     local os_variable = o.history_dir:match('/:var%%(.*)%%')
-    local env_val = os.getenv(os_variable)
-    if env_val then
-        history_dir = o.history_dir:gsub('/:var%%(.*)%%', env_val)
-    else
-        history_dir = o.history_dir
-    end
+    history_dir = o.history_dir:gsub('/:var%%(.*)%%', os.getenv(os_variable))
 else
     history_dir = mp.command_native({ "expand-path", o.history_dir }) -- Expands both ~ and ~~
 end
@@ -239,6 +226,10 @@ local function hash(path)
         return
     end
 
+    if hash_cache[path] then
+        return hash_cache[path]
+    end
+
     msg.debug("hashing:", path)
 
     local cmd = {
@@ -259,16 +250,23 @@ local function hash(path)
         cmd["stdin_data"] = path
         args = {"sh", "-c", md5 .. " | cut -d ' ' -f 1 | tr '[:lower:]' '[:upper:]'" }
     else --windows
-        -- https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/get-filehash?view=powershell-7.3
+        -- Hash the same UTF-8 bytes as before, without embedding the path in
+        -- PowerShell code or depending on optional command/module discovery.
         local hash_command = [[
-            $s = [System.IO.MemoryStream]::new();
-            $w = [System.IO.StreamWriter]::new($s);
-            $w.write(']] .. path .. [[');
-            $w.Flush();
-            $s.Position = 0;
-            Get-FileHash -Algorithm MD5 -InputStream $s | Select-Object -ExpandProperty Hash
+            $hasher = [Security.Cryptography.MD5]::Create();
+            try {
+                $bytes = [Text.Encoding]::UTF8.GetBytes($env:MPV_YAOZHI_BOOKMARK_PATH);
+                $digest = $hasher.ComputeHash($bytes);
+                [BitConverter]::ToString($digest).Replace('-', '')
+            } finally { $hasher.Dispose() }
         ]]
-
+        -- mpv's Windows subprocess backend does not support stdin_data.
+        local env = {}
+        for _, entry in ipairs(utils.get_env_list()) do
+            if not entry:upper():match('^MPV_YAOZHI_BOOKMARK_PATH=') then env[#env + 1] = entry end
+        end
+        env[#env + 1] = 'MPV_YAOZHI_BOOKMARK_PATH=' .. path
+        cmd["env"] = env
         args = {"powershell", "-NoProfile", "-Command", hash_command}
     end
     cmd["args"] = args
@@ -276,9 +274,10 @@ local function hash(path)
     local process = mp.command_native(cmd)
 
     if process.status == 0 then
-        local hash = process.stdout:gsub("%s+", "")
-        msg.debug("hash:", hash)
-        return hash
+        local hash_result = process.stdout:gsub("%s+", "")
+        msg.debug("hash:", hash_result)
+        hash_cache[path] = hash_result
+        return hash_result
     else
         msg.warn("hash function failed")
         return
@@ -316,14 +315,9 @@ end
 -- Return: nil / content of the bookmark
 local function get_record(bookmark_path)
     local file = io.open(bookmark_path, 'r')
-    if not file then
-        msg.verbose('No bookmark file found.')
-        return nil
-    end
     local record = file:read()
     if record == nil then
         msg.verbose('No history record is found in the bookmark file.')
-        file:close()
         return nil
     end
     msg.verbose('last play: ' .. record)
