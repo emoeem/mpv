@@ -34,9 +34,10 @@ local o = {
     high_auto_max_fps = 30.5,
     source_max_pixels = 2100000,
     vfr_tolerance = 0.018,
-    start_delay = 0.8,
+    start_delay = 0.35,
     startup_gate = true,
     startup_gate_timeout = 7.0,
+    startup_verify_interval = 0.15,
     startup_quality_timeout = 0.8,
     startup_ready_hold = 1.2,
     startup_notice = true,
@@ -140,6 +141,8 @@ local seek_recovery = false
 local seek_recovery_started = nil
 local observed_pause = nil
 local startup_ready_release_at = 0
+local activation_started_at = 0
+local graph_build_seconds = 0
 local learning_safe_at = 0
 local fail_current_file
 local hq_restart_required = false
@@ -580,7 +583,7 @@ local function acquire_startup_gate()
     mp.set_property_bool('pause', true)
     msg.info('RIFE startup gate acquired')
     if o.startup_notice then
-        mp.osd_message('AI 视频增强正在安全预热…\n完成后将自动继续播放，无需手动操作', 30)
+        mp.osd_message('AI 视频增强正在安全预热…\n完成后将自动继续播放，无需手动操作\n首次建模稍慢，同规格后续会复用本机缓存', 30)
     end
 end
 
@@ -1295,6 +1298,11 @@ fail_current_file = function(reason)
     blocked_reason = reason or 'RIFE 初始化或实时性能不足'
     blocked_protected = false
     remove_filter()
+    set_native_if_changed('user-data/video-enhancement/ai-warmup-phase', 'failed')
+    if activation_started_at > 0 then
+        set_native_if_changed('user-data/video-enhancement/ai-warmup-seconds',
+            string.format('%.3f', math.max(0, mp.get_time() - activation_started_at)))
+    end
     publish('failed', 'AI 已回退', blocked_reason, false)
     if o.show_osd then mp.osd_message('RIFE AI：已安全回退\n' .. tostring(reason), 3) end
     msg.warn('RIFE fallback: ' .. tostring(reason))
@@ -1305,6 +1313,7 @@ local function protect_current_file(reason)
     blocked_reason = reason or '空间画质不得倒退：已保留原有画质链'
     blocked_protected = true
     remove_filter()
+    set_native_if_changed('user-data/video-enhancement/ai-warmup-phase', 'protected')
     publish('protected', '空间画质保护', blocked_reason, false)
     if o.show_osd then
         mp.osd_message('空间画质保护：已保留原有画质链\n补帧改用原生安全方案', 3)
@@ -1420,6 +1429,17 @@ local function complete_activation(serial, reason)
     last_mistimed = mp.get_property_number('mistimed-frame-count', 0) or 0
     reset_progress_guard()
     activation_committed = true
+    local warmup_seconds = activation_started_at > 0
+        and math.max(0, now - activation_started_at) or 0
+    set_native_if_changed('user-data/video-enhancement/ai-warmup-phase', 'ready')
+    set_native_if_changed('user-data/video-enhancement/ai-warmup-seconds',
+        string.format('%.3f', warmup_seconds))
+    set_native_if_changed('user-data/video-enhancement/ai-graph-build-seconds',
+        string.format('%.3f', graph_build_seconds))
+    msg.info(string.format(
+        'RIFE warm-up completed in %.3fs (graph %.3fs, ready %.3fs)',
+        warmup_seconds, graph_build_seconds,
+        math.max(0, warmup_seconds - graph_build_seconds)))
     if o.show_osd then
         mp.osd_message(active_plan and active_plan.pipeline_kind == 'superres'
             and 'TensorRT AI 超分已启用' or 'RIFE AI 2× 已启用', 2)
@@ -1534,7 +1554,8 @@ local function verify_activation(serial, deadline)
         fail_current_file(string.format('输出帧率未达到 2×（当前 %s）', format_fps(filtered_fps)))
         return
     end
-    verify_timer = mp.add_timeout(0.5, function()
+    verify_timer = mp.add_timeout(
+        math.max(0.05, tonumber(o.startup_verify_interval) or 0.15), function()
         verify_activation(serial, deadline)
     end)
 end
@@ -1557,6 +1578,11 @@ activate = function(plan)
         return
     end
     activation_committed = false
+    activation_started_at = mp.get_time()
+    graph_build_seconds = 0
+    set_native_if_changed('user-data/video-enhancement/ai-warmup-phase', 'building')
+    set_native_if_changed('user-data/video-enhancement/ai-warmup-seconds', '')
+    set_native_if_changed('user-data/video-enhancement/ai-graph-build-seconds', '')
     active_source_fps = plan.fps
     active_plan = plan
     local pipeline_code = plan.pipeline_kind == 'rife_uhd_2k' and 1
@@ -1592,11 +1618,15 @@ activate = function(plan)
     -- before this call cannot interrupt it: the overdue callback would run only
     -- after a successful graph build and incorrectly remove the fresh filter.
     -- Start the readiness deadline only after synchronous graph creation ends.
-    msg.info(string.format('RIFE graph created in %.3fs',
-        math.max(0, mp.get_time() - graph_started_at)))
+    graph_build_seconds = math.max(0, mp.get_time() - graph_started_at)
+    set_native_if_changed('user-data/video-enhancement/ai-warmup-phase', 'verifying')
+    set_native_if_changed('user-data/video-enhancement/ai-graph-build-seconds',
+        string.format('%.3f', graph_build_seconds))
+    msg.info(string.format('RIFE graph created in %.3fs', graph_build_seconds))
     arm_startup_gate_timeout()
     local serial = generation
-    verify_timer = mp.add_timeout(0.5, function()
+    verify_timer = mp.add_timeout(
+        math.max(0.05, tonumber(o.startup_verify_interval) or 0.15), function()
         verify_activation(serial, mp.get_time() + math.max(2, o.verify_timeout))
     end)
 end
@@ -1758,6 +1788,11 @@ mp.register_event('file-loaded', function()
     last_progress_wall, last_progress_pos = nil, nil
     loaded = true
     remove_filter()
+    activation_started_at = 0
+    graph_build_seconds = 0
+    set_native_if_changed('user-data/video-enhancement/ai-warmup-phase', 'waiting')
+    set_native_if_changed('user-data/video-enhancement/ai-warmup-seconds', '')
+    set_native_if_changed('user-data/video-enhancement/ai-graph-build-seconds', '')
     set_native_if_changed('user-data/video-enhancement/ai-safety-limit',
         '正在计算当前显卡与策略上限')
     publish('detecting', '检测中', '确认 SDR、CFR、分辨率、帧率与显卡余量', false)
@@ -1769,6 +1804,7 @@ mp.register_event('end-file', function()
     loaded = false
     last_progress_wall, last_progress_pos = nil, nil
     remove_filter()
+    set_native_if_changed('user-data/video-enhancement/ai-warmup-phase', 'idle')
     set_native_if_changed('user-data/video-enhancement/ai-safety-limit', '等待视频')
     publish('idle', '等待视频', '下一段视频将重新评估', false)
 end)
@@ -2001,6 +2037,12 @@ mp.register_script_message('show-diagnostics', function()
                 'user-data/video-enhancement/shader-active-stages') or '无'),
         '保护：' .. tostring(mp.get_property_native(
             'user-data/video-enhancement/ai-safety-limit') or '等待检测'),
+        '预热：' .. tostring(mp.get_property_native(
+            'user-data/video-enhancement/ai-warmup-phase') or 'idle')
+            .. ' · 总计 ' .. tostring(mp.get_property_native(
+                'user-data/video-enhancement/ai-warmup-seconds') or '-') .. 's'
+            .. ' · 建图 ' .. tostring(mp.get_property_native(
+                'user-data/video-enhancement/ai-graph-build-seconds') or '-') .. 's',
     }
     local text = table.concat(lines, '\n')
     mp.osd_message(text, 8)

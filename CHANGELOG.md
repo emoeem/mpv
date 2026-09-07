@@ -204,3 +204,12 @@ V1.0.0）。同步前快照提交为 `52cccab`。仍以 `ecbb57c` 为三方合�
 - `mpv --idle --vo=null --ao=null` 冒烟测试通过，无脚本加载错误。
 - `script-opts/` 键名与新版脚本选项表比对一致（uosc、uosc_danmaku、
   chapterskip、stats、auto_save_state、online_media 等）。
+
+### 补充（核对后追加）
+
+- `ai-interpolation.lua` 同步 9.7 的可移植部分：缩短预热启动等待
+  （`start_delay` 0.8→0.35）、就绪轮询可配置
+  （`startup_verify_interval`），并补充预热阶段 / 计时与建模缓存提示
+  的 user-data 与 OSD。配置保留本地 `enabled=no` 默认不自动启用。
+- `adaptive-quality.lua` 未同步：上游差异为 d3d11-adapter 手动显卡选择
+  （Windows 专属），无 Linux 相关改动。
