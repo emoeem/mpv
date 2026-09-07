@@ -64,6 +64,7 @@ local state = {
     current = nil,
     last_aid = nil,
     frame_ready = false,
+    frame_presented = false,
     waiting_for_frame = false,
     content_insets = nil,
     bar_anchor_locked = false,
@@ -1180,9 +1181,19 @@ local function start_ambiguous_bar_followup(file_generation)
         return true
     end
 
-    local function request_sample()
+    local function request_sample(deferred)
         if file_generation ~= state.file_generation or not state.loaded
             or state.bar_anchor_locked or remaining <= 0 then
+            return
+        end
+        -- playback-restart is the first presentable frame boundary; probing
+        -- earlier makes mpv log "No frames available" and fall back to a
+        -- software screenshot. Wait briefly, then proceed regardless so a
+        -- stalled first frame cannot postpone detection forever.
+        if not state.frame_presented and (deferred or 0) < 40 then
+            schedule('bar-followup', 0.05, function()
+                request_sample((deferred or 0) + 1)
+            end)
             return
         end
         remaining = remaining - 1
@@ -1290,8 +1301,16 @@ local function prepare_display_after_frame(reason)
             finish('-bar-timeout')
         end)
 
-        local function request_sample(index)
+        local function request_sample(index, deferred)
             if completed or file_generation ~= state.file_generation or not state.loaded then return end
+            -- See the followup sampler above: do not screenshot before the
+            -- first frame has actually been presented to the VO.
+            if not state.frame_presented and (deferred or 0) < 40 then
+                schedule('bar-detect-sample', 0.05, function()
+                    request_sample(index, (deferred or 0) + 1)
+                end)
+                return
+            end
             local ok, request = pcall(mp.command_native_async, {
                 name = 'screenshot-raw', flags = 'video', format = 'bgr0',
             }, function(success, frame)
@@ -1350,6 +1369,7 @@ end
 
 
 local function on_playback_restart()
+    state.frame_presented = true
     -- The first playback-restart arrives only after mpv has a presentable
     -- video frame. Waiting for it prevents the badges from appearing against
     -- the empty window and then jumping when letterbox/pillarbox bounds land.
@@ -1375,6 +1395,7 @@ local function on_file_loaded()
     state.file_generation = state.file_generation + 1
     state.loaded = true
     state.frame_ready = false
+    state.frame_presented = false
     state.waiting_for_frame = true
     state.content_insets = nil
     state.bar_anchor_locked = false

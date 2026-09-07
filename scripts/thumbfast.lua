@@ -705,7 +705,6 @@ local function spawn(time)
     local args = {
         resolve_spawn_mpv_path(), "--no-config", "--msg-level=all=no", "--idle", "--ao=null", "--pause", "--keep-open=always", "--really-quiet", "--no-terminal",
         "--load-scripts=no", "--osc=no", "--ytdl=no", "--load-stats-overlay=no", "--load-auto-profiles=no", "--autoload-files=no",
-        "--priority=belownormal",
         "--edition="..(properties["edition"] or "auto"), "--vid="..(vid or "auto"), "--no-sub", "--no-audio",
         "--start="..time, allow_fast_seek and "--hr-seek=no" or "--hr-seek=yes",
         is_hdr_thumbnail() and "--gpu-dumb-mode=no" or "--gpu-dumb-mode=yes",
@@ -718,6 +717,10 @@ local function spawn(time)
         "--video-rotate="..last_rotate,
         "--ovc=rawvideo", "--of=image2", "--ofopts=update=1", "--ocopy-metadata=no", "--o="..options.thumbnail
     }
+
+    if os_name == "windows" then
+        table.insert(args, "--priority=belownormal")
+    end
 
     if is_hdr_thumbnail() then
         -- The thumbnail overlay is SDR UI content.  Keep this child on a

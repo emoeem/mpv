@@ -141,7 +141,8 @@ hwdec-codecs=all
 
 ### OSD、字体与 Catppuccin Mocha
 
-主 OSD、文本字幕和 uosc 使用 LXGW WenKai Screen，并回退到 Noto Color Emoji。
+主 OSD、文本字幕和 uosc 使用 LXGW WenKai Screen。注意：Linux/libass
+下不支持用分号声明多字体回退，因此 OSD/文本字幕不做 emoji 字体回退。
 当前主题是 [Catppuccin Mocha](https://catppuccin.com/palette/)：
 
 | 用途 | 颜色 |
