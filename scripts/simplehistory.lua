@@ -2331,10 +2331,17 @@ end)
 mp.add_hook('on_unload', 9, function()--1.1.3# get the LogTime only when using on_unload because big functions do not run fully in here
 	logTime = (mp.get_property_number('time-pos') or 0)
 end)
-mp.register_event('end-file', function()--1.1.3# use end-file instead so that it doesn't cause crash while seeking ( i am able to run big functions here)
+mp.register_event('end-file', function()--1.1.3# use end-file instead so that it doesn't cause crash while seeking
 	if not incognito_mode then
+		-- Some quit/unload paths can skip the on_unload hook or expose time-pos
+		-- only after the hook has run. Fall back to the live position here so
+		-- history never gets stuck at 00:00 when the video actually played.
+		local final_time = tonumber(logTime) or 0
+		if final_time <= 0 then
+			final_time = mp.get_property_number('time-pos') or 0
+		end
 		if autosaved_entry == true then delete_log_entry_specific('last', filePath, 0) end
-		history_save(logTime) --1.1.3# get the updated time from on_unload since it will still be preserved
+		history_save(final_time)
 	end
 	autosaved_entry = false
 	logTime = 0 --1.1.3# reset logTime to 0
