@@ -113,6 +113,18 @@ V1.0.0）。同步前快照提交为 `52cccab`。仍以 `ecbb57c` 为三方合�
 只同步可移植到 Linux 的脚本与配置，Windows 播放核心 / Atmos / 系统媒体
 控制等二进制功能不涉及。
 
+
+### 2026-09-18 · 播放自动化与 Linux 策略增强
+
+- 新增 `live-adaptive-quality.lua`：依据实际直播 demuxer 缓存水位与缓存暂停状态，在 resolver 提供的真实画质档位之间自动降级；缓存长期稳定后逐级恢复，带切换冷却与单文件切换上限，避免网络抖动造成画质来回跳变。
+- 现有 `online-media.lua` 的备用 candidate、直播断流重连与画质重解析继续作为底层恢复链，自动画质控制只通过其公开 `online-media-select-quality` 消息切换，不绕过 resolver。
+- `autoload.conf` 开启 `same_series=yes`：同目录按自然排序自动识别相似系列；现有 autoload playlist-next 负责自动下一集。
+- `auto-save-state.conf` 保存周期调整为 15 秒；仍保持“播放中延迟写入、暂停/卸载安全落盘”，配合 mpv `watch-later` 的逐文件 key 保存播放位置。
+- `simplehistory.conf` 改为 `resume_option=notification`、2% 阈值：重新打开有进度的视频时先询问恢复，不强制覆盖用户选择。
+- 新增 `linux-video-policy.lua`：在 Linux 上按 PQ/HLG/BT.2020 自动维持 gpu-next 的 HDR/SDR 原生色彩管理；同时检查本机 RIFE/VapourSynth/k7sfunc 依赖与分辨率/FPS 安全范围。当前机器缺少 `k7sfunc`，因此不会偷偷启动失效 RIFE，而是保持原生播放。
+- 视频处理继续由现有 `adaptive-quality.lua`/`rife.lua`/HDR 条件 profile 负责已验证能力；Linux 策略层只做准入与保护，不覆盖用户手动 Shader。
+- uosc 保持现有 Catppuccin Mocha / 浮动 Dock / 动画与重复“更多”按钮修复，不再为了审美引入新的第三方 UI 依赖。
+
 ### uosc 界面（6 文件 + 1 新模块）
 
 - `elements/Menu.lua` 采用 Yaozhi 9.7 新版：多级菜单贴边自动避让、进入子

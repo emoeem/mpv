@@ -377,6 +377,8 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `recentmenu.lua` | 对历史菜单进行 uosc / select / 命令面板适配 |
 | `simplebookmark.lua` | 文件书签和进度书签 |
 | `history-bookmark.lua` | 历史与书签辅助功能 |
+| `live-adaptive-quality.lua` | Linux 直播缓存自适应画质：缓存不足逐级降档、稳定后恢复、限制切换频率 |
+| `linux-video-policy.lua` | Linux HDR/SDR 自动色彩策略 + RIFE 安全准入检测（依赖存在时才允许） |
 | `auto-save-state.lua` | 自动保存状态 |
 | `episode-preferences.lua` | 在同一连续剧内临时保持音轨、字幕位置和播放倍速 |
 | `persist_properties.lua` | 跨文件持久化指定属性 |
