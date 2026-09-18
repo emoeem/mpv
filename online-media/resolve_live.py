@@ -262,6 +262,7 @@ def captured_douyin_stream_info(
     """Extract Douyin origin HLS and actual quality parameters from its page."""
     quality_ids = {
         "origin": "origin",
+        "or4": "origin",
         "uhd": "full_hd1",
         "full_hd1": "full_hd1",
         "hd": "hd1",
@@ -316,11 +317,19 @@ def captured_douyin_stream_info(
                 if room.get("status") != 2:
                     continue
                 stream_url = room.get("stream_url") or {}
-                origin = stream_url.get("hls_pull_url")
-                if not isinstance(origin, str) or not origin.startswith(("https://", "http://")):
-                    continue
-                parts = urlsplit(origin)
-                if parts.username or parts.password or not parts.hostname:
+                # hls_pull_url 在部分房间可能缺失；先从 map 选可用的最高档，
+                # 再回退到单条地址。两者都不可用时才跳过当前房间。
+                origin = None
+                hls_map = dictionary(stream_url.get("hls_pull_url_map"))
+                for candidate in (hls_map.get("FULL_HD1"), stream_url.get("hls_pull_url")):
+                    if not isinstance(candidate, str) or not candidate.startswith(("https://", "http://")):
+                        continue
+                    parts = urlsplit(candidate)
+                    if parts.username or parts.password or not parts.hostname:
+                        continue
+                    origin = candidate
+                    break
+                if origin is None:
                     continue
                 # Douyin can omit a top-tier resolution in room.stream_url
                 # while publishing the same sdk_key with complete metadata in

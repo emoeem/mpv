@@ -1,6 +1,7 @@
 -- modified from https://github.com/rkscv/danmaku/blob/main/danmaku.lua
 local msg = require('mp.msg')
 local utils = require("mp.utils")
+local Color = require("modules/color")
 local unpack = unpack or table.unpack
 
 local osd_width, osd_height, pause = 0, 0, true
@@ -593,6 +594,9 @@ function render(pos_arg)
 
         if event.start_time > pos then break end  -- 后续弹幕提前退出
         if event.end_time >= pos then
+            if event.color_source and Color.apply(event, options.smart_color, options.smart_color_percent) then
+                overlay_high_cache_valid = false
+            end
             if event.layer == nil or tonumber(event.layer) == 0 then
                 local text = realtime_position_text(event, pos, height * options.displayarea)
                 if text then

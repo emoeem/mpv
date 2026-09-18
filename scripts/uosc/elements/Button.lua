@@ -56,7 +56,10 @@ function Button:render()
 	local background = self.active and config.color.match or self.background
 	local background_opacity = self.active and 1 or config.opacity.controls
 
-	if is_hover and is_clickable and background_opacity < 0.3 then background_opacity = 0.3 end
+	-- Hover is intentionally visible even on a translucent dock. Keep it
+	-- strong enough to read as an interactive state without becoming a solid
+	-- button wall over the video.
+	if is_hover and is_clickable and background_opacity < 0.38 then background_opacity = 0.38 end
 
 	-- Background
 	if background_opacity > 0 then

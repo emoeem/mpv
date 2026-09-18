@@ -1301,22 +1301,32 @@ function Timeline:render()
 		and (has_minimized_progress and dock_geometry or visibility)
 		or math.max(visibility, Elements:maybe('controls', 'get_visibility') or 0)
 	if panel_visibility > 0 then
-		local panel_ax, panel_bx = window_border, display.width - window_border
-		local panel_by = display.height + state.radius * 2
+		-- Floating material surface: follow the actual transport bounds instead
+		-- of painting a full-width black strip. The extra inset keeps the timeline
+		-- and controls visually grouped while leaving the video edges unobstructed.
+		local controls_ax, controls_bx = Elements:maybe('controls', 'get_visual_bounds')
+		local panel_inset = round(28 * state.scale)
+		local panel_ax = controls_ax and math.max(window_border, controls_ax - panel_inset) or window_border
+		local panel_bx = controls_bx and math.min(display.width - window_border, controls_bx + panel_inset)
+			or display.width - window_border
+		local panel_by = display.height - window_border + round(12 * state.scale)
 		local blur = math.max(1, round(blur_base * state.scale))
 		local panel_top = self.panel_top
 		if follows_motion then
 			local collapsed_panel_top = collapsed_by - math.max(progress_size, 1.2) - round(2 * state.scale)
 			panel_top = collapsed_panel_top + (self.panel_top - collapsed_panel_top) * dock_geometry
 		end
+		local panel_radius = math.max(round(12 * state.scale), state.radius * 2)
 		ass:rect(panel_ax - blur, panel_top, panel_bx + blur, panel_by + blur, {
 			color = bg,
 			opacity = panel_visibility * outer_opacity,
 			blur = blur,
+			radius = panel_radius,
 		})
 		ass:rect(panel_ax, panel_top + blur, panel_bx, panel_by, {
 			color = bg,
 			opacity = panel_visibility * inner_opacity,
+			radius = panel_radius,
 		})
 	end
 
@@ -1340,9 +1350,13 @@ function Timeline:render()
 	local bar_width = bbx - bax
 	local hit_bay, hit_bby = visual_by - size - self.top_border, visual_by
 	local collapsed_bar_height = math.max(1, progress_size)
-	local expanded_bar_height = math.max(3, round(4 * state.scale))
+	local expanded_bar_height = math.max(4, round(5 * state.scale))
+	-- Hover gives the seek target a little more visual weight instead of
+	-- abruptly changing its position or hitbox.
+	local hover_bar_height = math.max(expanded_bar_height, round(6 * state.scale))
+	local target_bar_height = self.is_hovered and hover_bar_height or expanded_bar_height
 	local bar_height = collapsed_bar_height
-		+ (expanded_bar_height - collapsed_bar_height) * dock_geometry
+		+ (target_bar_height - collapsed_bar_height) * dock_geometry
 	local bay = hit_bay + (size - bar_height) / 2
 	local bby = bay + bar_height
 	local fax, fay, fbx, fby = 0, bay + self.top_border, 0, bby

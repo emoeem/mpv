@@ -1,3 +1,4 @@
+local Color = require "modules/color"
 local msg   = require 'mp.msg'
 local utils = require 'mp.utils'
 local s2t   = require("dicts/s2t_chars")
@@ -700,13 +701,9 @@ function convert_danmaku_to_ass_events(force)
         local text = ass_escape(clean_text)
                     :gsub("x(%d+)$", "{\\b1\\i1}x%1")
 
-        -- 颜色从十进制转为 BGR Hex
-        local color = math.max(0, math.min(d.color or 0xFFFFFF, 0xFFFFFF))
-        local color_hex = string.format("%06X", color)
-        local r = string.sub(color_hex, 1, 2)
-        local g = string.sub(color_hex, 3, 4)
-        local b = string.sub(color_hex, 5, 6)
-        local color_text = string.format("{\\c&H%s%s%s&}", b, g, r)
+        -- 颜色统一经过 Yaozhi 的稳定智能补色；已有非白色原色保持不变。
+        local color = Color.resolve(d, options.smart_color, options.smart_color_percent)
+        local color_text = Color.tag(color)
 
         local style, effect
         local pos, move = nil, nil
@@ -758,6 +755,8 @@ function convert_danmaku_to_ass_events(force)
                 move = move,
                 layer = (style == "R2L") and 0 or 1,
                 source = d.source,
+                color_source = d,
+                render_color = color,
             }
             table.insert(ass_events, event)
         end

@@ -212,7 +212,10 @@ function Controls:init_options()
 					tooltip = tooltip,
 					idle_icon = params[2] == 'pause' and 'play_arrow' or nil,
 				})
-				local scale = params[2] == 'pause' and 1.12 or 1
+				-- Give the transport anchor a deliberate visual hierarchy without
+				-- changing its hitbox: the primary action is slightly larger than
+				-- utility controls, like a modern media player's hero button.
+				local scale = params[2] == 'pause' and 1.20 or 1
 				table_assign(control, {element = element, sizing = 'static', scale = scale, ratio = 1})
 				if params[2] == 'pause' then
 					control.narrow_role = 'play_pause'
