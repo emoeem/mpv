@@ -1379,6 +1379,13 @@ local total_menu_items_config = {
     { title = "弹幕内容", action = "open_content_danmaku_menu" },
 }
 
+function toggle_smart_color()
+    options.smart_color = not options.smart_color
+    save_style_option("smart_color", options.smart_color)
+    if refresh_danmaku_renderer then refresh_danmaku_renderer() end
+    show_message(options.smart_color and "弹幕智能补色：开启" or "弹幕智能补色：关闭", 2)
+end
+
 function open_add_total_menu_uosc()
     local items = {}
 
@@ -1402,6 +1409,12 @@ function open_add_total_menu_uosc()
             selectable = true,
         })
     end
+    table.insert(items, {
+        title = options.smart_color and "智能补色：开启" or "智能补色：关闭",
+        value = { "script-message-to", mp.get_script_name(), "toggle-smart-color" },
+        keep_open = false,
+        selectable = true,
+    })
 
     local menu_props = {
         type = "menu_total",
