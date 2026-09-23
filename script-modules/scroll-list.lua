@@ -1,11 +1,11 @@
 local mp = require 'mp'
 local scroll_list = {
     global_style = [[]],
-    header_style = [[{\q2\fs35\c&HF7A6CB&}]],
-    list_style = [[{\q2\fs25\c&HF4D6CD&}]],
-    wrapper_style = [[{\c&HC8ADA6&\fs16}]],
-    cursor_style = [[{\c&HFAB489&}]],
-    selected_style = [[{\c&HAFE2F9&}]],
+    header_style = [[{\q2\fs35\c&00ccff&}]],
+    list_style = [[{\q2\fs25\c&Hffffff&}]],
+    wrapper_style = [[{\c&00ccff&\fs16}]],
+    cursor_style = [[{\c&00ccff&}]],
+    selected_style = [[{\c&Hfce788&}]],
 
     cursor = [[➤\h]],
     indent = [[\h\h\h\h]],
@@ -154,7 +154,7 @@ end
 
 --moves the selector to the list next page
 function scroll_list:move_pagedown()
-    if #self.list > 1 then
+    if #self.list > self.num_entries then
         self.selected = self.selected + self.num_entries
         if self.selected > #self.list then self.selected = #self.list end
         self:update_ass()
@@ -163,7 +163,7 @@ end
 
 --moves the selector to the list previous page
 function scroll_list:move_pageup()
-    if #self.list > 1 then
+    if #self.list > self.num_entries then
         self.selected = self.selected - self.num_entries
         if self.selected < 1 then self.selected = 1 end
         self:update_ass()

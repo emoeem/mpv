@@ -112,8 +112,8 @@ local function persist_options()
         return false
     end
     file:write(string.format(
-        '# mpv-Yaozhi 空闲启动页自定义图案\n'
-            .. '# 通过“杳知 > 界面 > 选择启动页图片…”维护，请勿手工填写尺寸。\n'
+        '# mpv-Emo 空闲启动页自定义图案\n'
+            .. '# 通过“Emo > 界面 > 选择启动页图片…”维护，请勿手工填写尺寸。\n'
             .. 'custom_enabled=%s\n'
             .. 'custom_width=%d\n'
             .. 'custom_height=%d\n'

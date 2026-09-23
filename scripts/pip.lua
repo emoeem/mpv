@@ -18,6 +18,12 @@ options.read_options(o, _, function() end)
 
 local pip_enabled = false
 local geometry_timer = nil
+
+local function publish_pip_state()
+    mp.set_property_bool("user-data/pip/enabled", pip_enabled)
+end
+
+publish_pip_state()
 local original_options = {}
 
 -- save original window properties
@@ -84,7 +90,8 @@ local function enable_pip()
     set_geometry_delay(o.geometry)
 
     pip_enabled = true
-    mp.osd_message("PiP enabled")
+    publish_pip_state()
+    mp.osd_message("画中画：开启")
 end
 
 -- leave PiP mode
@@ -94,7 +101,8 @@ local function disable_pip()
     cancel_geometry_timer()
     restore_original_options()
     pip_enabled = false
-    mp.osd_message("PiP disabled")
+    publish_pip_state()
+    mp.osd_message("画中画：关闭")
 end
 
 -- toggle PiP on/off

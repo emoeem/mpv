@@ -2934,6 +2934,7 @@ end)
 
 bind_keys(o.bookmark_save_keybind, 'bookmark-save', bookmark_save)
 bind_keys(o.bookmark_fileonly_keybind, 'bookmark-fileonly', bookmark_fileonly_save)
+mp.add_key_binding(nil, 'current-file-bookmarks', function() display_list('playing') end)
 
 for i = 1, #o.open_list_keybind do
 	if i == 1 then

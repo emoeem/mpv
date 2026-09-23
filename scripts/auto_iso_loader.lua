@@ -253,10 +253,10 @@ local function render_remote_loading()
     ass:draw_stop()
 
     ass:new_event()
-    ass:append("{\\an5\\pos(960,460)\\fnMicrosoft YaHei UI\\fs48\\b1" ..
+    ass:append("{\\an5\\pos(960,460)\\fnLXGW ZhenKai GB\\fs48\\b1" ..
         "\\bord0\\shad0\\1c&HFFFFFF&}正在打开网盘蓝光原盘")
     ass:new_event()
-    ass:append("{\\an5\\pos(960,535)\\fnMicrosoft YaHei UI\\fs31" ..
+    ass:append("{\\an5\\pos(960,535)\\fnLXGW ZhenKai GB\\fs31" ..
         "\\bord0\\shad0\\1c&HD9D9D9&}" .. phase_text)
 
     ass:new_event()
@@ -273,10 +273,10 @@ local function render_remote_loading()
     ass:draw_stop()
 
     ass:new_event()
-    ass:append("{\\an5\\pos(960,655)\\fnMicrosoft YaHei UI\\fs27" ..
+    ass:append("{\\an5\\pos(960,655)\\fnLXGW ZhenKai GB\\fs27" ..
         "\\bord0\\shad0\\1c&HCAC7C4&}" .. estimate_text)
     ass:new_event()
-    ass:append("{\\an5\\pos(960,700)\\fnMicrosoft YaHei UI\\fs23" ..
+    ass:append("{\\an5\\pos(960,700)\\fnLXGW ZhenKai GB\\fs23" ..
         "\\bord0\\shad0\\1c&H918E8B&}无需操作 · 完成后会自动开始播放")
 
     remote_loading_overlay.data = ass.text
@@ -377,7 +377,7 @@ local function render_local_loading()
         phase_text = "原盘仍在读取，或自带菜单没有正常显示"
         elapsed_text = string.format(
             "已等待 %d 秒 · 可以继续等待或手动重试", elapsed_second)
-        footer_text = "右键 → 杳知 → 蓝光原盘菜单，可重新进入"
+        footer_text = "右键 → Emo → 蓝光原盘菜单，可重新进入"
     elseif elapsed_second >= 30 then
         phase_text = local_loading_expects_menu
             and "正在继续读取，并等待原盘自带菜单响应"
@@ -398,16 +398,16 @@ local function render_local_loading()
     ass:draw_stop()
 
     ass:new_event()
-    ass:append("{\\an5\\pos(960,460)\\fnMicrosoft YaHei UI\\fs48\\b1" ..
+    ass:append("{\\an5\\pos(960,460)\\fnLXGW ZhenKai GB\\fs48\\b1" ..
         "\\bord0\\shad0\\1c&HFFFFFF&}" .. title)
     ass:new_event()
-    ass:append("{\\an5\\pos(960,535)\\fnMicrosoft YaHei UI\\fs31" ..
+    ass:append("{\\an5\\pos(960,535)\\fnLXGW ZhenKai GB\\fs31" ..
         "\\bord0\\shad0\\1c&HD9D9D9&}" .. phase_text)
     ass:new_event()
-    ass:append("{\\an5\\pos(960,620)\\fnMicrosoft YaHei UI\\fs27" ..
+    ass:append("{\\an5\\pos(960,620)\\fnLXGW ZhenKai GB\\fs27" ..
         "\\bord0\\shad0\\1c&HCAC7C4&}" .. elapsed_text)
     ass:new_event()
-    ass:append("{\\an5\\pos(960,685)\\fnMicrosoft YaHei UI\\fs23" ..
+    ass:append("{\\an5\\pos(960,685)\\fnLXGW ZhenKai GB\\fs23" ..
         "\\bord0\\shad0\\1c&H918E8B&}" .. footer_text)
 
     local_loading_overlay.data = ass.text

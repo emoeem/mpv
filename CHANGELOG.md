@@ -1,5 +1,13 @@
 # 更新记录
 
+## 2026-09-18 · Yaozhi 可移植性归一化
+
+- 新增 `PORTABILITY-AUDIT.md`，将 Yaozhi 功能统一分为 Linux 原生、脚本、Shader/VapourSynth、需要私有 patch、Windows 专属五类。
+- 明确 Linux 默认链路为 mpv 0.41.0 + FFmpeg 9.0.1 + libplacebo 7.360.1 + gpu-next/Vulkan/NVDEC/PipeWire。
+- 不再把 Yaozhi Windows 自编译核心、D3D11、SMTC、Atmos 私有桥接和 Windows 便携运行时作为 Linux 依赖。
+- release 模块改名为 `script-modules/emo-release.lua`，同步 stats.lua 引用，统一播放器品牌为 mpv-Emo Linux。
+
+
 记录配置仓库的同步与结构调整。日常小改动见 git 提交历史；每次与
 mpv-Yaozhi 便携包同步后，在此追加一条记录，写明合并范围、保留的本地
 定制和跳过的内容，方便下次同步时对照。
@@ -164,7 +172,7 @@ V1.0.0）。同步前快照提交为 `52cccab`。仍以 `ecbb57c` 为三方合�
 ### 共享脚本与统计
 
 - `stats.lua`：右上角版本标识（新增本地
-  `script-modules/yaozhi-release.lua`）、长页按实际文字高度自动避让底栏
+  `script-modules/emo-release.lua`）、长页按实际文字高度自动避让底栏
   与弹幕预留空间；配套 `script-modules/media-format-info.lua` 更新
   （Dolby Vision / 实际解码器识别）。
 - `chapterskip.lua` 04-30 上游修复；`auto-save-state.lua` 播放中延迟落盘；

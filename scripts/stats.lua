@@ -38,10 +38,10 @@ local function load_audio_stats_info()
 end
 
 local AudioStatsInfo = load_audio_stats_info()
-local release_path = mp.find_config_file('script-modules/yaozhi-release.lua')
+local release_path = mp.find_config_file('script-modules/emo-release.lua')
 local release_ok, release_info = pcall(dofile, release_path or '')
 local release = release_ok and type(release_info) == 'table' and release_info or nil
-if release then mp.set_property_native('user-data/mpv-yaozhi/release', release) end
+if release then mp.set_property_native('user-data/mpv-emo/release', release) end
 
 -- Options
 local o = {

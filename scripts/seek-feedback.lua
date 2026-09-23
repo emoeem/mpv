@@ -5,7 +5,7 @@ local uosc_options = {
 }
 local danmaku_options = {
     displayarea = 0.11,
-    fontname = 'Microsoft YaHei',
+    fontname = 'LXGW ZhenKai GB',
     fontsize = 30,
     message_x = 30,
     message_y = 48,

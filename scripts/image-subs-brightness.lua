@@ -123,7 +123,7 @@ local function persist_settings()
     file:write(
         '# HDR 图形字幕色彩与参考白；仅影响 PGS/VobSub/DVB，不影响视频、ASS 或 OSD。\n'
             .. '# mode=auto 自动区分 UHD HDR/DV 内封 PGS 与 SDR 图形字幕；必要时可在菜单手动覆盖。\n'
-            .. '# 通过“杳知 > HDR 图形字幕色彩与亮度”维护。\n'
+            .. '# 通过“Emo > HDR 图形字幕色彩与亮度”维护。\n'
             .. string.format('mode=%s\n', normalize_mode(o.mode) or 'auto')
             .. string.format('peak=%d\n', normalize_peak(o.peak) or 203)
     )

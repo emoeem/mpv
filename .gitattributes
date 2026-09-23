@@ -1,0 +1,15 @@
+# 文本文件统一使用 LF，避免与 Yaozhi（CRLF）同步时产生整文件行尾 diff
+* text=auto eol=lf
+
+# 归档目录保持原样（混合二进制/历史快照），不做行尾转换
+archive/** -text
+
+# 二进制资源不做行尾/文本转换
+*.ttf binary
+*.ttc binary
+*.otf binary
+*.icc binary
+*.bgra binary
+*.exe binary
+*.dll binary
+*.jar binary

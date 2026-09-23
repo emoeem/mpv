@@ -26,6 +26,7 @@
 - [快捷键](#快捷键)
 - [第三方更新器](#第三方更新器)
 - [依赖与注意事项](#依赖与注意事项)
+- [Yaozhi 可移植性审计](PORTABILITY-AUDIT.md)
 - [更新记录](CHANGELOG.md)
 
 ## 快速开始
@@ -141,8 +142,9 @@ hwdec-codecs=all
 
 ### OSD、字体与 Catppuccin Mocha
 
-主 OSD、文本字幕和 uosc 使用 LXGW WenKai Screen。注意：Linux/libass
-下不支持用分号声明多字体回退，因此 OSD/文本字幕不做 emoji 字体回退。
+播放器 UI（OSD、uosc、stats、菜单等）统一使用 `LXGW ZhenKai GB`，详见
+[UI-FONTS.md](UI-FONTS.md)；文本字幕仍使用 `LXGW WenKai Screen`。
+Linux/libass 不做 emoji 字体回退，emoji 会显示为空白/方块。
 当前主题是 [Catppuccin Mocha](https://catppuccin.com/palette/)：
 
 | 用途 | 颜色 |
@@ -324,7 +326,7 @@ profile=HDR2SDR
 | `controls_size` | `36` | 控制按钮尺寸 |
 | `controls_margin` | `18` | 控制栏外边距 |
 | `controls_persistency` | `idle` | 空闲时保留控制栏 |
-| `menu_font` | `LXGW WenKai Screen` | 菜单字体 |
+| `menu_font` | `LXGW ZhenKai GB` | 菜单字体 |
 | `menu_item_height` | `44` | 菜单项目高度 |
 | `scale` | `1.30` | 界面缩放 |
 | `font_scale` | `1.15` | 文字缩放 |

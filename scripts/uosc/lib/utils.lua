@@ -1168,7 +1168,7 @@ function render()
 	-- Controls read it. The module schedules only the frames still needed.
 	dock_motion:update()
 
-	-- mpv-Yaozhi idle branding. The published state is also used by the
+	-- mpv-Emo idle branding. The published state is also used by the
 	-- command menu, so render from the same source of truth.
 	local idle_branding_enabled = mp.get_property(
 		'user-data/uosc/idle-branding',
@@ -1210,9 +1210,9 @@ function render()
 		-- the wordmark to its visible lower edge instead of the canvas edge.
 		if image_mode == 'default' then mark_half_height = mark_half_height * 0.758 end
 		local brand_name = '{\\1c&H' .. config.color.idle_brand_glow .. '&}mpv-'
-			.. '{\\1c&H' .. config.color.idle_brand_text .. '&}Yaozhi'
+			.. '{\\1c&H' .. config.color.idle_brand_text .. '&}Emo'
 		ass:txt(center_x, center_y + mark_half_height + 8 * state.scale, 8, brand_name, {
-			font = 'Segoe UI',
+			font = 'LXGW ZhenKai GB',
 			size = clamp(22 * state.scale, mark_half_height * 0.42, 34 * state.scale),
 			spacing = 0.35 * state.scale,
 			bold = false,

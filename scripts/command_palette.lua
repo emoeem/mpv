@@ -589,6 +589,7 @@ mp.register_script_message("show-command-palette", function (name)
             "Aspect Ratio",
             "Command Palette",
             "Recent Files",
+            "Menu Commands",
         }
 
         for _, item in ipairs(items) do
@@ -619,6 +620,39 @@ mp.register_script_message("show-command-palette", function (name)
 
         menu.filter_by_fields = {'name', 'key'}
         em.get_line = command_palette_get_line
+    elseif name == "Menu Commands" then
+        local bindings = utils.parse_json(mp.get_property("input-bindings"))
+        local menu_bindings = {}
+        for _, v in ipairs(bindings) do
+            if not is_empty(v.comment) and (contains(v.comment, "menu: ") or contains(v.comment, "custom-menu: ")) then
+                table.insert(menu_bindings, v)
+            end
+        end
+        bindings = menu_bindings
+
+        for _, v in ipairs(bindings) do
+            v.key = "(" .. v.key .. ")"
+            if not is_empty(v.comment) then
+                if contains(v.comment, "custom-menu: ") then
+                    v.comment = replace(v.comment, "custom-menu: ", "")
+                end
+                if contains(v.comment, "menu: ") then
+                    v.comment = replace(v.comment, "menu: ", "")
+                end
+                v.comment = first_to_upper(v.comment)
+            end
+        end
+
+        table.sort(bindings, function(i, j)
+            return i.comment < j.comment
+        end)
+
+        menu_content.list = bindings
+        function menu:submit(tbl)
+            mp.command(tbl.cmd)
+        end
+        menu.filter_by_fields = {'cmd', 'key', 'comment'}
+        em.get_line = binding_get_line
     elseif name == "Bindings" then
         local bindings = utils.parse_json(mp.get_property("input-bindings"))
 

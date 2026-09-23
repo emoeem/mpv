@@ -5,6 +5,9 @@ files/
 # Git mirrors used by scripts/manager.lua (not nested worktrees)
 .manager/
 
+# 本地重构备份快照（时间戳目录），不入库
+archive/*-20[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]/
+
 # 运行时个人备忘记录（含本地文件路径，不入库）
 memo-history.log
 

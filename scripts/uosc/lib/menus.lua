@@ -262,7 +262,7 @@ end
 
 local function tune_yaozhi_menu_dimensions(items)
 	for _, item in ipairs(items or {}) do
-		if item.title == '杳知' and item.items then
+		if item.title == 'Emo' and item.items then
 			item.min_width = 320
 			return
 		end
@@ -278,7 +278,7 @@ local function inject_atmos_menu(items)
 
 	local yaozhi_menu
 	for _, item in ipairs(items or {}) do
-		if item.title == '杳知' and item.items then
+		if item.title == 'Emo' and item.items then
 			yaozhi_menu = item
 			break
 		end
@@ -303,7 +303,7 @@ local function inject_atmos_menu(items)
 		end
 	end
 	table.insert(yaozhi_menu.items, insert_at, atmosphere_item)
-	msg.verbose('Injected Atmos experiment entry into the Yaozhi menu')
+	msg.verbose('Injected Atmos experiment entry into the Emo menu')
 end
 
 -- Keep the support entry visually separated and pinned to the very bottom,
@@ -311,7 +311,7 @@ end
 local function pin_yaozhi_donation(items)
 	local yaozhi_menu
 	for _, item in ipairs(items or {}) do
-		if item.title == '杳知' and item.items then
+		if item.title == 'Emo' and item.items then
 			yaozhi_menu = item
 			break
 		end
@@ -544,7 +544,7 @@ function create_select_tracklist_type_menu_opener(opts)
 
 	local function escape_codec(str)
 		if not str or str == '' then return '' end
-	
+
 		local codec_map = {
 			mpeg2 = "mpeg2",
 			dvvideo = "dv",
@@ -557,13 +557,13 @@ function create_select_tracklist_type_menu_opener(opts)
 			dvb_tele = "teletext",
 			arib = "arib"
 		}
-	
+
 		for key, value in pairs(codec_map) do
 			if str:find(key) then
 				return value
 			end
 		end
-	
+
 		return str
 	end
 
@@ -1726,11 +1726,11 @@ function open_subtitle_downloader()
 
 		local headers = {
 			['Accept'] =  'application/json',
- 			['Api-Key'] = config.open_subtitles_api_key,
+			['Api-Key'] = config.open_subtitles_api_key,
 			['Content-Type'] = 'application/json',
 			['User-Agent'] = config.open_subtitles_agent,
 
- 		}
+		}
 
 		local body = {
 			file_id = data.id
@@ -1805,9 +1805,9 @@ function open_subtitle_downloader()
 			table.concat(table_keys(create_set(languages)), ','), tostring(page))
 
 		local headers = {
- 			['Api-Key'] = config.open_subtitles_api_key,
+			['Api-Key'] = config.open_subtitles_api_key,
 			['User-Agent'] = config.open_subtitles_agent,
- 		}
+		}
 
 		http_request_async('GET', search_url, headers, nil, function(error, data)
 			if not menu:is_alive() then return end
@@ -2843,11 +2843,11 @@ mp.register_script_message('codex-open-image-subs-brightness-menu', function()
 		items = items,
 		footnote = supported
 			and '随视频模式保留正片 HDR 元数据；选择亮度档位会切换到 SDR 图形字幕，不影响视频、ASS 与 OSD'
-			or '需要配套的 mpv-Yaozhi 自编译核心',
+			or '需要配套的 mpv-Emo 自编译核心',
 	})
 end)
 
--- 杳知HDR - 安全 HDR 输出与峰值亮度菜单
+-- EmoHDR - 安全 HDR 输出与峰值亮度菜单
 mp.register_script_message('codex-open-peak-menu', function()
 	-- When this page replaces the command tree, preserve how that tree was
 	-- opened. Mouse activation must start neutral so the first row cannot open

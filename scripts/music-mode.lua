@@ -383,7 +383,7 @@ local function persist_mode(mode)
     file:write(
         '# 音乐模式：off/loop/single/random\n'
             .. '# loop=列表循环，single=单曲循环，random=随机防重复。\n'
-            .. '# 通过“杳知 > 音乐模式”维护。\n'
+            .. '# 通过“Emo > 音乐模式”维护。\n'
             .. string.format('mode=%s\n', mode)
             .. string.format('show_osd=%s\n', o.show_osd and 'yes' or 'no')
     )
