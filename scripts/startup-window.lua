@@ -9,9 +9,9 @@ local msg = require 'mp.msg'
 local fallback_seconds = 3
 local window_requested = false
 local adapter_ready =
-    mp.get_property('user-data/adaptive-quality/adapter-ready') == 'yes'
-local uosc_ready = mp.get_property('user-data/uosc/idle-branding') ~= nil
-local image_ready = mp.get_property('user-data/idle-branding-image/mode') ~= nil
+    mp.get_property_native('user-data/adaptive-quality/adapter-ready') == 'yes'
+local uosc_ready = mp.get_property_native('user-data/uosc/idle-branding') ~= nil
+local image_ready = mp.get_property_native('user-data/idle-branding-image/mode') ~= nil
 local fallback_timer = nil
 
 local function publish_state(value)

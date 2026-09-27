@@ -2702,7 +2702,7 @@ end)
 mp.register_script_message('codex-open-audio-passthrough-menu', function()
 	local current = mp.get_property_native('user-data/audio-passthrough/mode') or 'off'
 	local enabled = mp.get_property_native('user-data/audio-passthrough/enabled') == 'yes'
-	local device = mp.get_property_native('user-data/audio-passthrough/device') or 'Windows 默认'
+	local device = mp.get_property_native('user-data/audio-passthrough/device') or 'PipeWire 默认'
 	local audio = mp.get_property_native('user-data/audio-passthrough/audio') or '未加载音轨'
 	local choices = {
 		{value = 'off', title = '关闭', hint = '普通输出'},
@@ -2750,7 +2750,7 @@ mp.register_script_message('codex-open-audio-passthrough-menu', function()
 		type = 'codex_audio_passthrough',
 		title = '音频直通',
 		items = items,
-		footnote = '先在 Windows/电视选择 HDMI/eARC 输出',
+		footnote = '先在 PipeWire/HDMI/eARC 输出',
 	})
 end)
 
@@ -2849,6 +2849,61 @@ end)
 
 -- EmoHDR - 安全 HDR 输出与峰值亮度菜单
 mp.register_script_message('codex-open-peak-menu', function()
+	-- Linux uses gpu-next/Vulkan native HDR handling. The legacy hdr_mode script
+	-- is Windows-only, so expose only the controls that are real on Linux here.
+	if mp.get_property_native('platform') ~= 'windows' then
+		local source_gamma = tostring(mp.get_property('video-params/gamma', '') or ''):lower()
+		local source_is_hdr = source_gamma == 'pq' or source_gamma == 'hlg'
+		local current_raw = mp.get_property('target-peak', 'auto')
+		local current_number = tonumber(current_raw)
+		local guard_enabled = mp.get_property_native('user-data/hdr-peak-percentile-guard/enabled') ~= false
+		local guard_low = mp.get_property_native('user-data/hdr-peak-percentile-guard/low-average') == true
+		local guard_percentile = tonumber(mp.get_property_native('user-data/hdr-peak-percentile-guard/percentile'))
+		local guard_label = guard_percentile and string.format('%.3f%%', guard_percentile) or '自动'
+		local items = {
+			{
+				title = 'HDR 峰值百分位保护',
+				hint = not guard_enabled and '已关闭'
+					or guard_low and ('低平均亮度场景：' .. guard_label)
+					or ('正常场景：' .. guard_label),
+				value = {'script-message', 'hdr-peak-percentile-guard-toggle', 'refresh'},
+				active = guard_enabled,
+			},
+		}
+		if source_is_hdr then
+			items[#items + 1] = {
+				title = '当前目标峰值：' .. (current_number and (math.floor(current_number + 0.5) .. ' nits') or '自动'),
+				selectable = false,
+				muted = true,
+			}
+			items[#items + 1] = {
+				title = '目标峰值：自动',
+				value = {'set', 'target-peak', 'auto'},
+				active = not current_number,
+			}
+			for _, val in ipairs({200, 300, 400, 500, 600, 800, 1000, 1200, 1500, 2000, 4000}) do
+				items[#items + 1] = {
+					title = '目标峰值：' .. val .. ' nits',
+					value = {'set', 'target-peak', tostring(val)},
+					active = current_number and math.floor(current_number + 0.5) == val,
+				}
+			end
+		else
+			items[#items + 1] = {
+				title = '目标峰值',
+				hint = '当前片源为 SDR；target-peak 不参与 HDR 峰值决策',
+				selectable = false,
+				muted = true,
+			}
+		end
+		open_command_menu({
+			type = 'codex_peak_linux',
+			title = 'HDR 输出与峰值亮度',
+			items = items,
+			footnote = 'Linux：gpu-next/Vulkan 原生 HDR；峰值百分位保护独立于显示器 target-peak',
+		})
+		return
+	end
 	-- When this page replaces the command tree, preserve how that tree was
 	-- opened. Mouse activation must start neutral so the first row cannot open
 	-- merely because it appears under the click; keyboard activation keeps its
@@ -2890,7 +2945,21 @@ mp.register_script_message('codex-open-peak-menu', function()
 	elseif not output_is_hdr and hdr_status ~= 'on' then
 		unavailable_hint = '屏幕尚未进入 HDR'
 	end
+	local guard_enabled = mp.get_property_native('user-data/hdr-peak-percentile-guard/enabled') ~= false
+	local guard_low = mp.get_property_native('user-data/hdr-peak-percentile-guard/low-average') == true
+	local guard_percentile = mp.get_property_native('user-data/hdr-peak-percentile-guard/percentile')
+	local guard_label = tonumber(guard_percentile)
+		and string.format('%.3f', tonumber(guard_percentile))
+		or '自动'
 	local items = {}
+	items[#items + 1] = {
+		title = 'HDR 峰值百分位保护',
+		hint = not guard_enabled and '已关闭'
+			or guard_low and ('低平均亮度场景：' .. guard_label .. '%')
+			or ('正常场景：' .. guard_label .. '%'),
+		value = {'script-message', 'hdr-peak-percentile-guard-toggle', 'refresh'},
+		active = guard_enabled,
+	}
 	items[#items + 1] = {
 		title = '播放器输出模式',
 		hint = force_sdr and 'HDR→SDR（不改系统）' or '自动选择 HDR/SDR',

@@ -451,6 +451,22 @@ local function is_online_vod()
     return tostring(properties["user-data/online-media/content-type"] or "") == "video"
 end
 
+local function is_loopback_http(path)
+    local authority = tostring(path or ""):lower():match("^https?://([^/]+)")
+    if not authority then return false end
+    authority = authority:match("([^@]+)$") or authority
+    local host = authority:match("^%[([^%]]+)%]") or authority:match("^([^:?#]+)")
+    return host == "localhost" or host == "localhost." or host == "::1"
+        or (host and host:match("^127%.%d+%.%d+%.%d+$") ~= nil)
+end
+
+local function is_external_player_proxy()
+    local ipc = tostring(mp.get_property("input-ipc-server", "") or ""):lower()
+    if not ipc:find("catpaw_mpv_ext_", 1, true) then return false end
+    return is_loopback_http(mp.get_property("path", "") or properties["path"])
+        or is_loopback_http(mp.get_property("stream-open-filename", "") or properties["stream-open-filename"])
+end
+
 local function is_adaptive_remote()
     return properties["demuxer-via-network"] == true
         or (is_alist_playback() and alist_mode() == "auto")
@@ -542,7 +558,9 @@ local function info(w, h)
         or (properties["cache"] == "auto" and #cached_ranges > 0)
     local mode = alist_mode()
     disable_reason = ""
-    if (w or 0) == 0 or (h or 0) == 0 then
+    if is_external_player_proxy() then
+        disable_reason = "external-player-proxy-protected"
+    elseif (w or 0) == 0 or (h or 0) == 0 then
         disable_reason = "missing-video-size"
     elseif has_vid == 0 or not current_video_track() then
         disable_reason = "missing-video-track"
@@ -675,7 +693,7 @@ end
 local activity_timer
 
 local function spawn(time)
-    if disabled then return end
+    if disabled or is_external_player_proxy() then return end
 
     if prewarm_timer then
         prewarm_timer:kill()
