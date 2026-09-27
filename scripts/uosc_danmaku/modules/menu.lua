@@ -252,7 +252,28 @@ function get_animes(query, include_extra, pending_generation)
         request_generation = active_request_generation
     end
     local encoded_query = url_encode(query)
-    local server_metas = get_api_server_list(options.api_server, true)
+    local all_metas = get_api_server_list(options.api_server, true)
+    local server_hint = ""
+    local server_metas = {}
+    if filter_note and filter_note ~= "" then
+        local matched = {}
+        for _, m in ipairs(all_metas) do
+            if m.note and m.note == filter_note then
+                table.insert(matched, m)
+            end
+        end
+        if #matched > 0 then
+            server_metas = { matched[1] }  -- 只取第一个匹配的
+            server_note = "服务器【" .. filter_note .. "】"
+        else
+            show_message("未找到备注为【" .. filter_note .. "】的服务器，将使用全部服务器", 3)
+            msg.info("未找到备注为【" .. filter_note .. "】的服务器，将使用全部服务器")
+            server_metas = all_metas
+        end
+    else
+        server_metas = all_metas
+    end
+
     local servers = {}
     local server_notes = {}
     for _, m in ipairs(server_metas) do
@@ -282,7 +303,7 @@ function get_animes(query, include_extra, pending_generation)
     local total_count = 0
     request_cancelled = false
 
-    local message = "加载数据中..."
+    local message = server_hint .. "加载数据中..."
     local menu_type = "menu_anime"
     local menu_title = "在此处输入片名"
     local footnote = include_extra and "直接搜片名；|ds / |dy 可精确筛选电视剧或电影" or "使用enter或ctrl+enter进行搜索"
@@ -384,6 +405,13 @@ function get_episodes(animeTitle, bangumiId, api_server)
         if not request_is_current(request_generation, menu_type) then return end
         active_request_cancel = nil
 
+        table.insert(items, {
+            title = "↩️ 返回搜索结果",
+            value = { "script-message-to", mp.get_script_name(), "open-latest-menu-anime", latest_menu_anime },
+            keep_open = false,
+            selectable = true,
+        })
+
         if err then
             local message = "获取数据失败"
             if uosc_available then
@@ -405,16 +433,9 @@ function get_episodes(animeTitle, bangumiId, api_server)
             else
                 show_message(message, 3)
             end
-            msg.info("无结果")
+            msg.info(message)
             return
         end
-
-        table.insert(items, {
-            title = "← 返回搜索结果",
-            value = { "script-message-to", mp.get_script_name(), "open-latest-menu-anime", latest_menu_anime },
-            keep_open = false,
-            selectable = true,
-        })
 
         for _, episode in ipairs(response.bangumi.episodes) do
             table.insert(items, {
@@ -426,6 +447,22 @@ function get_episodes(animeTitle, bangumiId, api_server)
                 keep_open = false,
                 selectable = true,
             })
+        end
+
+        -- ====== 新增：更新 latest_menu_anime ======
+        if latest_menu_anime and latest_menu_anime ~= "" then
+            local menu_table = utils.parse_json(latest_menu_anime)
+            if menu_table and type(menu_table.items) == "table" then
+                for i, back_item in ipairs(menu_table.items) do
+                    if type(back_item.value) == "table" and
+                    back_item.value[5] == bangumiId and back_item.value[6] == api_server then
+                        menu_table.items[i].footnote = mp.get_property("filename")
+                        menu_table.items[i].items = { unpack(items, 2) }
+                        break
+                    end
+                end
+                latest_menu_anime = utils.format_json(menu_table)
+            end
         end
 
         if uosc_available then
@@ -744,26 +781,28 @@ function open_add_menu_uosc()
     local sources = {}
     for url, source in pairs(DANMAKU.sources) do
         if source.data then
+            local count = #source.data  -- 弹幕条数
+            local count_text = string.format("（%d条）弹幕", count)
             local item = {title = utf8_sub(url, 1, 100), value = url, keep_open = true,}
             if source.from == "api_server" then
                 if source.blocked then
                     item.hint = "来源：弹幕服务器（已屏蔽）"
-                    item.actions = {{icon = "check", name = "unblock", label = "解除屏蔽"},}
+                    item.actions = {{icon = "check", name = "unblock", label = "解除屏蔽" .. count_text},}
                 else
                     item.hint = "来源：弹幕服务器（未屏蔽）"
-                    item.actions = {{icon = "not_interested", name = "block", label = "屏蔽"},}
+                    item.actions = {{icon = "not_interested", name = "block", label = "屏蔽" .. count_text},}
                 end
             else
                 item.hint = "来源：用户添加"
                 if source.blocked then
                     item.actions = {
-                        {icon = "check", name = "unblock", label = "解除屏蔽"},
-                        {icon = "delete", name = "delete", label = "删除"},
+                        {icon = "check", name = "unblock", label = "解除屏蔽" .. count_text},
+                        {icon = "delete", name = "delete", label = "删除" .. count_text},
                     }
                 else
                     item.actions = {
-                        {icon = "not_interested", name = "block", label = "屏蔽"},
-                        {icon = "delete", name = "delete", label = "删除"},
+                        {icon = "not_interested", name = "block", label = "屏蔽" .. count_text},
+                        {icon = "delete", name = "delete", label = "删除" .. count_text},
                     }
                 end
             end
@@ -1590,6 +1629,7 @@ mp.register_script_message("search-anime-event", function(query)
         end
     end)
 end)
+
 mp.register_script_message("search-episodes-event", function(animeTitle, bangumiId, api_server)
     perform_cancel_active_request()
     if uosc_available then

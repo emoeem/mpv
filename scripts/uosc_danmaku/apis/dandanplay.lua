@@ -321,6 +321,7 @@ function make_danmaku_request_args(method, url, headers, body, request_options)
         "curl",
         "--silent",
         "--show-error",
+        "--ssl-no-revoke",
         "-L",
         "-X",
         method,
@@ -473,6 +474,7 @@ local function match_anime()
         if type(auto_associate_extra_danmaku) == "function" then
             auto_associate_extra_danmaku()
         end
+        mp.commandv("script-message", "auto_load_fallback")
         return
     end
 
@@ -585,6 +587,7 @@ local function match_anime()
 
     local function final_cb()
         if not matched then
+            mp.commandv("script-message", "auto_load_fallback")
             msg.info("没有找到合适的匹配结果")
             if type(auto_associate_extra_danmaku) == "function" then
                 auto_associate_extra_danmaku()
@@ -592,7 +595,7 @@ local function match_anime()
         end
     end
 
-    cancel_fn = parallel_requests(servers, build_args, per_response, final_cb, { concurrency = 5, per_request_timeout = 15 })
+    cancel_fn = parallel_requests(servers, build_args, per_response, final_cb, { concurrency = 5, per_request_timeout = 60 })
 end
 
 -- 执行哈希匹配获取弹幕
@@ -678,11 +681,12 @@ local function match_file(file_path, file_name, callback)
 
     local function final_cb()
         if not matched then
-            callback("没有匹配的剧集")
+            mp.commandv("script-message", "auto_load_fallback")
+            callback("没有找到hash匹配的剧集")
         end
     end
 
-    cancel_fn = parallel_requests(servers, build_args, per_response, final_cb, { concurrency = 5, per_request_timeout = 15 })
+    cancel_fn = parallel_requests(servers, build_args, per_response, final_cb, { concurrency = 5, per_request_timeout = 60 })
 end
 
 -- 异步获取弹幕数据
@@ -780,6 +784,12 @@ function handle_fetched_danmaku(data, url, from_menu, silent_empty)
         show_message("该集弹幕内容为空，结束加载", 3)
     end
     msg.verbose("该集弹幕内容为空，结束加载")
+    -- 上游 d8c1cd8：自动加载失败时通知主脚本触发搜索框回退。受
+    -- options.auto_fallback_search 控制（默认 false），且 main.lua 以
+    -- fallback_triggered 保证只触发一次。
+    if not from_menu then
+        mp.commandv("script-message", "auto_load_fallback")
+    end
     return false, data and "empty" or "no_data"
 end
 

@@ -1105,7 +1105,11 @@ mp.register_event('playback-restart', function(event)
 end)
 
 mp.add_hook("on_unload", 50, function()
-    COMMENTS, DELAY = nil, 0
+    -- 采纳上游 d8c1cd8 对 FALLBACK_TRIGGER 的复位（auto_load_fallback 每文件重新武装）。
+    -- 注意：不引入上游同段的 stop_time_observer() —— 本分支在重构叠加层时钟时已移除该
+    -- 函数（全库无定义），改由 clear_overlay_clock()/stop_overlay_timer() 承担，
+    -- 照搬会导致 on_unload 时调用 nil 报错。
+    FALLBACK_TRIGGER, COMMENTS, DELAY = false, nil, 0
     restore_overlay_display_sync(true)
     stop_overlay_timer()
     unload_ass_track(true)
@@ -1143,5 +1147,7 @@ mp.add_hook("on_unload", 50, function()
 
     DANMAKU = {sources = {}, count = 1}
     mp.set_property_native(DANMAKU_COUNT, 0)
+    -- 上游在本 hook 末尾追加 set_property_bool(HAS_DANMAKU, false)，但本分支已在
+    -- 上面第 1128 行重置过同一属性，此处只保留本地的按钮刷新，避免重复调用。
     refresh_danmaku_button()
 end)

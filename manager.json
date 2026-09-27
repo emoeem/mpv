@@ -16,7 +16,7 @@
       "source": ".",
       "destination": "scripts/uosc_danmaku",
       "mode": "check",
-      "baseline": "948f64eef08011faf2f3eb43050062d7ce5ed1ba"
+      "baseline": "d8c1cd8b4786c286a19079caef3f9ac9fa64933d"
     },
     {
       "name": "anime4k",

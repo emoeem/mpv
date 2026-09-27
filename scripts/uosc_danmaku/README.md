@@ -451,6 +451,32 @@ autoload_for_url=yes
 
 <details>
 <summary>
+auto_fallback_search
+
+> 开关全自动弹幕填装失败后弹出搜索框
+
+</summary>
+
+### auto_fallback_search
+
+#### 功能说明
+
+开启此选项后，当全自动弹幕填装选项 `auto_load=yes` 使用时，弹幕自动加载匹配全部失败后，弹出搜索框让用户手动搜索，默认关闭不使用
+
+#### 使用方法
+
+想要开启此选项，请在mpv配置文件夹下的 `script-opts`中创建 `uosc_danmaku.conf`文件并添加如下内容：
+
+```
+auto_fallback_search=yes
+```
+
+</details>
+
+---
+
+<details>
+<summary>
 autoload_local_danmaku
 
 > 开关自动加载同目录下的xml格式弹幕文件
@@ -1060,10 +1086,16 @@ blacklist_path=
     从 `user-data/uosc_danmaku/danmaku-delay`属性中可以获取到当前弹幕延迟的值，具体用法可以参考[此issue](https://github.com/Tony15246/uosc_danmaku/issues/77)
 
 - `user-data/uosc_danmaku/has-danmaku`
+
     从`user-data/uosc_danmaku/has-danmaku`属性中可以获取到表示当前是否有弹幕在显示的布尔值，具体用法可以参考[此pr](https://github.com/Tony15246/uosc_danmaku/pull/276)
 
 - `user-data/uosc_danmaku/danmaku-switch-on`
+
     从`user-data/uosc_danmaku/danmaku-switch-on`属性中可以获取到表示当前弹幕开关状态的布尔值，具体用法可以参考[此issue](https://github.com/Tony15246/uosc_danmaku/issues/362)
+
+- `user-data/uosc_danmaku/danmaku-count`
+
+    从`user-data/uosc_danmaku/danmaku-count`属性中可以获取到当前弹幕池里的弹幕总数
 
 ## 常见问题
 
