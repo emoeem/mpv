@@ -6,6 +6,12 @@ local options = {
     -- File path gets expanded, leave empty for in-memory history
     history_path = "~~/memo-history.log",
 
+    -- 历史文件轮转：超过 history_max_bytes 时，仅保留末尾 history_keep_bytes 字节。
+    -- 该文件此前只增不减（以 "a+b" 追加且无上限），长期使用会无限增长。
+    -- 设为 0 可禁用轮转；与 history_path 为空（纯内存历史）时无影响。
+    history_max_bytes = 1048576,
+    history_keep_bytes = 262144,
+
     -- How many entries to display in menu
     entries = 10,
 
@@ -128,6 +134,30 @@ local history, history_path
 
 if options.history_path ~= "" then
     history_path = mp.command_native({"expand-path", options.history_path})
+
+    -- 轮转：文件超过上限时截取末尾 keep 字节，并向前对齐到整行边界，
+    -- 避免把某条记录截成半行。在任何 io.open 之前执行。
+    local function rotate_history(path, max_bytes, keep_bytes)
+        if not max_bytes or max_bytes <= 0 or not keep_bytes or keep_bytes <= 0 then return end
+        local f = io.open(path, "rb")
+        if not f then return end
+        local size = f:seek("end")
+        if size <= max_bytes then f:close(); return end
+        local start = size - keep_bytes
+        if start < 0 then start = 0 end
+        f:seek("set", start)
+        local tail = f:read("*a") or ""
+        f:close()
+        if start > 0 then
+            -- 丢弃可能被切断的首行
+            local nl = tail:find("\n", 1, true)
+            tail = nl and tail:sub(nl + 1) or tail
+        end
+        local out = io.open(path, "wb")
+        if out then out:write(tail); out:close() end
+    end
+    rotate_history(history_path, options.history_max_bytes, options.history_keep_bytes)
+
     history = io.open(history_path, "a+b")
 end
 if history == nil then
