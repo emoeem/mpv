@@ -393,4 +393,9 @@ mp.add_key_binding(nil, "slowdown", evafast_slowdown)
 mp.add_key_binding(nil, "toggle", evafast_toggle)
 mp.add_key_binding(nil, "toggle-rewind", evafast_toggle_rewind)
 
-mp.commandv("script-message-to", "uosc", "get-version", mp.get_script_name())
+-- 延后到事件循环首轮再发：mpv 按目录顺序逐个加载脚本，uosc 在本脚本之后才完成
+-- 注册，若在此处直接发消息会触发一次性的 "Can't find script 'uosc' to send
+-- message to." 启动告警（功能无影响，但会污染日志）。
+mp.add_timeout(0, function()
+	mp.commandv("script-message-to", "uosc", "get-version", mp.get_script_name())
+end)

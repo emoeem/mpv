@@ -2192,9 +2192,12 @@ function Menu:render()
 						-- Re-use rect as a hitbox by growing it so it bridges gaps to prevent flickering
 						rect.ay, rect.by, rect.bx = item_ay, item_ay + self.scroll_step, rect.bx + margin
 
-						-- Select action on cursor hover
+						-- 上游 cc99313（5.13.0）：菜单动作按钮同样改为 primary_click，避免
+						-- 按下即触发时 UP 事件穿透到下方窗口。注意上游只改了这一个"动作"
+						-- 区域，其余区域（拖动 display / 滑入 bg_rect / 搜索提交 icon_rect）
+						-- 仍保持 primary_down，本分支与上游保持一致。
 						if self.mouse_nav and get_point_to_rectangle_proximity(cursor, rect) <= 0 then
-							bind_zone('primary_down', rect, self:create_action(function(shortcut)
+							bind_zone('primary_click', rect, self:create_action(function(shortcut)
 								self:activate_selected_item(shortcut, true)
 							end))
 							blur_action_index = false
@@ -2228,7 +2231,11 @@ function Menu:render()
 						and bg_rect.ax + (bg_rect.bx - bg_rect.ax) / 2
 						or content_bx - (icon_size / 2)
 					if item.icon == 'spinner' then
-						ass:spinner(x, item_center_y, icon_size * 1.5, {color = font_color, opacity = menu_opacity * 0.8})
+						-- 上游 cd731ea（5.13.0）：spinner 此前未传 clip，菜单滚动/切换时
+						-- 旋转图标会溢出菜单可视区域。补上 clip = item_clip。
+						ass:spinner(x, item_center_y, icon_size * 1.5, {
+							color = font_color, opacity = menu_opacity * 0.8, clip = item_clip,
+						})
 					else
 						local icon = item.items and item.preview_direction == -1 and 'chevron_left' or item.icon
 						ass:icon(x, item_center_y, icon_size * 1.5, icon, {

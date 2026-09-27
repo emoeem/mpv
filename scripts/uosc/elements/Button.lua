@@ -43,8 +43,13 @@ end
 function Button:render()
 	local visibility = self:get_visibility()
 	if visibility <= 0 then return end
+	-- 上游 cc99313（5.13.0）：按钮改为响应完整 click（按下+抬起）而非 primary_down。
+	-- 按下即触发时，若该动作改变窗口尺寸/位置/存在性（最大化、全屏、关闭），抬起的
+	-- UP 事件会"穿透"到下方窗口并触发它的按钮——例如在最大化窗口上点关闭键会连带
+	-- 点到下面那个窗口的关闭键。此处保留本分支的可见度阈值与次级点击支持，仅采纳
+	-- 上游的事件类型修正；拖动类区域（时间轴、滑块）仍必须用 primary_down。
 	if visibility >= 0.08 then
-		cursor:zone('primary_down', self, function() self:handle_cursor_click() end)
+		cursor:zone('primary_click', self, function() self:handle_cursor_click() end)
 		cursor:zone('secondary_down', self, function() self:handle_cursor_secondary_click() end)
 	end
 

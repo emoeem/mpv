@@ -1,5 +1,5 @@
 --[[ uosc | https://github.com/tomasklaen/uosc ]]
-local uosc_version = '5.12.0'
+local uosc_version = '5.13.0'
 
 mp.commandv('script-message', 'uosc-version', uosc_version)
 
@@ -31,6 +31,7 @@ defaults = {
 	timeline_mbtn_right = '',
 	timeline_cache = true,
 	timeline_heatmap = 'overlay',
+	timeline_mbtn_right = '',
 
 	controls =
 	'menu,gap,<video,audio>subtitles,<has_many_audio>audio,<has_many_video>video,<has_many_edition>editions,<stream>stream-quality,gap,space,<video,audio>speed,space,shuffle,loop-playlist,loop-file,gap,prev,items,next,gap,fullscreen',
@@ -778,7 +779,7 @@ mp.observe_property('track-list', 'native', function(name, value)
 	Elements:trigger('dispositions')
 end)
 mp.observe_property('editions', 'number', function(_, editions)
-	if editions then set_state('has_many_edition', editions > 1) end
+	set_state('has_many_edition', editions and editions > 1)
 	Elements:trigger('dispositions')
 end)
 mp.observe_property('chapter-list', 'native', function(_, chapters)
