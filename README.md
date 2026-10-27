@@ -214,7 +214,9 @@ screenshot-tag-colorspace=yes
 - `ytdl=yes`：启用 mpv 的 URL 解析增强。
 - 默认优先选择 2160p 以下视频并排除 VP9.2。
 - 通过 `cookies-from-browser=Firefox` 读取 Firefox cookies。
-- `script-opts/quality-menu.conf` 与 `quality-menu.lua` 提供视频 / 音频格式菜单。
+- 在线格式的清晰度选择由 uosc 自带的流质量菜单提供（`CTRL+F`，候选见
+  `script-opts/uosc.conf` 的 `stream_quality_options`），在线媒体解析由
+  `online-media.lua` 承接。
 - `profiles.conf` 中的 `网络流` 会在 `demuxer-via-network=yes` 时自动启用：
   预读目标为 30 秒，前向缓存上限为 256 MiB，回退缓存上限为 32 MiB。
 - `直播` 是需要手动应用的低缓存、低延迟场景配置，不会被普通网络视频自动触发。
@@ -291,7 +293,6 @@ profile=HDR2SDR
 | Profile | 触发目的 |
 | --- | --- |
 | `hdr-2390` | 使用 BT.2390 时调整 tone mapping 参数 |
-| `peak-percentile` | 对低亮度 HDR 场景降低峰值百分位 |
 | `SDR-gamut` | 对非 BT.709 SDR 内容使用 clip 色域映射 |
 | `SDR-target` | 对普通 SDR 内容关闭不必要的目标色彩提示 |
 | `HDR` | 识别 PQ / HLG 内容并设置 HDR 目标参数 |
@@ -306,9 +307,49 @@ profile=HDR2SDR
 | `end` | 播放结束后退出全屏和最大化 |
 | `media-title` | 网络协议和磁链使用媒体标题作为窗口标题 |
 
+> HDR 峰值百分位不再由 auto profile 管理。它由
+> `scripts/hdr-peak-percentile-guard.lua` 在运行时按 `video-params/avg-pq-y`
+> 在 `99.8` 与 `99.995` 之间切换，避免 auto profile 直接读取高速变化的动态
+> 元数据而与脚本争抢同一属性，详见 `mpv.conf` 中的相关注释。
+
+### HDR 处理链双模式（hdr-toys）
+
+默认是 `native`：保持上面的「原生 HDR 直通 + libplacebo 兜底」不变。按
+`ALT+H` 可切到 `toys`，由 [hdr-toys](https://github.com/natural-harmonia-gropius/hdr-toys)
+的 OUTPUT 着色器接管 tone mapping 与色域映射，输出 SDR。
+
+两种模式是**替代关系**，不能同时生效。切换与守护由 `scripts/hdr-pipeline.lua` 负责：
+
+- 进入 toys 时快照 `tone-mapping`、`gamut-mapping-mode`、`target-*`、`icc-*`、
+  `inverse-tone-mapping` 等属性并接管，退出时按快照还原。
+- toys 运行期间观察这些属性，把其他写入方改回的值纠正过来：`input.conf` 的
+  HDR 热键、uosc 的 `target-peak` 菜单、`[HDR画质]` / `[电影]` / `[动画]` 手动
+  profile，以及用 `glsl-shaders=` 整体替换列表的着色器 profile。
+- `scripts/linux-video-policy.lua` 检测到 `user-data/hdr-pipeline/active` 时跳过
+  色彩策略，避免每次切文件都与 toys 对打；RIFE 准入不受影响。
+
+覆盖范围与片源有关：
+
+| 片源 | 链路 |
+| --- | --- |
+| BT.2020 + PQ | `clip_both` → `pq_inv` → `astra` → `bottosson` → `bt1886` |
+| BT.2020 + HLG | `clip_both` → `hlg_inv` → `astra` → `bottosson` → `bt1886` |
+| BT.2020 + BT.1886 | `bt1886_inv` → `bottosson` → `bt1886` |
+| 非 BT.2020（含 709 SDR） | 自动回退原生链，并提示一次 |
+
+`bottosson` 按 BT.709 目标硬编码、假定工作空间是 BT.2020，所以非 BT.2020 内容
+不能套用同一条链；直接用上游配置里全局的 `tone-mapping=clip` 会让这类片源落入
+「内置映射被关闭、toys 链又不匹配」的裸 clip 状态，因此这里选择回退而不是硬套。
+
+> 本地对 `shaders/hdr-toys/tone-mapping/astra.glsl` 有一处补丁：上游
+> baseline `b43e457` 把 GLSL 保留字 `packed` 用作变量名，在 libplacebo 7.360.1 /
+> GLSL 460 下会报 `unexpected PACKED_TOK` 并导致整个 compute pass 失败。
+> 补丁只把该变量改名为 `packed_bits`。`manager.json` 中该来源是 `check` 模式，
+> 升级前需要确认上游是否已修，否则要重新应用这处改名。
+
 ## uosc 界面
 
-当前定制版 uosc 位于 `scripts/uosc/`，版本标识为 `5.12.0`。它不是可以随意
+当前定制版 uosc 位于 `scripts/uosc/`，版本标识为 `5.13.0`。它不是可以随意
 整体替换的上游副本，原因是本地对菜单、时间轴、顶栏、鼠标行为、动画和颜色
 有定制。
 
@@ -365,7 +406,6 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `uosc_danmaku/` | 弹幕搜索、加载、延迟、保存、源管理和弹幕样式菜单 |
 | `thumbfast.lua` | 时间轴缩略图预览，两阶段显示（先附近关键帧，再精确画面） |
 | `playlistmanager.lua` | 播放列表浏览、排序、移动、保存、随机和网络标题解析 |
-| `playlist-view.lua` | 播放列表视图 |
 | `file-browser/` | OSD 文件浏览器、目录缓存、收藏和多选 |
 | `open_dialog.lua` | 调用原生文件选择器 |
 | `command_palette.lua` | 命令面板 |
@@ -386,6 +426,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `persist_properties.lua` | 跨文件持久化指定属性 |
 | `memo.lua` | 本地备注记录 |
 | `undoredo.lua` | 跳转和循环跳转撤销 / 重做 |
+| `sleep-timer.lua` | 睡眠定时器：到点退出、退出并保存进度或暂停，支持底栏徽标与暂停感知 |
 
 ### 字幕、章节与片段
 
@@ -393,6 +434,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | --- | --- |
 | `sub-select.lua` | 字幕选择 |
 | `sub-assrt.lua` | 字幕下载菜单 |
+| `sub-wyzie.lua` | Wyzie 在线字幕搜索：文件名 → TMDb 匹配 → 下载挂载，需自行申请免费 API key |
 | `autosubsync/` | 字幕同步菜单和同步处理 |
 | `sub-fastwhisper.lua` | 使用本地 Whisper 生成字幕 |
 | `sub_export.lua` | 导出当前内封字幕 |
@@ -410,10 +452,11 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | --- | --- |
 | `dynamic-crop.lua` | 检测并切除黑边，只对视频流工作；起播尺寸未就绪时自动重试 |
 | `hdr-mode.lua` | HDR 模式辅助 |
+| `hdr-pipeline.lua` | HDR 处理链双模式：原生直通 / hdr-toys，含属性守护与片源回退 |
 | `drcbox.lua` | 音频动态范围处理 |
 | `music-mode.lua` | 音乐播放模式 |
-| `playback-info.lua` | 播放信息面板 |
 | `stats.lua` | 中文增强统计信息 |
+| `system-monitor.lua` | 系统监控 OSD：CPU/GPU 温度、功耗、内存、电池（对齐 Mpv∞ 的 Stats Page 6） |
 | `screenshot-to-clipboard.lua` | 截图并复制到剪贴板 |
 | `mpv-animated.lua` | 动图截取与导出 |
 | `pip.lua` | 画中画辅助 |
@@ -423,7 +466,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 
 | 脚本 | 功能 |
 | --- | --- |
-| `quality-menu.lua` | 使用 yt-dlp 选择在线视频和音频格式 |
+| `uosc` 流质量菜单 | `CTRL+F` 选择在线视频清晰度（OpenSubtitles 下载也内置于 uosc 字幕菜单） |
 | `simple-mpv-webui/` | 提供浏览器控制界面，端口由 `script-opts/webui.conf` 决定 |
 | `trakt-scrobble/` | Trakt 搜索和播放记录同步 |
 | `sponsorblock` 相关脚本 | 跳过已标记的赞助商片段 |
@@ -437,6 +480,14 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 - FSRCNNX、NNEDI3、RAVU、SSIM、AiUpscale。
 - KrigBilateral、JointBilateral、色度升频和自适应锐化。
 - SMAA、DLAA、CMAA、去色带、降噪、翻转、旋转、缩放和色温滤镜。
+- `ambient/ambient_glow.glsl`：环境光晕，亮部提取 + 两级高斯 + 加性合成。
+- `hdr-toys/`：HDR 到 SDR 的 transfer / tone-mapping / gamut-mapping 着色器（上游 MIT），
+  由 `ALT+H` 的 toys 模式按片源类型选用，详见上文的双模式说明。
+
+`ambient_glow.glsl` 用 `ALT+a` 以 `change-list glsl-shaders toggle` 开关，不要写成
+profile：着色器配置组（`[动画]`、`[AnimeJaNai]` 等）用 `glsl-shaders=` 整体替换列表，
+会把 append 的着色器冲掉，而 `change-list` 是独立的运行时开关。参数 `STR=0` 时
+所有 pass 被 `//!WHEN` 跳过，只剩 1 个色阶的取整差异。
 
 `vs/` 收录 VapourSynth 处理链，包括：
 
@@ -471,9 +522,6 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `CTRL+N` | 添加文件书签 |
 | `ALT+C` | 打开剪贴菜单 |
 | `CTRL+c` | 复制文件路径和进度 |
-| `CTRL+ALT+c` | 只复制文件路径 |
-| `CTRL+v` | 跳转到剪贴板中的路径或进度 |
-| `CTRL+ALT+v` | 将剪贴板内容加入播放列表 |
 | `CTRL+F` | 打开 / 关闭 yt-dlp 视频格式菜单 |
 | `ALT+F` | 打开 / 关闭 yt-dlp 音频格式菜单 |
 | `CTRL+ALT+h` | 打开近期播放菜单 |
@@ -557,6 +605,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `CTRL+t` | 循环切换显示器传输特性 |
 | `CTRL+T` | 切换映射目标峰值 100 / 203 |
 | `CTRL+g` | 切换色域映射模式 |
+| `ALT+H` | 切换 HDR 处理链：原生直通 / hdr-toys |
 
 ### 视频、截图与动图
 
@@ -616,7 +665,8 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `P` | 切换 PGS 字幕铺满屏幕 |
 | `p` | 切换 PGS 字幕灰度转换 |
 | `Y` | 切换字幕选择脚本 |
-| `CTRL+f` | 打开字幕下载菜单 |
+| `CTRL+f` | 使用 ASSRT 搜索字幕 |
+| `ALT+F` | 使用 Wyzie 搜索字幕（需 API key） |
 | `CTRL+m` | 打开字幕同步菜单 |
 | `CTRL+M` | 打开字幕内容菜单 |
 | `ALT+m` | 导出当前内封字幕 |
@@ -643,6 +693,11 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `^` | 强制 59.94 fps |
 | `*` | 填充 16:9 黑边并居中 |
 | `&` | 6500K 色温修正 |
+| `CTRL+ALT+f` | 循环切换风格滤镜预设：鲜艳 / 电影 / 夜览暖色 / 冷峻 / 深黑 / 关闭 |
+
+风格预设用 `set vf` 整体替换滤镜链（互斥的单活跃语义），应用预设会清掉
+`vf toggle` 加的个别滤镜，效果等同 CTRL+` 清空；也可在 uosc 菜单
+「视频滤镜 > 风格预设」里逐个直达。
 
 ### 着色器
 
@@ -658,6 +713,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `CTRL+7` | NNEDI3 nns32 win8x4 |
 | `CTRL+8` | RAVU zoom |
 | `CTRL+9` | Anime4K 抗锯齿 |
+| `ALT+a` | 环境光晕（`shaders/ambient/ambient_glow.glsl`） |
 
 ### profile、命令面板与工具
 
@@ -683,10 +739,9 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `M` | 检查并更新第三方脚本和着色器 |
 | `CTRL+ALT+SHIFT+s` | 截图到剪贴板 |
 | `CTRL+ALT+b` | 切换 SponsorBlock |
-| `CTRL+ALT+i` | 显示 / 隐藏播放信息面板 |
-| `CTRL+ALT+SHIFT+t` | 复制当前时间戳 |
 | `CTRL+ALT+g` | 显示 / 隐藏 JavaScript 章节列表 |
-| `CTRL+ALT+m` | 根据字幕特定词语切换静音 |
+| `CTRL+ALT+m` | 打开睡眠定时器菜单 |
+| `CTRL+ALT+y` | 开 / 关系统监控面板（温度、功耗、内存、电池） |
 
 ### Trakt、弹幕和 Web 功能
 
@@ -728,7 +783,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 
 | 来源 | 目标目录 | 模式 | 说明 |
 | --- | --- | --- | --- |
-| `uosc` | `scripts/uosc` | `check` | 基于本地定制版 `5.12.0`，只检查上游 |
+| `uosc` | `scripts/uosc` | `check` | 基于本地定制版 `5.13.0`，只检查上游 |
 | `uosc_danmaku` | `scripts/uosc_danmaku` | `check` | 本地有弹幕适配和行为定制 |
 | `trakt_scrobble` | `scripts/trakt-scrobble` | `check` | 本地配置可能包含服务适配 |
 | `simple_mpv_webui` | `scripts/simple-mpv-webui` | `check` | 本地端口和页面有定制 |
@@ -746,7 +801,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 - mpv 退出时会中止仍在运行的更新子进程。
 
 `manager.json` 中的 `baseline` 用于记录定制版本基于哪个上游版本或提交。
-例如 uosc 当前 baseline 为 `5.12.0`；发现上游版本变化时，需要人工比较和合并
+例如 uosc 当前 baseline 为 `5.13.0`；发现上游版本变化时，需要人工比较和合并
 本地改动，再决定是否更新 baseline。不要把 `.manager/` 缓存目录提交到仓库。
 
 2026-08-29 已将 Yaozhi 8.29 便携包的 uosc、弹幕与共享脚本改动合并进本地

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-10-27T17:08:18.445Z",
+  "sessionId": "session_e3f4e90fd29b2a07a32a6b3ef44e6d75",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "tone-mapping/astra.glsl",
+  "outcome": "clear",
+  "coverage": "complete",
+  "findingCount": 0,
+  "durationMs": 4,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

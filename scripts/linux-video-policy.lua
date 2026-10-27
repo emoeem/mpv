@@ -15,7 +15,7 @@ local o = {
     rife_max_width = 1920,
     rife_max_height = 1080,
     rife_min_fps = 20,
-    hdr_mode = 'auto',
+    hdr_mode = 'auto', -- auto|hdr2sdr
 }
 options.read_options(o, 'linux_video_policy')
 
@@ -46,10 +46,20 @@ end
 local rife_available = detect_rife()
 
 local function apply_color_policy()
-    if o.hdr_mode ~= 'auto' then return end
+    -- hdr-toys 模式：色彩目标由 hdr-pipeline.lua 全权接管。这里必须让位，
+    -- 否则每次切文件、每次 video-params 变化都会把 target-* 写回 auto，
+    -- 与 toys 链在同一属性上互相覆盖。RIFE 准入不受影响，仍在下面执行。
+    if mp.get_property_native('user-data/hdr-pipeline/active', false) then
+        return
+    end
     local gamma = tostring(mp.get_property('video-params/gamma', '') or ''):lower()
     local prim = tostring(mp.get_property('video-params/primaries', '') or ''):lower()
-    local hdr = gamma == 'pq' or gamma == 'hlg' or prim == 'bt.2020'
+    local hdr = gamma == 'pq' or gamma == 'hlg'
+    if o.hdr_mode == 'hdr2sdr' and hdr then
+        set('dynamic-range', 'SDR')
+        set('hdr-action', 'hdr2sdr-explicit')
+        return
+    end
     if hdr then
         mp.set_property('target-colorspace-hint', 'auto')
         mp.set_property('target-trc', 'auto')

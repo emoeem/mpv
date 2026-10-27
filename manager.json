@@ -35,6 +35,15 @@
       "mode": "replace"
     },
     {
+      "name": "hdr-toys",
+      "url": "https://github.com/natural-harmonia-gropius/hdr-toys.git",
+      "branch": "master",
+      "source": "shaders/hdr-toys",
+      "destination": "shaders/hdr-toys",
+      "mode": "check",
+      "baseline": "b43e4575bdd655f4c7536f704219798b07d9a300"
+    },
+    {
       "name": "trakt_scrobble",
       "url": "https://github.com/dyphire/trakt-scrobble.git",
       "branch": "main",

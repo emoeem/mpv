@@ -1,5 +1,164 @@
 # 更新记录
 
+## 2026-10-28 · uosc 集成补全、系统监控、滤镜预设与配置健康清理
+
+对照 Mpv∞ 的剩余可移植项做完收尾，并清理了一轮配置健康扫描发现的问题。
+
+### 新增
+
+- `scripts/system-monitor.lua` + `script-opts/system_monitor.conf`：系统监控 OSD
+  （`CTRL+ALT+y`），读 sysfs 与 `nvidia-smi`，显示 CPU 包温度、NVIDIA/AMD GPU
+  温度与功耗、内存、电池。sysfs 同步读、nvidia-smi 异步 + 结果缓存；osd_overlay
+  画布必须显式同步实际 OSD 尺寸，否则 `\pos` 会被按 1280x720 基准缩放画错位置。
+  电池状态用文字（充电中/电池）而不是 emoji——libass 无 emoji 回退是本配置的
+  既有约束。本机无 k10temp/coretemp，CPU 温度回退到 `acpitz`。
+- 风格化滤镜预设（`CTRL+ALT+f` 循环 + 「视频滤镜 > 风格预设」菜单直达）：鲜艳 /
+  电影 / 夜览暖色 / 冷峻 / 深黑 / 关闭。用 `set vf` 的单活跃语义，应用预设会
+  清掉 `vf toggle` 的个别滤镜；实测 dynamic-crop 自管理的标签滤镜被清后会自动
+  补回，共存正常。
+- `uosc` 菜单状态提示（`update_menu_state_hints`）：睡眠定时器（剩余时间）、
+  hdr-pipeline（原生/toys）、环境光晕（开/关）共 6 个分支，沿用既有硬编码模式。
+
+### 修复
+
+- `skip-segments` 的两个底栏按钮此前只发 `set-button` 数据、未在 `controls=`
+  注册 `button:` 控件项，从未显示过。已在 `button:danmaku_menu` 后注册两个按钮；
+  `skip-segments.lua` 在脚本顶层即发数据，无占位图标风险。
+- README 死引用清理：`playback-info.lua`、`playlist-view.lua`、
+  `quality-menu.lua`（3 个文件不存在）、`CTRL+ALT+i`、`CTRL+ALT+SHIFT+t`、
+  `CTRL+ALT+c`、`CTRL+v`、`CTRL+ALT+v`（已归档的 smartcopypaste/占位脚本残留）。
+  新增核对脚本口径：快捷键章节的每一行都必须能在 `input.conf` 找到绑定，
+  现已归零。
+- `UI-FONTS.md` 补「外部依赖」警告：MFGA 字体模块（约 237 MB）不在仓库内，
+  fresh clone 会静默回退，需自行安装 `~/.local/share/fonts/MFGA/` 的
+  200/300/400/700.ttf 四个字重。
+- `scripts/undoredo.lua:45`：`file-loaded` 时 `time-pos` 可能尚无值（idle 起播、
+  网络流缓冲），`math.floor(nil)` 在冒烟测试中稳定抛错；补默认值 0。
+
+### 验证
+
+- 滤镜预设 6 档 `keypress` 实测，`vf` 值逐步正确切换并复位。
+- 系统监控实渲染截图核对：数据与本机传感器一致（acpitz/nvidia-smi/amdgpu
+  hwmon/`/proc/meminfo`/BAT1），修复了画布缩放、emoji 丢失与 `3/0W` 三处问题。
+- `luac -p`（uosc 文件按 LuaJIT 编译验证，`luac` 5.4 对其 `<const>` 语法有
+  存量误报，与本次改动无关）；`git diff --check` 通过；README 键位核对归零。
+
+### 提交拆分
+
+- `chore(font)`：MFGA YouHei 迁移（2026-10-04 遗留的未提交改动）
+- `feat`：本轮全部功能与修复，含 `linux_video_policy.conf` 的 `hdr_mode=hdr2sdr`
+- `chore(archive)`：`.bak-mfga-*` 与 `audit-backups-20260924/` 移入 `archive/`
+
+## 2026-10-28 · hdr-toys 双模式：原生直通链与替换链可切换
+
+上一轮评估认为 hdr-toys 与常驻的 `HDR2SDR` 是替代关系、无法叠加，因此没有实施。
+本次按「两条链路都保留、运行时切换」的方案补齐：原生链仍是默认，toys 是可选模式。
+
+### 新增
+
+- `shaders/hdr-toys/`：上游 83 个着色器（MIT）。安装为 `manager.json` 的 `check`
+  来源，`baseline` 记录为 `b43e457`，不整体覆盖，便于保留本地补丁。
+- `scripts/hdr-pipeline.lua` + `script-opts/hdr_pipeline.conf`：模式所有者。
+  进入 toys 时快照 `tone-mapping`、`gamut-mapping-mode`、`target-*`、`icc-*`、
+  `inverse-tone-mapping` 并接管，退出时按快照还原；运行期间观察这些属性，把
+  其他写入方改回的值纠正过来。片源是 BT.2020 的 PQ / HLG / BT.1886 时分别套用
+  上游三条链，其他片源回退原生并提示一次。
+- `ALT+H` 切换模式；「画面 > HDR 处理链」提供直接用原生链、直接用 toys、
+  查看当前链路三个菜单项。
+
+### 冲突处理
+
+计划里列的四类写入方全部处理：
+
+- `linux-video-policy.lua`：`apply_color_policy()` 检测
+  `user-data/hdr-pipeline/active` 后直接返回，不再写 `target-*`。RIFE 准入不变。
+  已确认没有其他脚本消费它的 user-data。
+- `input.conf` 的 HDR 热键：不做改绑，靠属性观察在 `guard_delay`（默认 80 ms）
+  后纠正，并提示一次。原生模式下这些键行为完全不变。
+- uosc 的 `target-peak` 菜单：同上，`target-peak` / `target-contrast` 在 toys 下
+  固定为 `auto` 并纳入守护。
+- `[HDR画质]` / `[电影]` / `[动画]` 与着色器配置组：实测应用后属性会被纠正，
+  `glsl-shaders=` 整体替换的 toys 链也会被补回。
+
+回退分支不使用快照里的目标参数，而是用固定的原生基线（`auto`），因为快照是进入
+toys 那一刻取的，切换片源后可能残留上一支片子的值；`inverse-tone-mapping` 与
+ICC 两项例外，仍从快照继承，避免抹掉用户手动启用的方案。
+
+### 上游补丁
+
+`shaders/hdr-toys/tone-mapping/astra.glsl` 在 baseline `b43e457` 中把 GLSL 保留字
+`packed` 用作变量名（histogram fusion 那段 compute pass）。libplacebo 7.360.1 /
+GLSL 460 下编译报 `unexpected PACKED_TOK`，整个 pass 失败。本地改名为
+`packed_bits` 并加注释标明。升级上游前需确认是否已修，否则重新应用。
+
+### 验证
+
+- `luac -p` 通过；`manager.json` 仍是合法 JSON。
+- 属性级：PQ / HLG / BT.2020-SDR 三种片源分别得到正确的 `target-trc` 与
+  5 / 5 / 3 个 toys 着色器；bt.709 SDR 回退原生且不带 toys 着色器。
+- 守护：手动写入 `tone-mapping=auto`、`target-peak=300` 后均被纠正；
+  应用 `[HDR画质]`、`[Anime4K]`、`[电影]` 后属性与着色器链均被恢复。
+- 还原：`set-mode native` 后所有托管属性回到 `auto`，toys 着色器清零。
+- 渲染：用 zscale 造不出的真 HDR10 片源（`libplacebo` 滤镜转 PQ/BT.2020/10bit）
+  实测，原生与 toys 都无过曝死黑（均值 145.6 vs 118.7），HLG 同样正常，
+  无 libplacebo 编译错误。
+- 已知限制：本机 `--gpu-context=waylandvk` 在无头环境无法完成初始化，渲染验证
+  使用 `wayland`（EGL）完成；shader 编译与画面结果与上下文无关，但 Vulkan 下的
+  实际表现仍建议在本机正常播放时确认一次。
+
+## 2026-10-27 · 移植 Mpv∞ 可移植功能：睡眠定时器、Wyzie 字幕、环境光晕
+
+对照 `ZHINFINITY/Mpv-infinity`（Android 播放器，非开源许可）做功能层面对比，
+只移植桌面端可行的部分。绝大多数特性属于 App 层（毛玻璃 UI、手势、Cast、
+Jellyfin、Media3 双引擎、热管理），不进配置。
+
+### 新增
+
+- `scripts/sleep-timer.lua` + `script-opts/sleep_timer.conf`：睡眠定时器。
+  一次性 timeout 承载真正的截止时间，1 秒周期 timer 只刷新 OSD 和徽标，
+  避免周期回调累积漂移；支持 quit / quit-watch-later / pause 三种到点动作，
+  以及可选的暂停感知。入口 `CTRL+ALT+m`。自定义分钟数走 uosc 可搜索菜单，
+  因为本构建的 `mp.input` 为 nil（它依赖 console，实测取不到）。
+- `script-modules/http-async.lua`：curl + `mp.command_native_async` 的共享异步请求
+  模块，返回可取消句柄，HTTP 状态码与响应体分开解析。只允许 http/https，并拒绝
+  环回、私有与保留地址；本地代理经 `--proxy` 传递，不受该限制影响。
+- `scripts/sub-wyzie.lua` + `script-opts/sub_wyzie.conf`：Wyzie 在线字幕搜索。
+  Wyzie 的 `/search` 只接受 TMDb / IMDb ID，因此流程是 文件名 → 标题清洗 →
+  TMDb 解析 → Wyzie 搜索 → 下载挂载。季集识别与标题清洗覆盖 `SxxExx`、`1x04`、
+  `第N季第N集`、`[05]` 和中文组名格式。需自行申请免费 API key，未配置时只提示
+  申请地址、不发请求。
+- `shaders/ambient/ambient_glow.glsl`：环境光晕，单个文件 6 个 pass（亮部提取 +
+  两级可分离高斯 + 加性合成）。用 `ALT+a` 以 `change-list glsl-shaders toggle`
+  开关，不写成 profile，因为着色器配置组会用 `glsl-shaders=` 整体替换列表。
+
+### 修复
+
+- `input.conf` 中 3 处 `script-message-to` 目标带连字符，而 mpv 会把脚本文件名里的
+  `-` 归一化成 `_`（实测 `test-name.lua` → `test_name`），配合「目标不存在不报错」
+  的语义，这些命令一直静默不执行：`uosc-subtitle-lines`、`trakt-scrobble`（2 处）、
+  `screenshot-to-clipboard`。
+- `README.md`：uosc 版本标识 `5.12.0` → `5.13.0`；删除已不存在的 `peak-percentile`
+  auto profile，改为说明由 `hdr-peak-percentile-guard.lua` 在运行时管理；
+  `CTRL+ALT+m` 原有记载与实际绑定不符，改为睡眠定时器入口。
+
+### 验证
+
+- `luac -p` 全部通过；`git diff --check` 无空白错误。
+- 睡眠定时器：设 0.05 分钟（3 秒），进程在 4.3 秒退出；取消后不再触发；
+  `user-data/sleep-timer/*` 的 active / remaining / action 值正确。
+- HTTP 模块：环回、内网段、`file://` 均被拒绝；公网 HTTPS 返回 200 且响应体完整。
+- Wyzie：标题解析为 `The Mandalorian`、S2E8，TMDb 解析出 id `82856`；
+  无效 key 返回 403 并被正确提示。
+- 光晕：默认参数下仅 1.39% 像素变化，且集中在亮区周围（变化包围盒
+  401–546 × 191–341）；`STR=0` 时只剩 1 个色阶的取整差异。
+
+### 未实施
+
+- hdr-toys：已改为「原生链与替换链双模式可切换」并在 2026-10-28 的记录中实施，
+  见上方条目。
+- 视频压缩转码、主题切换系统、FRAME_EXTEND 黑边外延：投入产出比低或仅全屏
+  字母盒有意义，按计划暂不做。
+
 ## 2026-09-18 · Yaozhi 可移植性归一化
 
 - 新增 `PORTABILITY-AUDIT.md`，将 Yaozhi 功能统一分为 Linux 原生、脚本、Shader/VapourSynth、需要私有 patch、Windows 专属五类。

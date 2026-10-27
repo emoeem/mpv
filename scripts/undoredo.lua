@@ -42,7 +42,8 @@ local function getUndoRedo()
 			
 			seekNumber = currentIndex + 1
 			currentIndex = seekNumber
-			seekTime = math.floor(mp.get_property_number('time-pos'))
+			-- file-loaded 时 time-pos 可能尚无值（idle 起播、网络流缓冲），缺省 0
+			seekTime = math.floor(mp.get_property_number('time-pos', 0))
 			table.insert(seekTable, seekNumber, seekTime)
 
 			undoRedo = 0

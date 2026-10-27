@@ -180,6 +180,28 @@ local function update_menu_state_hints(items, image_subtitle_summary, media_load
 		elseif item.value == 'script-message-to minimize_pause_resume toggle' then
 			local enabled = mp.get_property_native('user-data/minimize-pause-resume/pause-on-minimize') ~= 'no'
 			item.hint = enabled and '● 开启' or '○ 关闭'
+		elseif item.value == 'script-message-to sleep_timer open-menu' then
+			if mp.get_property_bool('user-data/sleep-timer/active', false) then
+				local remaining = mp.get_property_number('user-data/sleep-timer/remaining', 0) or 0
+				item.hint = string.format('● 剩余 %d:%02d', math.floor(remaining / 60), math.floor(remaining) % 60)
+			else
+				item.hint = '○ 未启用'
+			end
+		elseif item.value == 'script-message-to hdr_pipeline toggle' then
+			item.hint = (mp.get_property('user-data/hdr-pipeline/mode', 'native') == 'toys')
+				and '● hdr-toys' or '○ 原生直通'
+		elseif item.value == 'script-message-to hdr_pipeline set-mode native' then
+			item.hint = (mp.get_property('user-data/hdr-pipeline/mode', 'native') ~= 'toys')
+				and '● 当前' or '○'
+		elseif item.value == 'script-message-to hdr_pipeline set-mode toys' then
+			item.hint = (mp.get_property('user-data/hdr-pipeline/mode', 'native') == 'toys')
+				and '● 当前' or '○'
+		elseif item.value == 'script-message-to hdr_pipeline status' then
+			local chain = mp.get_property('user-data/hdr-pipeline/chain', '')
+			item.hint = chain ~= '' and ('链路：' .. chain) or '链路：native'
+		elseif item.value == 'change-list glsl-shaders toggle "~~/shaders/ambient/ambient_glow.glsl"' then
+			local shaders = mp.get_property('glsl-shaders', '')
+			item.hint = shaders:find('ambient_glow', 1, true) and '● 开启' or '○ 关闭'
 		elseif item.value == 'script-message codex-open-peak-menu' then
 			local output_mode = mp.get_property_native('user-data/hdr-mode/output-mode') or 'auto'
 			local source_gamma = tostring(mp.get_property('video-params/gamma', '')):lower()
