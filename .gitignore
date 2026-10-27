@@ -18,3 +18,7 @@ online-media/bilibili-cookies.txt
 # Python 运行时缓存（resolve_*.py 等在线解析辅助）
 __pycache__/
 *.py[cod]
+
+# 会话工具生成的本地状态（安全钩子 / 智能体工作目录），不入库
+.mimosa/
+.zcode/

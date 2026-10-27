@@ -89,7 +89,7 @@ luac -p scripts/uosc/main.lua \
 ├── shaders/                         # GLSL 缩放、锐化、去色带和 AI 着色器
 ├── vs/                              # VapourSynth 补帧、超分、降噪和去交错脚本
 ├── fonts/                           # OSD、字幕和 uosc 字体
-├── osc-style/                       # 其他 OSC 样式备份
+├── audit/                           # 配置审计脚本（键位/文档/主题色，见 audit/README.md）
 ├── icc/                             # ICC 色彩配置文件
 ├── script-assets/                   # 起播格式徽标等资源
 ├── manager.json                     # 第三方来源与更新策略
@@ -140,25 +140,32 @@ hwdec-codecs=all
 - `hr-seek=yes`：默认启用精确跳转。
 - `hr-seek-framedrop=no`：精确跳转时不主动丢帧，便于保持音视频同步和配合补帧。
 
-### OSD、字体与 Catppuccin Mocha
+### OSD、字体与 Dracula
 
 播放器 UI（OSD、uosc、stats、菜单等）统一使用 `MFGA YouHei`，详见
 [UI-FONTS.md](UI-FONTS.md)；文本字幕自 2026-10-04 起也统一使用 `MFGA YouHei`。
 Linux/libass 不做 emoji 字体回退，emoji 会显示为空白/方块。
-当前主题是 [Catppuccin Mocha](https://catppuccin.com/palette/)：
+当前主题是 [Dracula](https://draculatheme.com/)：
 
 | 用途 | 颜色 |
 | --- | --- |
-| Text | `#CDD6F4` |
-| Crust | `#11111B` |
-| Mantle | `#181825` |
-| Base / Surface | `#1E1E2E` |
-| Overlay | `#313244` |
-| Window border | `#45475A` |
-| Blue | `#89B4FA` |
-| Mauve | `#CBA6F7` |
-| Green | `#A6E3A1` |
-| Red | `#F38BA8` |
+| Foreground（文字） | `#F8F8F2` |
+| 深层背景（视频贴近层，派生） | `#191A21` |
+| 深层背景次级（派生） | `#21222C` |
+| Background（菜单底） | `#282A36` |
+| Selection / Surface | `#343746` |
+| Current Line / Window border | `#44475A` |
+| Comment（次要文字） | `#6272A4` |
+| Purple（主强调：进度条、选中） | `#BD93F9` |
+| Pink | `#FF79C6` |
+| Green | `#50FA7B` |
+| Red | `#FF5555` |
+| Orange | `#FFB86C` |
+| Cyan | `#8BE9FD` |
+| Yellow | `#F1FA8C` |
+
+视频贴近层的 `#191A21` / `#21222C` / `#343746` 是派生的更深层级色，
+用于保持「背景 → 菜单 → 选中」的深度层次；主强调色为 Dracula 紫。
 
 对应设置分布在：
 
@@ -359,36 +366,43 @@ profile=HDR2SDR
 
 | 设置 | 当前值 | 作用 |
 | --- | --- | --- |
-| `timeline_style` | `bar` | 展开时间轴使用条形样式 |
-| `timeline_size` | `12` | 展开时间轴高度 |
-| `timeline_cache` | `no` | 不显示网络渲染缓存指标 |
-| `timeline_heatmap` | `no` | 不显示 YouTube 热图 |
+| `top_bar` | `always` | 播放时始终显示顶栏（标题 + 窗口控制） |
+| `timeline_style` | `segments` | 分段式圆角块时间轴（对齐 Mpv∞） |
+| `timeline_size` | `18` | 时间轴元素高度（segments 样式下条高约 13px） |
+| `timeline_persistency` | `paused` | 暂停时保持时间轴展开，方便找位置 |
+| `timeline_heatmap` | `overlay` | 热图以叠加层显示 |
 | `chapter_display` | `yes` | 在时间轴显示章节标记和名称 |
-| `controls_size` | `36` | 控制按钮尺寸 |
-| `controls_margin` | `18` | 控制栏外边距 |
+| `controls_size` | `40` | 控制按钮尺寸 |
+| `controls_margin` | `20` | 控制栏外边距 |
 | `controls_persistency` | `idle` | 空闲时保留控制栏 |
 | `menu_font` | `MFGA YouHei` | 菜单字体 |
-| `menu_item_height` | `44` | 菜单项目高度 |
+| `menu_item_height` | `46` | 菜单项目高度 |
 | `scale` | `1.30` | 界面缩放 |
-| `font_scale` | `1.15` | 文字缩放 |
-| `border_radius` | `7` | 控件和菜单圆角 |
-| `pause_indicator` | `none` | 不显示中央暂停指示器 |
+| `font_scale` | `1.00` | 文字缩放 |
+| `border_radius` | `10` | 控件和菜单圆角 |
+| `pause_indicator` | `static` | 暂停时显示中央常驻圆形指示器（对齐 Mpv∞） |
+| `opacity.controls` | `0.5` | 按钮圆角底衬可见，形成胶囊观感 |
+| `opacity.title` | `0.5` | 顶栏标题带胶囊底衬 |
 | `progress` | `windowed` | 窗口模式显示细进度条 |
 | `progress_playing_only` | `yes` | 只在实际播放时显示细进度条 |
 | `dock_animation` | `yes` | 启用底部 Dock 动画 |
-| `dock_animation_mode` | `classic` | 默认使用经典 Morph 动画 |
+| `dock_animation_mode` | `smooth` | 平滑 Dock 动画 |
+
+界面风格对齐 Mpv∞（Android 播放器）：顶栏常驻标题排、底部控件带可见圆角
+底衬（胶囊观感）、暂停时中央常驻指示器、右侧速度胶囊、时间轴用 Dracula
+紫作进度强调色（`time_current=BD93F9`，同时作用于时钟文字）。空闲态底栏用
+前后 `space` 居中并补齐统计入口，与播放态观感一致。窗口过窄时 uosc 会
+按 narrow 角色自动丢弃低优先级按钮，属于响应式行为而非配置缺失。
 
 ### 控制栏
 
-控制栏根据媒体类型动态显示，包含以下功能：
+控制栏按「左排功能开关 · 中央播放控制 · 右排工具」分组：
 
-- 打开文件、最近播放和按钮提示。
-- 音轨、字幕轨和弹幕菜单。
-- 时间显示、上一集、停止、播放 / 暂停、下一集和播放速度。
-- WebDAV 快捷入口。
-- 片头片尾标记与跳过。
-- 播放列表、统计信息和更多菜单。
-- 空闲状态下保留打开文件、历史、WebDAV、播放列表等入口。
+- 左排：字幕（CC）、音轨、弹幕菜单、片头片尾跳过与标记、去黑边。
+- 中央：时间显示、上一集、播放 / 暂停、下一集（stop 已从底栏移除，
+  保留在菜单与 `SHIFT+F11`）。
+- 右排：截图、睡眠定时器、统计信息、播放列表、速度胶囊、更多菜单。
+- 空闲状态：打开文件、最近播放、播放列表、统计信息、更多菜单，整组居中。
 
 时间轴右键绑定为 `uosc/chapters`，不会修改视频或片头片尾标记。
 画面区域右键菜单（`conditional-rightclick`）会在空间允许时贴近鼠标
@@ -806,9 +820,10 @@ profile：着色器配置组（`[动画]`、`[AnimeJaNai]` 等）用 `glsl-shade
 
 2026-08-29 已将 Yaozhi 8.29 便携包的 uosc、弹幕与共享脚本改动合并进本地
 定制版，合并范围、保留的本地定制与跳过项见 [CHANGELOG.md](CHANGELOG.md)。
-注意：`uosc_danmaku` 源指向的 `Tony15246/uosc_danmaku` 与本地实际血统
-（含 `modules/resolver_affinity.lua`）不一致，其 `check` 结果仅供参考，
-不能作为更新依据。
+注意：本地 `uosc_danmaku` 在上游 `Tony15246/uosc_danmaku`（baseline `d8c1cd8`）
+之上有本地重构（如 `modules/resolver_affinity.lua`，上游没有）。`check` 模式
+永不覆盖本地，它只回答"上游是否前进"；上游有新提交时是否值得合并，需要人工
+做三方合并判断，并且不能对该目录使用 `replace` 模式（会抹掉本地重构）。
 
 添加来源时，建议先使用 `check`：
 
@@ -852,4 +867,4 @@ profile：着色器配置组（`[动画]`、`[AnimeJaNai]` 等）用 `glsl-shade
 - [uosc_danmaku](https://github.com/Tony15246/uosc_danmaku)
 - [thumbfast](https://github.com/po5/thumbfast)
 - [InputEvent](https://github.com/zhongfly/InputEvent)
-- [Catppuccin Mocha 调色板](https://catppuccin.com/palette/)
+- [Dracula 调色板](https://draculatheme.com/contribute)

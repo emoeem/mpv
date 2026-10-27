@@ -1,5 +1,105 @@
 # 更新记录
 
+## 2026-10-28 · 审计脚本入库与配置卫生
+
+- 新增 `audit/` 目录：三个可复跑的一致性检查脚本（`audit_bindings.py` 按键
+  重复/死目标、`audit_readme_keys.py` README 键位表核对、
+  `audit_theme_colors.py` 主题色残留扫描），路径改为仓库相对、退出码可判，
+  用法与历史战果见 `audit/README.md`。此前它们只在会话的 /tmp 里，换主题或
+  改键位时无法复跑。
+- `.gitignore` 补 `.mimosa/` 与 `.zcode/`（会话工具生成的本地状态）。
+- README 目录清单删除已不存在的 `osc-style/`，新增 `audit/`；
+  孤儿配置 `script-opts/select.conf`（全仓库无读取者）归档至
+  `archive/select.conf-orphaned-20261028`。
+- `uosc_danmaku` 源说明修正：经镜像核实，origin 确为
+  `Tony15246/uosc_danmaku`（与 baseline `d8c1cd8` 一致），上游未前进；
+  本地含 `resolver_affinity.lua` 重构。URL 正确、无需更换——原备注
+  "check 结果仅供参考，不能作为更新依据"改为准确语义：check 永不覆盖本地、
+  只回答上游是否前进，合并需人工三方合并，该目录禁用 `replace`。
+- 安全核查确认：`online-media/bilibili-cookies.txt`（含登录态）与
+  `online-media/runtime/` 均在 `.gitignore` 内，不会入库。
+
+## 2026-10-28 · 按键全面核验、Dracula 主题、分段式时间轴
+
+### 按键全面核验
+
+- 静态审计：`input.conf` 241 条生效绑定，**0 重复键位、0 死脚本目标**
+  （审计脚本按 mpv 语义区分大小写键名，`a` 与 `A` 是不同绑定；早先报告的
+  42 个"重复"全部是审计脚本自身的折叠误报，已修正口径）。
+- 运行时验证：`input-bindings` 属性共 487 条（含脚本内部绑定），无一空命令；
+  `Ctrl+Alt+m → sleep_timer open-menu` 确认在列。
+- 脚本裸键注册（`add_key_binding` 带显式键名）与 input.conf 的同键关系均为
+  有意遮蔽：mpv 中用户绑定优先，脚本绑定只在用户未占用时生效（如
+  dynamic-crop 的 `C` 与 input.conf 指向同一功能、simplebookmark 的 1-9/0
+  仅在其 UI 打开时用 forced binding 抢占）。无需改动。
+
+### Dracula 主题（Catppuccin Mocha → Dracula）
+
+官方色板：bg `282A36`、current-line `44475A`、fg `F8F8F2`、comment `6272A4`、
+purple `BD93F9`、pink `FF79C6`、green `50FA7B`、red `FF5555`、orange `FFB86C`、
+cyan `8BE9FD`、yellow `F1FA8C`。视频贴近层用派生深色 `191A21` / `21222C` /
+`343746` 保持背景 → 菜单 → 选中的层次；主强调色取 Dracula 紫。
+
+覆盖文件：`mpv.conf`（OSD/字幕 5 处）、`uosc.conf`（`color=` 26 个键 +
+`chapter_ranges` 8 处）、`console.conf`、`context_menu.conf`、
+`file_browser.conf`、`simplehistory.conf`、`simplebookmark.conf`、
+`chapterskip.conf`、`stats.conf`，以及脚本内硬编码色：`skip-segments.lua`、
+`manager.lua`、`music-mode.lua`、`autosubsync/autosubsync.lua`、
+`system-monitor.lua`、`simplehistory.lua`、`simplebookmark.lua`、
+`playlistmanager.lua`、`memo.lua`、`mpv_chapters.js`、
+`script-modules/extended-menu.lua`。上游 `check` 管理的
+simple-mpv-webui 与 trakt-scrobble 不动。全库扫描零 Catppuccin 残留。
+
+### 分段式时间轴（timeline_style=segments）
+
+- `Timeline.lua` 的 `draw_progress()` 新增 `segments` 分支：固定 24 段圆角块，
+  段间距约为条高的 22%；未播段 `timeline_track` 暗色、已播段 `match` 强调色、
+  当前段部分填充；保留定位圆点。segments 样式下展开条高提升到约 13px
+  （默认仅约 6px，是时间轴"细"的根因）。
+- `uosc.conf`：`timeline_style=bar → segments`。章节标记、skip-segments
+  自定义区间、缓存纹理画在分段之上，不受影响。
+
+### 底栏补回「打开文件 / 最近播放」
+
+上一轮把这两项只留在空闲排是误判：播放中无法一键打开文件。现已在
+`<video,audio>` 排最前加回，左排变为：打开、最近播放、CC、音轨、弹幕、
+片尾跳过、标记、去黑边。
+
+## 2026-10-28 · 界面风格对齐 Mpv∞：顶栏常驻、胶囊控件、中央暂停指示器
+
+按 Mpv∞（Android 播放器）的界面风格调整 uosc，全部为配置层改动，无结构性
+代码修改：
+
+- `top_bar=no-border` → `always`：播放时始终显示顶栏标题排（对齐其顶部胶囊排）。
+- `opacity.controls=0.08 → 0.5`：uosc 按钮本就自带圆角底衬，此前透明度接近隐形
+  造成"扁平图标"观感；调到 0.5 后形成可见胶囊。`opacity.speed=0.5`、
+  `opacity.title=0.5` 同理（顶栏标题获得胶囊底衬）。
+- `pause_indicator=none → static`：暂停时中央常驻圆形指示器。
+- 底部控件重排为「左排功能开关 · 中央播放 · 右排工具」：左排 CC / 音轨 / 弹幕 /
+  片尾跳过 / 标记 / 去黑边；右排截图（新增 `command:photo_camera`）/ 睡眠定时器 /
+  统计 / 播放列表 / 速度胶囊 / 更多。`stop` 从底栏移除（菜单与 SHIFT+F11 保留），
+  打开文件与最近播放保留在空闲排。
+- `input.conf` 的 SPACE / MBTN_LEFT / PLAY / PAUSE / PLAYPAUSE 绑定移除
+  `flash-pause-indicator` 后缀：该 flash 会把指示器透明度在 300ms 内动画到 0，
+  覆盖 static 模式的常驻显示，导致暂停指示器一闪即逝。
+
+### 第二轮打磨（空闲态一致性 + 时间轴）
+
+- 空闲态底栏：原本 4 个按钮挤在左下角、与播放态不协调；改为前后 `space` 居中，
+  并补上统计入口（打开 / 最近播放 / 播放列表 / 统计 / 更多，共 5 个）。
+- 时间轴：`timeline_size=12 → 18` 更饱满；`timeline_persistency=paused` 暂停时
+  保持展开方便找位置；最小化细线 `progress_size=1.2 → 2.4`。
+- 强调色：`time_current=CDD6F4 → 89B4FA`。已播放进度条本来就用 `match`
+  （89B4FA 蓝），时钟与时间轴文字改蓝后形成贯穿的强调色。
+
+验证：空闲态（niri 窗口截图）5 个按钮居中；播放态实渲染确认 18px 时间轴 +
+蓝色进度与手柄；全套功能冒烟无 Lua 错误。
+
+验证：1600px 窗口实渲染截图——顶栏标题胶囊、左排 6 个功能圆片、右排 6 个工具
+胶囊、速度胶囊全部正确；960px 窄窗下 uosc 按 narrow 角色自动收编低优先级按钮，
+属响应式行为。中央暂停指示器经 `decide-pause-indicator` 实渲染确认（双竖条居中）；
+无头截图在暂停后不合成后续 OSD 更新，属测试环境限制，真实桌面会话不受影响。
+
 ## 2026-10-28 · uosc 集成补全、系统监控、滤镜预设与配置健康清理
 
 对照 Mpv∞ 的剩余可移植项做完收尾，并清理了一轮配置健康扫描发现的问题。
