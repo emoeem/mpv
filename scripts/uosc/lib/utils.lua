@@ -1211,7 +1211,7 @@ function render()
 		local brand_name = '{\\1c&H' .. config.color.idle_brand_glow .. '&}mpv-'
 			.. '{\\1c&H' .. config.color.idle_brand_text .. '&}Emo'
 		ass:txt(center_x, center_y + mark_half_height + 8 * state.scale, 8, brand_name, {
-			font = 'LXGW ZhenKai GB',
+			font = 'MFGA YouHei',
 			size = clamp(22 * state.scale, mark_half_height * 0.42, 34 * state.scale),
 			spacing = 0.35 * state.scale,
 			bold = false,

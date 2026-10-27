@@ -82,7 +82,7 @@ end
 local function add_text(ass, x, y, size, text, color, bold)
     ass:new_event()
     ass:append(string.format(
-        '{\\an5\\pos(%d,%d)\\fnLXGW ZhenKai GB\\fs%d\\b%d'
+        '{\\an5\\pos(%d,%d)\\fnMFGA YouHei\\fs%d\\b%d'
             .. '\\bord0\\shad0\\1c&H%s&}%s',
         round(x), round(y), round(size), bold and 1 or 0,
         color or 'FFFFFF', tostring(text or '')

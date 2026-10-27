@@ -253,10 +253,10 @@ local function render_remote_loading()
     ass:draw_stop()
 
     ass:new_event()
-    ass:append("{\\an5\\pos(960,460)\\fnLXGW ZhenKai GB\\fs48\\b1" ..
+    ass:append("{\\an5\\pos(960,460)\\fnMFGA YouHei\\fs48\\b1" ..
         "\\bord0\\shad0\\1c&HFFFFFF&}正在打开网盘蓝光原盘")
     ass:new_event()
-    ass:append("{\\an5\\pos(960,535)\\fnLXGW ZhenKai GB\\fs31" ..
+    ass:append("{\\an5\\pos(960,535)\\fnMFGA YouHei\\fs31" ..
         "\\bord0\\shad0\\1c&HD9D9D9&}" .. phase_text)
 
     ass:new_event()
@@ -273,10 +273,10 @@ local function render_remote_loading()
     ass:draw_stop()
 
     ass:new_event()
-    ass:append("{\\an5\\pos(960,655)\\fnLXGW ZhenKai GB\\fs27" ..
+    ass:append("{\\an5\\pos(960,655)\\fnMFGA YouHei\\fs27" ..
         "\\bord0\\shad0\\1c&HCAC7C4&}" .. estimate_text)
     ass:new_event()
-    ass:append("{\\an5\\pos(960,700)\\fnLXGW ZhenKai GB\\fs23" ..
+    ass:append("{\\an5\\pos(960,700)\\fnMFGA YouHei\\fs23" ..
         "\\bord0\\shad0\\1c&H918E8B&}无需操作 · 完成后会自动开始播放")
 
     remote_loading_overlay.data = ass.text
@@ -398,16 +398,16 @@ local function render_local_loading()
     ass:draw_stop()
 
     ass:new_event()
-    ass:append("{\\an5\\pos(960,460)\\fnLXGW ZhenKai GB\\fs48\\b1" ..
+    ass:append("{\\an5\\pos(960,460)\\fnMFGA YouHei\\fs48\\b1" ..
         "\\bord0\\shad0\\1c&HFFFFFF&}" .. title)
     ass:new_event()
-    ass:append("{\\an5\\pos(960,535)\\fnLXGW ZhenKai GB\\fs31" ..
+    ass:append("{\\an5\\pos(960,535)\\fnMFGA YouHei\\fs31" ..
         "\\bord0\\shad0\\1c&HD9D9D9&}" .. phase_text)
     ass:new_event()
-    ass:append("{\\an5\\pos(960,620)\\fnLXGW ZhenKai GB\\fs27" ..
+    ass:append("{\\an5\\pos(960,620)\\fnMFGA YouHei\\fs27" ..
         "\\bord0\\shad0\\1c&HCAC7C4&}" .. elapsed_text)
     ass:new_event()
-    ass:append("{\\an5\\pos(960,685)\\fnLXGW ZhenKai GB\\fs23" ..
+    ass:append("{\\an5\\pos(960,685)\\fnMFGA YouHei\\fs23" ..
         "\\bord0\\shad0\\1c&H918E8B&}" .. footer_text)
 
     local_loading_overlay.data = ass.text

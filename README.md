@@ -142,8 +142,8 @@ hwdec-codecs=all
 
 ### OSD、字体与 Catppuccin Mocha
 
-播放器 UI（OSD、uosc、stats、菜单等）统一使用 `LXGW ZhenKai GB`，详见
-[UI-FONTS.md](UI-FONTS.md)；文本字幕仍使用 `LXGW WenKai Screen`。
+播放器 UI（OSD、uosc、stats、菜单等）统一使用 `MFGA YouHei`，详见
+[UI-FONTS.md](UI-FONTS.md)；文本字幕自 2026-10-04 起也统一使用 `MFGA YouHei`。
 Linux/libass 不做 emoji 字体回退，emoji 会显示为空白/方块。
 当前主题是 [Catppuccin Mocha](https://catppuccin.com/palette/)：
 
@@ -185,7 +185,7 @@ Linux/libass 不做 emoji 字体回退，emoji 会显示为空白/方块。
 - `sub-file-paths=sub:subs:subtitles:字幕`：搜索多个字幕目录。
 - `slang=chs,sc,zh-Hans,zh-CN,cht,tc,zh-Hant,zh-HK,zh-TW,chi,zho,zh`：
   优先加载中文字幕。
-- 默认字幕字体为 `LXGW WenKai Screen`，字号为 34。
+- 默认字幕字体为 `MFGA YouHei`，字号为 34。
 - 支持字幕重载、轨道切换、字幕同步、字幕导出、Whisper 生成字幕和字幕兼容性
   开关，见[字幕快捷键](#字幕)。
 
@@ -326,7 +326,7 @@ profile=HDR2SDR
 | `controls_size` | `36` | 控制按钮尺寸 |
 | `controls_margin` | `18` | 控制栏外边距 |
 | `controls_persistency` | `idle` | 空闲时保留控制栏 |
-| `menu_font` | `LXGW ZhenKai GB` | 菜单字体 |
+| `menu_font` | `MFGA YouHei` | 菜单字体 |
 | `menu_item_height` | `44` | 菜单项目高度 |
 | `scale` | `1.30` | 界面缩放 |
 | `font_scale` | `1.15` | 文字缩放 |
