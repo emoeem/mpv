@@ -1,5 +1,69 @@
 # 更新记录
 
+## 2026-10-28 · TheIntroDB 迁移到 API v4（v2/v3 已被上游标记废弃）
+
+上游维护者在 issue 里点名本仓库的 `skip_segments.conf` 仍在打 `/v3/media`。v1 已移除，
+v2/v3 只保留一个 `GET /media` 且不再修复，v4 是唯一还在开发的面。
+
+### 改了什么
+
+| 项 | 改动 |
+| --- | --- |
+| 端点 | `introdb_url` 与脚本内默认值都改为 `https://api.theintrodb.org/v4/media` |
+| 请求形状 | `season` 与 `episode` 现在**必须成对发送**；电影两个都不发 |
+| 电影 | 顺带修好了一个 v3 时代就存在的 bug（详见下） |
+| 响应形状 | 只认片段数组；v4 的「剧集清单回退」与错误体都按无数据处理，并写明原因 |
+| 新选项 | `introdb_mapping=`，留空即 default；别名自动归一，填错则本次不发送 |
+
+### 为什么电影这一条是必须改的
+
+`parse_episode()` 对缺失的季号返回 `1`（`tonumber(season) or 1`），而电影没有集号。
+旧代码 `if resolved_info.season then 拼 season end` 于是对**每一部电影**都发
+`?tmdb_id=550&season=1`。实测 v3 与 v4 对这个形状的回应都是：
+
+```
+400 {"error":"season and episode must be provided together"}
+```
+
+也就是说**电影从来没有取到过片头片尾**，与 v4 无关。现在改成「只有 episode 存在才拼
+season+episode」，同一请求变成 `?tmdb_id=550&duration_ms=…`，返回
+`intro 0–119s` 与 `credits 8177–8348s`（后者超出测试片长，被 `valid_range` 正常丢弃）。
+
+### 响应三种形态
+
+`/v4/media` 的 200 有三种 body：片段（默认）、版本清单（`list_versions=true`）、
+剧集清单回退（该媒体无已采纳提交且请求方未带 TMDb key）。后两种没有片段数组，
+现在按无数据处理并打 `verbose` 日志，不再静默返回空。
+
+### 验证
+
+本地起捕获服务记录脚本真实发出的 URL，再叠加真实 v4 端点与新旧脚本 A/B：
+
+脚本真实发出的 URL（本地捕获服务记录，90 s 测试片）：
+
+| 场景 | 实际 URL | 结果 |
+| --- | --- | --- |
+| TV | `…/v4/media?tmdb_id=550&season=1&episode=2&duration_ms=90000` | 2 个片段 |
+| 电影 | `…/v4/media?tmdb_id=550&duration_ms=90000` | 2 个片段 |
+| `introdb_mapping=altdvd` | `…&season=1&episode=2&mapping=dvd&…` | 别名归一 |
+| `introdb_mapping=Aired Order` | `…&mapping=official&…` | 空格/大小写忽略 |
+| `introdb_mapping=bogus_order` | 不带 `mapping` | 一条告警，不发送 |
+
+真实 v4 端点的三种回应（curl 直取，`tmdb_id` 取已知有数据的媒体）：
+
+| 请求 | 回应 |
+| --- | --- |
+| `?tmdb_id=1399&season=1&episode=1` | `200`，`intro 483–581 s` |
+| `?tmdb_id=550`（电影） | `200`，`intro 0–119 s`（`start_ms` 为 `null`，按 0 处理） |
+| `?tmdb_id=1399&season=1`（旧脚本对电影的请求形状） | `400 season and episode must be provided together` |
+
+剧集清单回退与 404 错误体均按无数据处理，打 `verbose` 日志，不产生 Lua 异常。
+
+`luajit -bl` 通过；`audit_bindings` / `audit_readme_keys` / `audit_theme_colors` 全 PASS；
+`git diff --check` 无输出。
+
+---
+
 ## 2026-10-28 · 仓库同步：本轮全部改进入库并推送，文档补齐
 
 前几天的工作一直只在工作区（10 个本地提交 + 40 个未提交文件），本次一次性收口。

@@ -492,7 +492,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `chapter-make-read.lua` | 创建、编辑、删除和写出章节文件 |
 | `chapterskip.lua` | 静音跳转、章节跳过和片头片尾标记 |
 | `mpv_chapters.js` | JavaScript 章节列表 |
-| `skip-segments.lua` | 标记、编辑和自动跳过片头片尾 |
+| `skip-segments.lua` | 标记、编辑和自动跳过片头片尾；在线片段来自 TheIntroDB **v4**（`introdb_url`），季集编号与媒体服务器的显示序不一致时用 `introdb_mapping`（`official`/`dvd`/`absolute`…，留空即 TVDB 存储序） |
 
 ### 画面、音频和截图
 

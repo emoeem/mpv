@@ -12,7 +12,9 @@ local o = {
     season_fallback_episode = 1,
     anime_skip_url = 'https://api.anime-skip.com/graphql',
     anime_skip_client_id = 'ZGfO0sMF3eCwLYf8yMSCJjlynwNGRXWE',
-    introdb_url = 'https://api.theintrodb.org/v3/media',
+    introdb_url = 'https://api.theintrodb.org/v4/media',
+    -- 剧集编号所在的排序；留空表示 default（TVDB 存储序）。仅在 season/episode 同时存在时发送
+    introdb_mapping = '',
     tmdb_api_url = 'https://api.tmdb.org/3',
     tmdb_api_key_base64 = 'NmJmYjIxOTZkNzIyN2UyMTIzMGM3Y2YzZjQ4MDNkZGM=',
     timeout = 12,
@@ -1012,6 +1014,30 @@ local function url_encode(value)
     end)
 end
 
+-- TheIntroDB v4 的剧集排序名。别名按官方迁移文档归一，未知值当作未设置，
+-- 避免一个拼写错误让每次查询都变成 HTTP 400。
+local introdb_mapping_aliases = {
+    [''] = '',
+    default = 'default', defaultorder = 'default',
+    official = 'official', officialorder = 'official', aired = 'official', airedorder = 'official',
+    dvd = 'dvd', dvdorder = 'dvd', altdvd = 'dvd',
+    alternate = 'alternate', alternateorder = 'alternate', alttwo = 'alternate',
+    streaming = 'alternate', streamingorder = 'alternate',
+    absolute = 'absolute', absoluteorder = 'absolute', abso = 'absolute',
+    regional = 'regional', regionalorder = 'regional',
+    production = 'regional', productionorder = 'regional',
+}
+
+local function introdb_mapping()
+    local key = tostring(o.introdb_mapping or ''):lower():gsub('[%s%-_]', '')
+    local value = introdb_mapping_aliases[key]
+    if value == nil then
+        msg.warn('introdb_mapping 取值无法识别：' .. tostring(o.introdb_mapping) .. '，本次不发送 mapping')
+        return ''
+    end
+    return value
+end
+
 local function resolve_tmdb(info, callback)
     if info.tmdb_id or info.imdb_id or not info.titles[1] then
         return callback(nil, info)
@@ -1060,6 +1086,7 @@ local function query_introdb(info, callback)
         if not resolved_info.tmdb_id and not resolved_info.imdb_id then
             return callback(nil, {})
         end
+        local mapping = introdb_mapping()
         local function build_url(episode)
             local params = {}
             if resolved_info.tmdb_id then
@@ -1067,21 +1094,45 @@ local function query_introdb(info, callback)
             else
                 params[#params + 1] = 'imdb_id=' .. url_encode(resolved_info.imdb_id)
             end
-            if resolved_info.season then
+            -- v4 的契约：season 与 episode 必须成对出现，只给一个会被 400 拒绝；
+            -- 电影则两个都不能给，也不能给 mapping，否则同样 400。
+            -- 旧代码对电影恒发 season=1（parse_episode 会把缺失的季号补成 1），
+            -- 那个请求在 v3 上也一样返回 400 —— 电影从来没有取到过数据。
+            if episode and resolved_info.season then
                 params[#params + 1] = 'season=' .. tostring(resolved_info.season)
+                params[#params + 1] = 'episode=' .. tostring(episode)
+                if mapping ~= '' then
+                    params[#params + 1] = 'mapping=' .. url_encode(mapping)
+                end
             end
-            if episode then params[#params + 1] = 'episode=' .. tostring(episode) end
             if resolved_info.duration > 0 then
                 params[#params + 1] = 'duration_ms=' .. tostring(math.floor(resolved_info.duration * 1000 + 0.5))
             end
             return o.introdb_url .. '?' .. table.concat(params, '&')
         end
 
+        local function segments_of(data, key)
+            local value = data[key]
+            if type(value) == 'table' then return value end
+            return {}
+        end
+
         local function parse_ranges(data, source, priority)
             local ranges = {}
-            if not data or data.error then return ranges end
+            if type(data) ~= 'table' then return ranges end
+            if data.error then
+                msg.verbose(string.format('TheIntroDB 返回错误：%s (%s)',
+                    tostring(data.error), tostring(data.code or '-')))
+                return ranges
+            end
+            -- v4 有三种 200 响应：片段（默认）、版本清单（list_versions）、剧集清单回退
+            -- （该媒体没有任何已采纳提交且请求方未带 TMDb key）。后两种没有片段数组，按无数据处理。
+            if data.episodes and not data.intro and not data.credits and not data.preview then
+                msg.verbose('TheIntroDB v4 只返回了剧集清单（该媒体暂无已采纳提交）')
+                return ranges
+            end
             if o.skip_intro then
-                for _, segment in ipairs(data.intro or {}) do
+                for _, segment in ipairs(segments_of(data, 'intro')) do
                     add_range(ranges, 'intro',
                         (tonumber(segment.start_ms) or 0) / 1000,
                         tonumber(segment.end_ms) and segment.end_ms / 1000 or nil,
@@ -1090,7 +1141,7 @@ local function query_introdb(info, callback)
             end
             if o.skip_outro then
                 for _, key in ipairs({'credits', 'preview'}) do
-                    for _, segment in ipairs(data[key] or {}) do
+                    for _, segment in ipairs(segments_of(data, key)) do
                         add_range(ranges, 'outro',
                             tonumber(segment.start_ms) and segment.start_ms / 1000 or nil,
                             tonumber(segment.end_ms) and segment.end_ms / 1000 or resolved_info.duration,
