@@ -27,15 +27,18 @@ local o = {
     bilibili_cookie_file = '~~/online-media/bilibili-cookies.txt',
     douyu_cookie_file = '~~/online-media/douyu-cookies.txt',
     youtube_cookie_file = '~~/online-media/youtube-cookies.txt',
-    youtube_js_runtime = '/usr/bin/deno',
-    youtube_ytdl = '/usr/bin/yt-dlp',
+    -- 空值 = 自动发现：先找随包运行时，再按 PATH 查找（见下面的运行时发现段）。
+    youtube_js_runtime = '',
+    youtube_ytdl = '',
     youtube_resolver = '~~/online-media/resolve_youtube.py',
     bilibili_resolver = '~~/online-media/resolve_bilibili.py',
     live_resolver = '~~/online-media/resolve_live.py',
     bilibili_live_danmaku = '~~/online-media/bilibili_live_danmaku.py',
     platform_live_danmaku = '~~/online-media/platform_live_danmaku.py',
     douyin_live_danmaku = '~~/online-media/douyin_live_danmaku.py',
-    python_runtime = '~~/online-media/runtime/bin/python3',
+    -- 空值 = 自动发现：随包 runtime/bin/python3（Windows 另试 runtime/Scripts/python.exe），
+    -- 再按 PATH 查找 python3 / python。显式写死路径时该值被原样尊重。
+    python_runtime = '',
     -- 清晰度无缝切换：选档后当前画面继续播放，后台完成新档位的解析与线路验证，
     -- 验证通过才真正换流。关掉则退回「先停流再重新解析」的旧行为。
     seamless_quality_switch = true,
@@ -46,7 +49,131 @@ local o = {
 }
 options.read_options(o, 'online_media')
 
-local python_path = mp.command_native({'expand-path', o.python_runtime})
+-- ===== 运行时发现 =====
+-- 解析顺序固定：随包运行时 → PATH。全部用纯 Lua 实现（读 PATH、切分、io.open 探测），
+-- 不调 command -v / where，也不拼 shell 字符串；路径统一交给 expand-path 处理，
+-- Windows 的反斜杠、空格与 Unicode 路径都不需要自己拼接。
+local IS_WINDOWS = mp.get_property('platform') == 'windows'
+    or (package.config or ''):sub(1, 1) == '\\'
+
+local function file_exists(path)
+    if type(path) ~= 'string' or path == '' then return false end
+    local handle = io.open(path, 'rb')
+    if not handle then return false end
+    handle:close()
+    return true
+end
+
+--- expand-path 失败或为空时返回 nil：调用方据此判断"没有配置/没有发现"。
+local function expand_path(path)
+    if type(path) ~= 'string' or path == '' then return nil end
+    local expanded = mp.command_native({'expand-path', path})
+    if type(expanded) ~= 'string' or expanded == '' then return nil end
+    return expanded
+end
+
+local function path_separator()
+    return IS_WINDOWS and ';' or ':'
+end
+
+local function executable_suffixes()
+    if IS_WINDOWS then return {'', '.exe', '.cmd', '.bat'} end
+    return {''}
+end
+
+--- 在 PATH 里逐个目录探测可执行文件。Windows 额外试 .exe/.cmd/.bat。
+local function find_in_path(names)
+    local path_env = os.getenv('PATH') or os.getenv('Path')
+    if type(path_env) ~= 'string' or path_env == '' then return nil end
+    local separator = path_separator()
+    local pattern = '([^' .. separator .. ']*)' .. separator
+    local directories = {}
+    for entry in (path_env .. separator):gmatch(pattern) do
+        local directory = entry:gsub('^"', ''):gsub('"$', '')
+        if directory ~= '' then
+            -- 去掉尾部斜杠，但保留盘符根（C:）与 POSIX 根（/）。
+            if not directory:match('^%a:$') and #directory > 1 then
+                directory = directory:gsub('[/\\]+$', '')
+            end
+            if directory:match('^%a:$') then directory = directory .. '\\' end
+            directories[#directories + 1] = directory
+        end
+    end
+    for _, name in ipairs(names) do
+        for _, directory in ipairs(directories) do
+            for _, suffix in ipairs(executable_suffixes()) do
+                local candidate = utils.join_path(directory, name .. suffix)
+                if file_exists(candidate) then return candidate end
+            end
+        end
+    end
+    return nil
+end
+
+--- 配置非空 → 原样使用（expand-path 后）；为空 → 自动发现。
+local function resolve_tool(configured, names)
+    local explicit = expand_path(configured)
+    if explicit then return explicit, 'config' end
+    local discovered = find_in_path(names)
+    if discovered then return discovered, 'PATH' end
+    return nil, nil
+end
+
+--- Python：随包运行时 → PATH 的 python3/python。
+local function resolve_python()
+    local bundled = expand_path('~~/online-media/runtime/bin/python3')
+    if file_exists(bundled) then return bundled, 'bundled' end
+    if IS_WINDOWS then
+        local bundled_windows = expand_path('~~/online-media/runtime/Scripts/python.exe')
+        if file_exists(bundled_windows) then return bundled_windows, 'bundled' end
+    end
+    local discovered = find_in_path({'python3', 'python'})
+    if discovered then return discovered, 'PATH' end
+    return nil, nil
+end
+
+local python_path, python_source
+do
+    local configured = expand_path(o.python_runtime)
+    if configured then
+        python_path, python_source = configured, 'config'
+    else
+        python_path, python_source = resolve_python()
+    end
+end
+if python_path and not file_exists(python_path) then
+    msg.warn('[online-media] 配置的 python_runtime 不存在：' .. python_path
+        .. '；在线解析会降级。请修正 script-opts/online_media.conf 或安装 python3')
+end
+if not python_path then
+    msg.warn('[online-media] 未找到 Python 运行时（随包 runtime 与 PATH 均无 python3）；'
+        .. '在线解析与弹幕会降级。可在 script-opts/online_media.conf 设置 python_runtime')
+end
+
+local youtube_js_path, youtube_js_source = resolve_tool(o.youtube_js_runtime, {'deno'})
+local youtube_ytdl_path, youtube_ytdl_source = resolve_tool(o.youtube_ytdl, {'yt-dlp'})
+
+msg.verbose(string.format('[online-media] python=%s (%s)',
+    tostring(python_path), tostring(python_source or 'missing')))
+msg.verbose(string.format('[online-media] deno=%s (%s)',
+    tostring(youtube_js_path), tostring(youtube_js_source or 'missing')))
+msg.verbose(string.format('[online-media] yt-dlp=%s (%s)',
+    tostring(youtube_ytdl_path), tostring(youtube_ytdl_source or 'missing')))
+
+--- YouTube JavaScript 运行时参数：没有运行时就不传（让 yt-dlp 自己报错并降级），
+--- 而不是拼出 "--js-runtime nil" 或直接让脚本抛错。
+local function js_runtime_args()
+    if not youtube_js_path then return {} end
+    return {'--js-runtime', youtube_js_path}
+end
+
+local function youtube_missing_component()
+    local missing = {}
+    if not file_exists(youtube_ytdl_path) then missing[#missing + 1] = 'yt-dlp' end
+    if not file_exists(youtube_js_path) then missing[#missing + 1] = 'deno（JavaScript 运行时）' end
+    return #missing > 0 and table.concat(missing, ' / ') or nil
+end
+
 local probe_path = mp.command_native({'expand-path', '~~/online-media/probe_stream.py'})
 local live_resolver_path = mp.command_native({'expand-path', o.live_resolver})
 local bilibili_resolver_path = mp.command_native({'expand-path', o.bilibili_resolver})
@@ -56,8 +183,6 @@ local douyin_live_danmaku_path = mp.command_native({'expand-path', o.douyin_live
 local cookie_path = mp.command_native({'expand-path', o.bilibili_cookie_file})
 local douyu_cookie_path = mp.command_native({'expand-path', o.douyu_cookie_file})
 local youtube_cookie_path = mp.command_native({'expand-path', o.youtube_cookie_file})
-local youtube_js_path = mp.command_native({'expand-path', o.youtube_js_runtime})
-local youtube_ytdl_path = mp.command_native({'expand-path', o.youtube_ytdl})
 local youtube_resolver_path = mp.command_native({'expand-path', o.youtube_resolver})
 
 local generation = 0
@@ -259,13 +384,7 @@ local function reset_state(reconnect_attempt, pending)
     publish()
 end
 
-local function file_exists(path)
-    if not path or path == '' then return false end
-    local handle = io.open(path, 'rb')
-    if not handle then return false end
-    handle:close()
-    return true
-end
+-- file_exists 已在文件顶部定义（运行时发现要用）；这里不再重复定义。
 
 -- 平台身份绑定的清晰度：接口只对能识别身份的请求给最高档（B站直播匿名压到超清；
 -- 斗鱼在有蓝光档位的房间把原画扣给匿名请求，网页端登录后才出现原画/2K）。
@@ -441,9 +560,15 @@ local function start_live_danmaku()
         set_live_danmaku_status('unsupported')
         return
     end
-    if not file_exists(python_path) or not file_exists(helper_path) then
+    if not file_exists(python_path) then
         set_live_danmaku_status('unavailable')
-        msg.warn('[online-media] live danmaku helper is unavailable: ' .. state.platform)
+        msg.warn('[online-media] live danmaku disabled: Python runtime not found'
+            .. ' (set python_runtime in script-opts/online_media.conf)')
+        return
+    end
+    if not file_exists(helper_path) then
+        set_live_danmaku_status('unavailable')
+        msg.warn('[online-media] live danmaku helper missing: ' .. tostring(helper_path))
         return
     end
 
@@ -619,8 +744,10 @@ local function configure_youtube_ytdl()
         retries = '2',
         ['fragment-retries'] = '2',
         ['extractor-retries'] = '2',
-        ['js-runtimes'] = 'deno:' .. youtube_js_path,
     }
+    -- 没有 deno 时不传 js-runtimes：让 yt-dlp 自己报错并由上面的失败归类给出
+    -- 可读提示，而不是把空字符串拼进参数里。
+    if youtube_js_path then raw['js-runtimes'] = 'deno:' .. youtube_js_path end
     if proxy ~= '' then
         raw.proxy = proxy
         mp.set_property('file-local-options/http-proxy', proxy)
@@ -651,8 +778,10 @@ local function record_youtube_failure(kind)
 end
 
 local function youtube_failure_message()
-    if not file_exists(youtube_ytdl_path) or not file_exists(youtube_js_path) then
-        return 'YouTube 解析组件不完整，请重新解压完整播放器'
+    local missing = youtube_missing_component()
+    if missing then
+        return 'YouTube 解析组件不完整：未找到 ' .. missing
+            .. '（自动发现失败时可用 script-opts/online_media.conf 指定路径）'
     end
     if state.failure_kind == 'login_required' then
         local status = mp.get_property_native('user-data/youtube-account/status')
@@ -1202,7 +1331,7 @@ end
 -- 否则会出现「直播主链路走 B 站解析器、切档却走通用解析器」这种错配。
 local function resolver_plan_for_kind(kind)
     if kind == 'youtube-video' then
-        local extra = {'--js-runtime', youtube_js_path}
+        local extra = js_runtime_args()
         if file_exists(youtube_cookie_path) then
             extra[#extra + 1] = '--cookie-file'
             extra[#extra + 1] = youtube_cookie_path
@@ -1375,6 +1504,10 @@ end
 
 local function probe_quality_candidates(descriptor, picks, position, ticket, quality_id)
     if switch.ticket ~= ticket then return end
+    if not file_exists(python_path) or not file_exists(probe_path) then
+        fail_quality_switch(quality_id, '缺少 Python 运行时或验证脚本')
+        return
+    end
     local pick = picks[position]
     if not pick then
         fail_quality_switch(quality_id, '该档位的线路都没能通过验证')
@@ -1442,6 +1575,12 @@ local function begin_quality_switch(quality_id)
     end
     if not selectable then
         msg.warn('[online-media] rejected unknown quality id')
+        return
+    end
+
+    if not file_exists(python_path) then
+        mp.osd_message('切换清晰度不可用：未找到 Python 运行时（见 script-opts/online_media.conf）', 4)
+        msg.warn('[online-media] quality switch skipped: python runtime not found')
         return
     end
 
@@ -1540,8 +1679,12 @@ end
 
 local function resolve_platform(kind, hook, purpose, resolver_path, fallback_to_ytdl, extra_args)
     resolver_path = resolver_path or live_resolver_path
-    if not file_exists(python_path) or not file_exists(resolver_path) then
-        stop_failed_load('在线解析组件不完整，请重新解压播放器')
+    if not file_exists(python_path) then
+        stop_failed_load('未找到 Python 运行时：在线解析不可用（可用 script-opts/online_media.conf 的 python_runtime 指定）')
+        return
+    end
+    if not file_exists(resolver_path) then
+        stop_failed_load('解析器脚本缺失：' .. tostring(resolver_path) .. '（请重新解压完整播放器）')
         return
     end
 
@@ -1821,14 +1964,17 @@ mp.add_hook('on_load', 5, function(hook)
     end
 
     if route.kind == 'youtube-video' then
-        if not file_exists(youtube_ytdl_path) or not file_exists(youtube_js_path)
-                or not file_exists(youtube_resolver_path) then
+        local missing = youtube_missing_component()
+        if missing or not file_exists(youtube_resolver_path) then
             state.failure_kind = 'js_runtime'
-            stop_failed_load('YouTube 解析组件不完整，请重新解压完整播放器')
+            local detail = missing
+                or ('resolve_youtube.py（' .. tostring(youtube_resolver_path) .. '）')
+            stop_failed_load('YouTube 解析组件缺失：' .. detail
+                .. '；可在 script-opts/online_media.conf 指定路径，或安装到 PATH 后重试')
             return
         end
         state.resolver = 'yt-dlp-direct'
-        local extra_args = {'--js-runtime', youtube_js_path}
+        local extra_args = js_runtime_args()
         if file_exists(youtube_cookie_path) then
             extra_args[#extra_args + 1] = '--cookie-file'
             extra_args[#extra_args + 1] = youtube_cookie_path
@@ -1913,7 +2059,7 @@ mp.add_hook('on_load_fail', 5, function(hook)
                 and state.youtube_media_refreshes < 1 then
             state.youtube_media_refreshes = state.youtube_media_refreshes + 1
             state.youtube_media_retries = {}
-            local extra = {'--js-runtime', youtube_js_path}
+            local extra = js_runtime_args()
             if file_exists(youtube_cookie_path) then
                 extra[#extra + 1] = '--cookie-file'; extra[#extra + 1] = youtube_cookie_path
             end

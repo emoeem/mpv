@@ -21,10 +21,10 @@ local em = {
   cursor_x_border = 0.3,
   line_bottom_margin = 1, -- basically space between lines
   text_color = {
-    default = 'F4D6CD',
-    accent = 'F7A6CB',
-    current = 'FAB489',
-    comment = 'B29993',
+    default = 'F8F8F2',
+    accent = 'FF79C6',
+    current = 'BD93F9',
+    comment = '6272A4',
   },
   menu_x_padding = 5, -- this padding for now applies only to 'left', not x
   menu_y_padding = 2, -- but this one applies to both - top & bottom
@@ -200,7 +200,7 @@ function em:update(err_code)
 
   local function get_background()
     local a = self:ass_new_wrapper()
-    a:append('{\\1c&H251818\\1a&H19}') -- Catppuccin Mocha Mantle
+    a:append('{\\1c&H21222C\\1a&H19}') -- Dracula 深层背景（派生）
     a:pos(0, 0)
     a:draw_start()
     a:rect_cw(0, menu_y_pos, ww, wh)
@@ -231,7 +231,7 @@ function em:update(err_code)
     local cheight = self.font_size * 8
     -- TODO: maybe do it using draw_rect from ass?
     local cglyph = '{\\r' ..                                   -- styles reset
-        '\\1c&HF4D6CD&\\3c&HF4D6CD' ..                         -- Catppuccin Mocha Text
+        '\\1c&HF8F8F2&\\3c&HF8F8F2' ..                         -- Dracula Foreground
         '\\xbord' .. self.cursor_x_border .. '\\p4\\pbo24}' .. -- xborder, scale x8 and baseline offset
         'm 0 0 l 0 ' .. cheight ..                             -- drawing just a line
         '{\\p0\\r}'                                            -- finish drawing and reset styles
@@ -263,7 +263,7 @@ function em:update(err_code)
     local function apply_highlighting(y)
       a:new_event()
       a:append(self:reset_styles())
-      a:append('{\\1c&HF7A6CB\\1a&HE6}') -- Catppuccin Mocha Mauve
+      a:append('{\\1c&HFF79C6\\1a&HE6}') -- Dracula Pink
       a:pos(0, 0)
       a:draw_start()
       a:rect_cw(0, y, ww, y + self.font_size)

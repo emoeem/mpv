@@ -7,6 +7,11 @@
 
 local msg = require 'mp.msg'
 local opts = require 'mp.options'
+local utils = require 'mp.utils'
+
+-- 平台判定：Windows 没有 mkdir -p，也没有 /tmp，缓存目录与建目录方式都要分叉。
+local IS_WINDOWS = mp.get_property('platform') == 'windows'
+    or (package.config or ''):sub(1, 1) == '\\'
 
 local o = {
     enabled = "no",   -- 加载文件时自动开启
@@ -30,9 +35,45 @@ local model_map = {
     ["v4.9"] = 49, ["v4.11"] = 411,
 }
 
-local function vpy_path()
-    -- 依次尝试可写位置：mpv 缓存目录 → XDG 缓存 → ~/.cache → /tmp 兜底，
-    -- 避免缓存目录不可写时整个开关静默失败
+-- PowerShell 单引号字面量：只需把 ' 写成 ''。
+local function ps_quote(value)
+    return "'" .. tostring(value):gsub("'", "''") .. "'"
+end
+
+-- 建目录：Unix 用 mkdir -p；Windows 没有 -p，用 PowerShell 的 New-Item -Force
+-- （等价于递归创建）。两种都是 argv 数组，不经 shell，路径不参与字符串拼接。
+local function ensure_directory(path)
+    if not path or path == '' then return false end
+    local info = utils.file_info(path)
+    if info and info.is_dir then return true end
+    local argv
+    if IS_WINDOWS then
+        argv = {'powershell', '-NoProfile', '-Command',
+            'New-Item -ItemType Directory -Force -LiteralPath ' .. ps_quote(path) .. ' | Out-Null'}
+    else
+        argv = {'mkdir', '-p', path}
+    end
+    local result = mp.command_native({
+        name = 'subprocess', playback_only = false,
+        capture_stdout = true, capture_stderr = true, args = argv,
+    })
+    if type(result) == 'table' and tonumber(result.status) == 0 then return true end
+    local after = utils.file_info(path)
+    return after ~= nil and after.is_dir == true
+end
+
+local function system_temp_directory()
+    local name = os.tmpname()
+    if type(name) == 'string' and name ~= '' then
+        local dir = name:match("^(.*)[/\\][^/\\]+$")
+        if dir and dir ~= '' then return dir end
+    end
+    return nil
+end
+
+local function cache_candidates()
+    -- 顺序固定：mpv 缓存目录 → XDG 缓存 → ~/.cache → Windows 的 TEMP/TMP →
+    -- Windows %LOCALAPPDATA%\mpv\cache → 系统临时目录。Linux 现有布局不变。
     local candidates = {}
     local ok, expanded = pcall(function()
         return mp.command_native({ 'expand-path', '~~cache/rife.vpy' })
@@ -42,22 +83,47 @@ local function vpy_path()
     end
     local xdg = os.getenv("XDG_CACHE_HOME")
     if xdg and xdg ~= "" then
-        candidates[#candidates + 1] = xdg .. "/mpv/rife.vpy"
+        candidates[#candidates + 1] = utils.join_path(xdg, 'mpv/rife.vpy')
     end
     local home = os.getenv("HOME")
     if home and home ~= "" then
-        candidates[#candidates + 1] = home .. "/.cache/mpv/rife.vpy"
+        candidates[#candidates + 1] = utils.join_path(home, '.cache/mpv/rife.vpy')
     end
-    candidates[#candidates + 1] = "/tmp/mpv-rife.vpy"
-    for _, path in ipairs(candidates) do
-        local dir = path:match("^(.*/)")
-        if dir then os.execute(("mkdir -p '%s'"):format(dir)) end
-        local f = io.open(path, "w")
-        if f then
-            f:close()
-            return path
+    if IS_WINDOWS then
+        local temp = os.getenv('TEMP')
+        if not temp or temp == '' then temp = os.getenv('TMP') end
+        if temp and temp ~= '' then
+            candidates[#candidates + 1] = utils.join_path(temp, 'mpv-rife.vpy')
+        end
+        local local_app_data = os.getenv('LOCALAPPDATA')
+        if local_app_data and local_app_data ~= '' then
+            candidates[#candidates + 1] = utils.join_path(local_app_data, 'mpv/cache/rife.vpy')
         end
     end
+    local temp_dir = system_temp_directory()
+    if temp_dir then candidates[#candidates + 1] = utils.join_path(temp_dir, 'mpv-rife.vpy') end
+    return candidates
+end
+
+local function vpy_path()
+    -- 依次尝试可写位置，避免缓存目录不可写时整个开关静默失败。
+    -- 只会写缓存/临时目录，绝不写进 mpv 配置或其它项目目录。
+    for _, path in ipairs(cache_candidates()) do
+        local dir = path:match("^(.*)[/\\][^/\\]+$")
+        if dir and dir ~= '' then
+            if ensure_directory(dir) then
+                local f = io.open(path, "w")
+                if f then
+                    f:close()
+                    return path
+                end
+                msg.warn(("RIFE 缓存目录不可写：%s"):format(path))
+            else
+                msg.warn(("RIFE 缓存目录无法创建：%s"):format(dir))
+            end
+        end
+    end
+    msg.error("RIFE：没有可写的缓存目录（已尝试 ~~cache、XDG_CACHE_HOME、HOME、系统临时目录）")
     return nil
 end
 

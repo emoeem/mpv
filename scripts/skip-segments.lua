@@ -233,7 +233,7 @@ local function show_message(text, duration)
     status_overlay.res_x = width
     status_overlay.res_y = height
     status_overlay.data = string.format(
-        '{\\an2\\pos(%d,%d)\\fs%d\\b1\\c&HFAB489&\\3c&H1B1111&'
+        '{\\an2\\pos(%d,%d)\\fs%d\\b1\\c&HFFB86C&\\3c&H191A21&'
             .. '\\3a&H30&\\bord%d\\blur0.4\\shad0}%s',
         math.floor(width / 2),
         y,
@@ -296,8 +296,8 @@ local function show_mark_message(text, duration, persistent)
     if persistent then
         local heading, details = escaped:match('^(.-：)(.*)$')
         if heading then
-            styled_escaped = '{\\b1\\c&HF4D6CD&}' .. heading
-                .. '{\\b0\\c&HDEC2BA&}' .. details
+            styled_escaped = '{\\b1\\c&HF8F8F2&}' .. heading
+                .. '{\\b0\\c&H939CC3&}' .. details
         end
     end
     mark_overlay.res_x = width
@@ -321,11 +321,11 @@ local function show_mark_message(text, duration, persistent)
     mark_overlay.data = string.format(
         -- Persistent editor mode badge: Catppuccin Mocha Crust capsule,
         -- Blue border, and Subtext1 text.
-        '{\\an7\\pos(0,0)\\p1\\bord1\\blur0.5\\1c&H1B1111&\\1a&H42&'
-            .. '\\3c&HFAB489&\\3a&H68&}'
+        '{\\an7\\pos(0,0)\\p1\\bord1\\blur0.5\\1c&H191A21&\\1a&H42&'
+            .. '\\3c&HFFB86C&\\3a&H68&}'
             .. 'm %d %d l %d %d l %d %d l %d %d'
             .. '{\\p0}\n'
-            .. '{\\an5\\pos(%d,%d)\\fs%d\\b0\\c&HDEC2BA&\\3c&H1B1111&'
+            .. '{\\an5\\pos(%d,%d)\\fs%d\\b0\\c&H939CC3&\\3c&H191A21&'
             .. '\\3a&H08&\\bord%d\\blur0.4\\shad0}%s',
         capsule_left, capsule_top,
         capsule_right, capsule_top,

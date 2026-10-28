@@ -65,7 +65,30 @@ local file_types = {
     playlist = table.concat(split(o.playlist_types), ';'),
 }
 
+-- 平台判断一律走 mpv 自己的属性（windows / darwin / linux），不用
+-- "zenity 是否存在"去猜：那在装了 zenity 的 macOS/WSL 上会直接判错。
+local PLATFORM = tostring(mp.get_property('platform') or '')
+
 local powershell = nil
+
+-- 统一跑外部程序：参数永远是数组，不经 shell。
+-- 返回 1) stdout（成功） 2) nil, 可读原因（工具缺失等） 3) nil, nil（用户取消）
+local function run_dialog(argv)
+    local res, launch_error = mp.command_native({
+        name = 'subprocess', playback_only = false,
+        capture_stdout = true, capture_stderr = true,
+        args = argv,
+    })
+    if type(res) ~= 'table' then
+        return nil, string.format('%s 无法启动（%s）',
+            tostring(argv[1]), tostring(launch_error or '命令不存在'))
+    end
+    if tonumber(res.status) ~= 0 then
+        -- zenity / osascript 用非零退出表示"用户取消"，这是正常路径，不报错。
+        return nil, nil
+    end
+    return tostring(res.stdout or '')
+end
 
 local function pwsh_check()
     local arg = {"cmd", "/c", "pwsh", "--version"}
@@ -147,13 +170,33 @@ local function open_files(path, type, i, is_clip)
 end
 
 local function select_folder()
-    if mp.get_property('platform') ~= 'windows' then
-        local res = mp.command_native({
-            name = 'subprocess', playback_only = false, capture_stdout = true,
-            args = { 'zenity', '--file-selection', '--directory', '--title=选择文件夹' },
+    if PLATFORM == 'darwin' then
+        -- osascript 的 choose folder 返回 alias，必须显式取 POSIX path 才能给 mpv 用，
+        -- 而且末尾带路径分隔符，这里统一去掉。
+        local out, launch_error = run_dialog({'osascript', '-e',
+            'POSIX path of (choose folder with prompt "选择文件夹")'})
+        if launch_error then
+            msg.warn('[open_dialog] ' .. launch_error)
+            return nil
+        end
+        if not out then return nil end -- 用户取消：静默
+        local folder = out:match('(.-)[\r\n]*$') or ''
+        folder = folder:gsub('[/\\]+$', '')
+        if folder == '' then return nil end
+        return folder
+    end
+    if PLATFORM ~= 'windows' then
+        local out, launch_error = run_dialog({
+            'zenity', '--file-selection', '--directory', '--title=选择文件夹',
         })
-        if res.status ~= 0 then return nil end -- 用户取消也无需提示错误
-        return res.stdout:match('(.-)[\r\n]*$')
+        if launch_error then
+            msg.warn('[open_dialog] ' .. launch_error .. '；请安装 zenity，或改用 script-message 接口')
+            return nil
+        end
+        if not out then return nil end -- 用户取消也无需提示错误
+        local folder = out:match('(.-)[\r\n]*$') or ''
+        if folder == '' then return nil end
+        return folder
     end
     if not powershell then pwsh_check() end
     local powershell_script = string.format([[&{
@@ -191,14 +234,39 @@ local function select_folder()
 end
 
 local function select_files(filter)
-    if mp.get_property('platform') ~= 'windows' then
-        local res = mp.command_native({
-            name = 'subprocess', playback_only = false, capture_stdout = true,
-            args = { 'zenity', '--file-selection', '--multiple', '--separator=\n', '--title=选择媒体文件' },
-        })
+    if PLATFORM == 'darwin' then
+        -- 多选：AppleScript 只能逐个取 alias，统一转 POSIX path 后按行返回。
+        local script = table.concat({
+            'set theFiles to choose file with prompt "选择媒体文件" with multiple selections allowed',
+            'set output to ""',
+            'repeat with picked in theFiles',
+            'set output to output & (POSIX path of picked) & linefeed',
+            'end repeat',
+            'return output',
+        }, '\n')
+        local out, launch_error = run_dialog({'osascript', '-e', script})
+        if launch_error then
+            msg.warn('[open_dialog] ' .. launch_error)
+            return {}
+        end
         local file_paths = {}
-        if res.status ~= 0 then return file_paths end -- 用户取消也无需提示错误
-        for file_path in string.gmatch(res.stdout, '[^\r\n]+') do
+        if not out then return file_paths end -- 用户取消：静默
+        for file_path in string.gmatch(out, '[^\r\n]+') do
+            table.insert(file_paths, file_path)
+        end
+        return file_paths
+    end
+    if PLATFORM ~= 'windows' then
+        local out, launch_error = run_dialog({
+            'zenity', '--file-selection', '--multiple', '--separator=\n', '--title=选择媒体文件',
+        })
+        if launch_error then
+            msg.warn('[open_dialog] ' .. launch_error .. '；请安装 zenity，或改用 script-message 接口')
+            return {}
+        end
+        local file_paths = {}
+        if not out then return file_paths end -- 用户取消也无需提示错误
+        for file_path in string.gmatch(out, '[^\r\n]+') do
             table.insert(file_paths, file_path)
         end
         return file_paths
@@ -266,16 +334,13 @@ local function import_files(type)
     end
 end
 
--- Returns a string of UTF-8 text from the clipboard
-local function get_clipboard()
-    if mp.get_property('clipboard-backends') ~= nil or mp.get_property_bool('clipboard-enable') then
-        return mp.get_property('clipboard/text', '')
-    end
-    local res = mp.command_native({
-        name = 'subprocess',
-        playback_only = false,
-        capture_stdout = true,
-        args = { 'powershell', '-NoProfile', '-Command', [[& {
+--- 读取剪贴板文本：先走 mpv 原生剪贴板属性，再按平台回退到对应命令行工具。
+--- 原来的实现无条件调用 powershell，在 Linux/macOS 上只会拿到空字符串。
+local function clipboard_read_commands()
+    if PLATFORM == 'darwin' then
+        return {{'pbpaste'}}
+    elseif PLATFORM == 'windows' then
+        return {{'powershell', '-NoProfile', '-Command', [[& {
             Trap {
                 Write-Error -ErrorRecord $_
                 Exit 1
@@ -286,12 +351,55 @@ local function get_clipboard()
             }
             $u8clip = [System.Text.Encoding]::UTF8.GetBytes($clip)
             [Console]::OpenStandardOutput().Write($u8clip, 0, $u8clip.Length)
-        }]] }
-    })
-    if not res.error then
-        return res.stdout
+        }]]}}
+    end
+    return {
+        {'wl-paste', '--no-newline'},
+        {'xclip', '-selection', 'clipboard', '-o'},
+        {'xsel', '--clipboard', '--output'},
+    }
+end
+
+local function get_clipboard()
+    if mp.get_property('clipboard-backends') ~= nil then
+        local native = mp.get_property('clipboard/text', '')
+        if type(native) == 'string' and native ~= '' then return native end
+    end
+    for _, argv in ipairs(clipboard_read_commands()) do
+        local res = mp.command_native({
+            name = 'subprocess', playback_only = false,
+            capture_stdout = true, capture_stderr = true, args = argv,
+        })
+        if type(res) == 'table' and tonumber(res.status) == 0 then
+            local text = tostring(res.stdout or '')
+            if text ~= '' then return text end
+        end
     end
     return ''
+end
+
+--- 写入剪贴板文本：同样的平台分支，文本走 stdin 而不是命令行参数。
+local function clipboard_write_commands()
+    if PLATFORM == 'darwin' then
+        return {{'pbcopy'}}
+    end
+    return {
+        {'wl-copy'},
+        {'xclip', '-selection', 'clipboard', '-i'},
+        {'xsel', '--clipboard', '--input'},
+    }
+end
+
+local function set_clipboard_via_tools(text)
+    for _, argv in ipairs(clipboard_write_commands()) do
+        local res = mp.command_native({
+            name = 'subprocess', playback_only = false,
+            capture_stdout = true, capture_stderr = true, args = argv,
+            stdin_data = text,
+        })
+        if type(res) == 'table' and tonumber(res.status) == 0 then return true end
+    end
+    return false
 end
 
 -- open files from clipboard
@@ -333,10 +441,24 @@ end
 -- sets the contents of the clipboard to the given string
 local function set_clipboard(text)
     msg.verbose('setting clipboard text:', text)
-    if mp.get_property('clipboard-backends') ~= nil or mp.get_property_bool('clipboard-enable') then
+    if mp.get_property('clipboard-backends') ~= nil then
         mp.commandv('set', 'clipboard/text', text)
-    else
-        mp.commandv('run', 'powershell', '-NoProfile', '-command', 'set-clipboard', escape_powershell(text))
+        return
+    end
+    if PLATFORM == 'windows' then
+        local res = mp.command_native({
+            name = 'subprocess', playback_only = false,
+            capture_stdout = true, capture_stderr = true,
+            args = {'powershell', '-NoProfile', '-Command',
+                'Set-Clipboard -Value ' .. escape_powershell(text)},
+        })
+        if type(res) == 'table' and tonumber(res.status) == 0 then return end
+        msg.warn('[open_dialog] set_clipboard 失败：powershell Set-Clipboard 未成功')
+        return
+    end
+    if not set_clipboard_via_tools(text) then
+        local hint = PLATFORM == 'darwin' and 'pbcopy' or 'wl-copy / xclip / xsel'
+        msg.warn('[open_dialog] set_clipboard 失败：没有可用的剪贴板工具（需要 ' .. hint .. '）')
     end
 end
 
@@ -346,7 +468,8 @@ mp.register_script_message('import_clipboard', import_clipboard)
 mp.register_script_message('set_clipboard', set_clipboard)
 mp.register_script_message('select_folder', function(script_name)
     local folder_path = select_folder()
-    mp.commandv('script-message-to', script_name, 'select_folder_reply', folder_path)
+    -- 取消时回空串而不是 nil：mp.commandv 不接受 nil 参数，否则取消会变成脚本报错。
+    mp.commandv('script-message-to', script_name, 'select_folder_reply', folder_path or '')
 end)
 mp.register_script_message('select_files', function(script_name, filter)
     local file_paths = select_files(filter)

@@ -11,6 +11,11 @@ local mp = require('mp')
 local msg = require('mp.msg')
 local utils = require('mp.utils')
 
+-- 平台判定走 mpv 属性（windows / darwin / linux），package.config 只作为兜底：
+-- 0.41 一定有 platform 属性，但脚本也可能被独立 Lua 解释器加载做语法/逻辑验证。
+local IS_WINDOWS = mp.get_property('platform') == 'windows'
+    or (package.config or ''):sub(1, 1) == '\\'
+
 local function join(...)
     return table.concat({...}, '/')
 end
@@ -58,13 +63,13 @@ end)
 hide_timer:kill()
 
 local colors = {
-    base = '2e1e1e',
-    surface = '443231',
-    text = 'f4d6cd',
-    blue = 'fab489',
-    green = 'a1e3a6',
-    yellow = 'afe2f9',
-    red = 'a88bf3',
+    base = '21222c',
+    surface = '343746',
+    text = 'f8f8f2',
+    blue = 'bd93f9',
+    green = '50fa7b',
+    yellow = '8be9fd',
+    red = 'ff5555',
 }
 
 local function say(level, text)
@@ -172,6 +177,28 @@ local function exists(path, kind)
     return info and (not kind or info.is_dir == (kind == 'dir'))
 end
 
+-- PowerShell 单引号字面量：只需把 ' 写成 ''。
+local function ps_quote(value)
+    return "'" .. tostring(value):gsub("'", "''") .. "'"
+end
+
+-- 建目录：Unix 用 mkdir -p；Windows 没有 -p，改用 PowerShell 的 New-Item -Force。
+-- 两者都是 argv 数组，不拼 shell 字符串，路径里的空格/Unicode 由参数本身承载。
+local function make_directories(paths)
+    if IS_WINDOWS then
+        for _, path in ipairs(paths) do
+            local script = 'New-Item -ItemType Directory -Force -LiteralPath '
+                .. ps_quote(path) .. ' | Out-Null'
+            local ok, output = command({'powershell', '-NoProfile', '-Command', script})
+            if not ok then return false, output end
+        end
+        return true
+    end
+    local args = {'mkdir', '-p'}
+    for _, path in ipairs(paths) do args[#args + 1] = path end
+    return command(args)
+end
+
 local function safe_relative(path)
     return type(path) == 'string'
         and path ~= ''
@@ -265,7 +292,7 @@ end
 local function move_to_backup(path, name, label)
     if not exists(path) then return nil end
     local directory = join(backup_store, name)
-    local ok, output = command({'mkdir', '-p', directory})
+    local ok, output = make_directories({directory})
     if not ok then return nil, output end
     local backup = unique_path(join(directory, timestamp() .. '-' .. label))
     local moved, move_error = os.rename(path, backup)
@@ -404,6 +431,11 @@ local function check_only(source, mirror, head, state, index, total)
 end
 
 local function stage_source(source, mirror, head, index, total)
+    -- Windows 上 replace 已被 process_source 拦下；这里再兜一层，确保
+    -- git worktree / cp -a / rm -rf 这套 Unix 流程绝不会跑起来。
+    if IS_WINDOWS then
+        return nil, 'Windows 暂不支持 replace 模式的文件暂存（请改用 check 模式）'
+    end
     local token = source.name .. '-' .. timestamp()
     local worktree = unique_path(join(worktree_store, token))
     local staging = unique_path(join(staging_store, token))
@@ -419,7 +451,7 @@ local function stage_source(source, mirror, head, index, total)
         return nil, 'upstream path does not exist: ' .. source.source
     end
 
-    ok, output = command({'mkdir', '-p', staging})
+    ok, output = make_directories({staging})
     if not ok then
         command({'git', '--git-dir=' .. mirror, 'worktree', 'remove', '--force', worktree})
         return nil, output
@@ -449,8 +481,11 @@ local function stage_source(source, mirror, head, index, total)
 end
 
 local function install_staging(source, destination, staging)
+    if IS_WINDOWS then
+        return nil, 'Windows 暂不支持 replace 模式的文件安装（请改用 check 模式）'
+    end
     local parent = destination:match('^(.*)/[^/]+$') or root
-    local ok, output = command({'mkdir', '-p', parent})
+    local ok, output = make_directories({parent})
     if not ok then return nil, output end
 
     local backup
@@ -528,6 +563,15 @@ end
 
 local function process_source(source, state, index, total)
     if not valid_source(source) then return false, 'invalid source entry', 'error' end
+
+    -- Windows 暂不支持 replace：明确警告后安全跳过。这里必须发生在 ensure_mirror /
+    -- staging 之前，否则会留下半个暂存目录或半更新状态。
+    if (source.mode or 'check') == 'replace' and IS_WINDOWS then
+        local detail = 'Windows 暂不支持 replace，请用 check 模式；本条已跳过，未改动任何文件'
+        show_progress(index, total, source.name, detail, 1, 'yellow')
+        return true, detail, 'skipped'
+    end
+
     local migrated, migration_detail = migrate_legacy_git(source)
     if not migrated then return false, migration_detail, 'error' end
 
@@ -552,7 +596,14 @@ local function run_update()
         return
     end
 
-    local ok, output = command({'mkdir', '-p', store, backup_store, staging_store, worktree_store})
+    -- staging / worktree 只服务 replace 模式。Windows 上不创建它们，避免
+    -- "跳过了 replace 却留下空 staging 目录"。
+    local directories = {store, backup_store}
+    if not IS_WINDOWS then
+        directories[#directories + 1] = staging_store
+        directories[#directories + 1] = worktree_store
+    end
+    local ok, output = make_directories(directories)
     if not ok then
         say('error', output)
         finish_progress('Could not prepare update storage', 'red')
@@ -560,7 +611,10 @@ local function run_update()
     end
 
     local state = load_state()
-    local stats = {updated = 0, available = 0, unchanged = 0, initialized = 0, protected = 0, error = 0}
+    local stats = {
+        updated = 0, available = 0, unchanged = 0, initialized = 0,
+        protected = 0, skipped = 0, error = 0,
+    }
     say('info', 'checking ' .. #sources .. ' source(s)...')
 
     for index, source in ipairs(sources) do
@@ -572,7 +626,8 @@ local function run_update()
         local source_ok, detail, kind = process_source(source, state, index, #sources)
         if source_ok then
             stats[kind] = (stats[kind] or 0) + 1
-            local level = (kind == 'available' or kind == 'protected') and 'warn' or 'info'
+            local level = (kind == 'available' or kind == 'protected' or kind == 'skipped')
+                and 'warn' or 'info'
             say(level, name .. ': ' .. detail)
         else
             stats.error = stats.error + 1
@@ -582,11 +637,12 @@ local function run_update()
     end
 
     local summary = string.format(
-        'Done: %d updated, %d available, %d unchanged, %d protected, %d error',
-        stats.updated, stats.available, stats.unchanged + stats.initialized, stats.protected, stats.error
+        'Done: %d updated, %d available, %d unchanged, %d protected, %d skipped, %d error',
+        stats.updated, stats.available, stats.unchanged + stats.initialized,
+        stats.protected, stats.skipped, stats.error
     )
     local tone = stats.error > 0 and 'red'
-        or (stats.available + stats.protected > 0 and 'yellow' or 'green')
+        or (stats.available + stats.protected + stats.skipped > 0 and 'yellow' or 'green')
     say(stats.error > 0 and 'error' or 'info', summary)
     finish_progress(summary, tone)
 end

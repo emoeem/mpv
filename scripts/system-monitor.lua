@@ -223,7 +223,7 @@ local function render()
     local parts = {}
     for _, line in ipairs(lines) do
         parts[#parts + 1] = string.format(
-            '{\\fnMFGA YouHei\\fs%d\\c&HCDD6F4&\\3c&H11111B&\\alpha&H30&\\bord1.2\\shad0}\\h%s\\N',
+            '{\\fnMFGA YouHei\\fs%d\\c&HF8F8F2&\\3c&H191A21&\\alpha&H30&\\bord1.2\\shad0}\\h%s\\N',
             fs, line)
     end
     -- 整块放在一个 an1 定位事件里（左下角锚点），行间用 \N

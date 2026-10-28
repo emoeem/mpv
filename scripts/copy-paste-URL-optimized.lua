@@ -169,18 +169,39 @@ local function get_native_clipboard_text()
     return nil
 end
 
-local function get_linux_clipboard_text_async(callback)
-    local candidates = {
+-- 按平台挑读取命令：macOS 用 pbpaste，Windows 用 PowerShell Get-Clipboard，
+-- Linux 保持 wl-paste / xclip / xsel 的既有顺序。参数一律数组，不经 shell。
+local function clipboard_candidates(platform)
+    if platform == "darwin" then
+        return {{"pbpaste"}}
+    elseif platform == "windows" then
+        return {
+            {"powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"},
+            {"pwsh", "-NoProfile", "-Command", "Get-Clipboard -Raw"},
+        }
+    end
+    return {
         {"wl-paste", "--no-newline"},
         {"xclip", "-selection", "clipboard", "-o"},
         {"xsel", "--clipboard", "--output"},
     }
+end
+
+local function clipboard_hint(platform)
+    if platform == "darwin" then return "pbpaste" end
+    if platform == "windows" then return "PowerShell（powershell 或 pwsh）" end
+    return "wl-paste、xclip 或 xsel"
+end
+
+local function get_system_clipboard_text_async(callback)
+    local platform = tostring(mp.get_property("platform") or "")
+    local candidates = clipboard_candidates(platform)
     local index = 0
     local function try_next()
         index = index + 1
         local args = candidates[index]
         if not args then
-            callback(nil, "无法读取剪贴板（需要 wl-paste、xclip 或 xsel）")
+            callback(nil, "无法读取剪贴板（需要 " .. clipboard_hint(platform) .. "）")
             return
         end
         mp.command_native_async({name="subprocess", args=args, playback_only=false,
@@ -207,10 +228,10 @@ paste_handler = function()
         return
     end
 
-    -- Linux 剪贴板工具作为兼容旧内核的兜底，异步执行避免阻塞 mpv UI。
+    -- 系统剪贴板工具作为兼容旧内核/旧 mpv 的兜底，异步执行避免阻塞 mpv UI。
     request_in_flight = true
     set_binding_enabled(false)
-    get_linux_clipboard_text_async(handle_clipboard_text)
+    get_system_clipboard_text_async(handle_clipboard_text)
 end
 
 -- path 变化负责在返回启动页时重新启用绑定。

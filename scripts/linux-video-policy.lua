@@ -5,6 +5,19 @@
 
 local mp = require 'mp'
 local msg = require 'mp.msg'
+
+-- 平台守卫必须在任何其它东西之前执行：非 Linux 直接 return，不 require 平台相关模块、
+-- 不注册观察者/定时器、不写任何属性（包括下面的颜色管理写入）。
+-- 这里不用 pcall 兜底：get_property('platform') 在 mpv 0.36+ 一定有值，读不到就直接跳过
+-- 并说明原因，比"报错但继续跑 Linux 专属逻辑"安全。
+local platform = mp.get_property('platform')
+if platform ~= 'linux' then
+    msg.verbose(string.format(
+        'linux-video-policy: 跳过（platform=%s）；本脚本只负责 Linux 的 HDR/SDR 归一化与 RIFE 准入',
+        tostring(platform or 'unknown')))
+    return
+end
+
 local utils = require 'mp.utils'
 local options = require 'mp.options'
 
