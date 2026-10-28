@@ -1,5 +1,346 @@
 # 更新记录
 
+## 2026-10-28 · 仓库同步：本轮全部改进入库并推送，文档补齐
+
+前几天的工作一直只在工作区（10 个本地提交 + 40 个未提交文件），本次一次性收口。
+
+### 提交拆分
+
+| 提交 | 内容 |
+| --- | --- |
+| `feat(deploy)` | `platform.conf`、`deploy.py`、`fonts/MFGA/` 忽略规则首次入库 |
+| `feat(uosc)` | 时间轴坐标修复、信息去重、控件自动隐藏、统计按钮状态化 |
+| `chore(config)` | 配置审阅修复：Dracula 配色统一、`hwdec`/`ao` 交给平台层、脚本可移植性 |
+| `docs` | README / CHANGELOG / PORTABILITY-AUDIT 对齐当前配置 |
+
+### 一个容易误读的 diff
+
+`scripts/uosc/elements/Timeline.lua` 的全量 diff 是 **939 增 / 722 删**，看着像整体重写，
+但 `git diff -w` 只有 **228 增 / 11 删**——差额来自 HEAD 里那份文件是 **CRLF/LF 混排**，
+本次被归一为纯 LF。审这份 diff 时**必须加 `-w`**，否则会把行尾变化误判成逻辑改动。
+
+### 文档补齐
+
+| 位置 | 补充 |
+| --- | --- |
+| 目录结构 | `platform.conf`、`deploy.py` |
+| 主要文件 | 同上两行的职责说明 |
+| OSD、字体与 Dracula | `osd-margin-y=84` 的由来（顶栏 48 高胶囊栏压住左上 OSD） |
+| 脚本功能 · 界面 | `stats-indicator.lua` 与 `stats-visible` 属性的映射关系 |
+
+### 验证
+
+`python3 audit/audit_bindings.py`、`audit_readme_keys.py`、`audit_theme_colors.py` 三个脚本
+全部 exit 0；`luajit loadfile` 覆盖本次改动的全部 Lua 文件；`git diff --check` 无空白错误。
+
+## 2026-10-28 · 统计信息按钮改成带状态的开关（点击开 / 再点关 / 高亮提示）
+
+用户反馈：底栏「统计信息」按钮点一下会显示面板，但按钮没有状态反馈，也关不掉。
+
+**根因**：`controls` 串里这一项是
+`command:analytics:script-binding stats/display-stats:script-binding stats/display-stats-toggle`。
+左键调的是 `display-stats`，它走 `process_key_binding(oneshot=true)`——只闪现
+`duration`（4s）就自动清屏，**永远不进入「常驻」状态**，所以"再点一下"只会重新闪现。
+只有右键才是 toggle，而他点的是左键。
+
+### 改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `scripts/stats.lua` | `clear_screen()` 写 `user-data/mpv-emo/stats-visible=false`；显示分支末尾写 `true`。`clear_screen()` 是唯一关闭出口（toggle 关闭 / oneshot 到期），所以覆盖所有关闭路径 |
+| `scripts/stats-indicator.lua`（新增） | 观察该属性，通过 uosc 官方 `set-button` 消息更新 `stats_toggle` 按钮：`active` 高低、tooltip 文案、左键 toggle、右键 oneshot |
+| `script-opts/uosc.conf` | 两处 `command:analytics:...?统计信息` → `button:stats_toggle`（idle 排 + video/audio 排） |
+| `scripts/uosc/elements/Controls.lua` | `button:` 分支补回 `stats_toggle → narrow_role='stats'` |
+
+### 一个自己引入又修掉的回归
+
+换成 `button:` 之后，`narrow_role='stats'` 丢了——原来只有 `command:` 分支在
+`params[1]=='analytics'` 且命令含 `script-binding stats/` 时才设置它。
+`Controls.lua` 里 `portrait_transport`（高 > 宽）会隐藏**所有没有 `narrow_role` 的控件**，
+于是 948×1010 这类高窄窗口下统计按钮直接消失。已在 `kind == 'button'` 分支按名字补回。
+
+### 验证（真实 mpv / grim 截图 + IPC 读属性）
+
+| 场景 | `user-data/mpv-emo/stats-visible` | 按钮区 `#BD93F9` 像素 |
+| --- | --- | --- |
+| 全屏 1920×1080 初始 | property not found（未写过） | 0 |
+| toggle #1 | `true` | 1566（区域 1500,994–1551,1045） |
+| toggle #2 | `false` | 0 |
+| `i`（oneshot）显示中 | `true` | — |
+| oneshot 4s 到期后 | `false`（`clear_screen` 自动复位） | — |
+| 高窄窗 948×1010 开启 | `true` | 1536（区域 1008,994–1058,1045） |
+| 同窗口关闭 | `false` | 0 |
+
+idle 排（不加载文件）同样验过开关与高亮，日志 0 error。
+
+**未实测**：tooltip 文案只在截图里没抓到（合成 `mouse` 事件在 niri 下不产生
+uosc 的 hover tooltip 序列），文案本身已写入按钮数据。
+
+## 2026-10-28 · 修复：分段时间轴点哪不跳哪（坐标系错位）
+
+用户实测反馈「点击时间轴不播放到鼠标位置」。用真实运行几何定位，不是视觉误差：
+
+```
+[render] bax=91.0 bbx=846.3 segs=10 usable=674.30 gap=9.00 x0=91.04
+         t=92.00 ph=497.5  back=70.99  dPH=-21.009
+```
+
+圆点画在 92s（x=497.5）的位置，同一坐标反算回来却是 **71s**，整片 171.6s 上偏差 12%。
+
+**根因**：`Timeline:get_time_at_x()` 里两套坐标系混用。`lx` 先减掉 `self.ax + inset_l`
+变成相对轴起点的坐标，`cursor` 却从绝对坐标 `layout.x0`（= `bax`）开始累加，
+两边各扣了一次轴起点偏移，结果整体多走了约 8 个段宽。
+
+**修复**：`lx = x - layout.x0`、`cursor = 0`，与渲染、与圆点绘制共用同一份几何。
+
+验证（真实 mpv 0.41 / 948×1010 窗口 / 171.6s 片源，7 点全轴采样）：
+
+| x | 期望 | 实际 | 误差 |
+| --- | --- | --- | --- |
+| 120 | 7.37s | 7.38s | +0.00 |
+| 250 | 35.88s | 35.88s | -0.00 |
+| 420 | 74.57s | 74.58s | +0.02 |
+| 600 | 115.80s | 115.83s | +0.04 |
+| 700 | 137.30s | 137.33s | +0.03 |
+| 780 | 154.74s | 154.75s | +0.01 |
+| 840 | 170.01s | 170.04s | +0.03 |
+
+### 同时统一了段模式下的「时间 → x」
+
+`t2x()` 是线性换算，而分段绘制里 gap 占掉了真实像素，两者不一致。
+新增 `time2x()`：`seg_active` 时走与绘制/点击完全相同的分段几何，否则回落 `t2x()`。
+替换了四处仍在用线性映射的调用点——章节 range 刻度、缓存纹理、intro/outro 手柄。
+
+### 修正：中文数字章节编号未去重
+
+上一版的去重正则只认阿拉伯数字，`第二章 相遇` 会被拼成「第 2 章 · 第二章 相遇」。
+改为 `第[0-9一二三四五六七八九十百千零两]+[章话集幕回节]`，并允许编号出现在标题中间。
+
+## 2026-10-28 · UI 第三轮：信息去重、控件自动隐藏、时间轴为核心
+
+设计原则：**顶栏说「在看什么」，时间轴说「看到哪里」，技术信息默认收起。**
+
+### 1. 时间语义收口到时间轴（消除三处重复）
+
+- 顶栏章节胶囊不再显示播放时间，只显示「第 N 章 · 标题」；时间未知/无章节时整颗隐藏。
+- 底栏 `TimeDisplay`（`当前 / -剩余`）从 `controls` 串里移除，连带删掉它两侧的一处 `space`。
+- 时间轴左端=当前播放位置、右端=总时长，成为唯一完整的进度信息源。
+- 同一屏里不再同时出现「总时长」与「剩余」两种算法。
+
+### 2. 章节编号去重
+
+`TopBar:get_now_playing_chapter_text()` 现在输出「第 N 章 · 标题」，
+但标题自己已含编号（`第 N 章/话/集/幕/回`、`Chapter N`、`EP N`）时原样保留，不拼第二次。
+标题为空时退回「第 N 章」，`[autoskip]` 内部章节仍视为无章节。
+
+### 3. 顶栏跟随控制区显隐（`autohide=yes`）
+
+- 根因不是 `top_bar=always`：该值只控制「是否允许渲染」，可见性仍走 proximity。
+  真正让顶栏常驻的是 `script-opts/uosc.conf` 的 `autohide=no`。
+- 改为 `autohide=yes`：播放中鼠标静止 1s 后，顶栏/底栏/时间轴一起淡出。
+- 新增 `TopBar:get_visibility()` 覆写：**取自身与控制区的较大可见度**，
+  避免「底栏已经展开、顶栏还藏着」的分两次给信息；幕布/菜单打开时不把顶栏拽出来。
+- `timeline_persistency=paused`（原有配置）继续生效：暂停时整个控制区保持展开。
+  实测 `--pause=yes` 会被 uosc 的 `keep-open-pause=no` 复位，验证必须用 IPC `set pause true`。
+
+### 4. 媒体信息胶囊改为按需显示
+
+新增 `timeline_media_info`（`auto` 默认 / `always` / `never`）：
+- `auto`：仅在时间轴真正展开（visibility > 0.5）时绘制，鼠标离开即随底栏淡出；
+- 悬停时间轴出现 thumbfast 缩略图卡片时让位，避免两层信息互相遮挡；
+- `never` 时不画，技术信息仍可用 stats 面板查看（能力未删）。
+
+### 5. 顶栏胶囊背景与窄窗优先级
+
+- `opacity.title` 0.5 → 0.62，胶囊底衬在亮画面上可辨，仍保持半透明不变成色块。
+- 章节胶囊先给文件名预留约 8 字的最小可读宽度：565px 窗口下章节胶囊自动消失、
+  标题保留「天气之子.Weatherin…」，不再出现「天汽…」把标题压没的情况。
+
+### 6. 验证（全部实机，Linux/Wayland/niri/mpv 0.41）
+
+| 场景 | 结果 |
+| --- | --- |
+| 播放中鼠标静止 3.5s | 顶栏+底栏+媒体信息全部淡出 |
+| 暂停时鼠标静止 4s | 顶栏+底栏+时间轴保持（`timeline_persistency=paused`） |
+| 鼠标靠近底栏 | 顶栏同时出现，章节胶囊 + 引擎胶囊 + 文件名截断正常 |
+| 悬停时间轴 | 章节 tooltip「第 1 章 序幕」+ 缩略图，媒体胶囊让位 |
+| 无章节文件 | 章节胶囊消失，时间轴退化为装饰分段 |
+| 565 / 948 / 1904 px 三档 | 无重叠；窄窗优先保标题 |
+| 经典 `bar` 样式 | 细线 + 菱形标记照旧，无报错 |
+
+## 2026-10-28 · UI 打磨第二轮：拖动映射修正、分段缝隙、播放圆点、OSD 让位
+
+这一轮的四个问题都是**实机截图 + 像素测量**发现的，不是看代码猜的。
+
+### 1. 拖动/点击的时间映射与画出来的分段不一致（真 bug）
+
+- 现象：分段模式拖动时间轴时，白色播放圆点会**离开光标**，越到后段偏得越多。
+- 根因：`Timeline:get_time_at_x()` 只扣了两端时间标签的留白，没有扣段间 `gap`；
+  而绘制走的是 `usable = bar_width - gap*(n-1)`。两套坐标，越到后面差得越多。
+- 数值（`/tmp/rt.py` 往返校验，复刻同一份公式）：
+  | 场景 | 旧反向最大误差 | 新反向最大误差 |
+  | --- | --- | --- |
+  | 4 章 / 112s / 670px | 0.84s | 0.000000s |
+  | 24 装饰段 / 2h / 1400px | 37.85s | 0.000000s |
+- 修法：渲染时把分段几何缓存进 `self.seg_layout`（`segments/usable/gap/x0`），
+  点击按同一份几何反算；落在缝隙里收口到该段起点；收起态（细线）与经典样式仍走线性换算，
+  并把缓存置空，避免用过期分段。
+- 实机验证：t=62.5s 时圆点画在 x=1001.5，按旧公式反算该坐标得出 70.6s（偏 8.1s）；
+  新公式反算得 62.5s。
+
+### 2. 段间缝隙里出现亮色小菱形
+
+- 根因：分段条上又叠了一层 uosc 原生"章节菱形标记"（`\bord` 描边 + `fg` 填充），
+  正好落在段间缝隙里，看起来像脏点。
+- 修法：`seg_active` 时不画章节菱形（段本身已经表达章节边界），A-B 循环标记保留，
+  经典 `bar`/`line` 样式照旧。
+
+### 3. 播放位置圆点
+
+- 半径从 `bar_height*0.85` 收到 `0.62`，并夹在轴内（0%/100% 时不再探到两端时间文字上）；
+- 颜色改前景色 + 不再叠"底色大圆"——底色大圆会在已播段里挖出一圈黑环。
+
+### 4. 装饰段数量自适应 + 间距跟条高走
+
+- 固定 24 段 → `clamp(6, round(bar_width / (56*scale)), 24)`：窄窗少段、宽窗多段，
+  段宽稳定在 ~56px，间距占比恒定（670px 轴上从 24 段降到 ~10 段，不再糊成一条）。
+- `gap = max(3, round(bar_height*0.5))`，且 `radius` 受 `gap` 与条高共同约束，
+  缝隙读作"槽"而不是"菱形孔"。
+
+### 5. OSD 文本被顶栏压住
+
+- 现象：跳转反馈、`show-text` 一律画在左上，正好压在文件标题胶囊上。
+- 根因：`osd-align-x=left` / `osd-align-y=top` + `osd-margin=16`，而顶栏改成 48 高的胶囊栏。
+- 修法：`mpv.conf` 加 `osd-margin-y=84`（≈ `top_bar_size 48 × scale 1.3` + 原边距 16），
+  实机 `show-text HELLO-OSD` 已落在顶栏下方。
+
+### 6. 标题截断尾巴
+
+- `fit_text_to_width()` 在截断点吃掉尾部 `. : · - _ , 空格` 再接「…」，
+  不再出现 `2019....` 这种四个点。
+
+### 校验
+
+- `luajit -e loadfile` 两个改动文件通过；`git diff --check` 干净；
+  `audit_bindings.py` / `audit_readme_keys.py` / `audit_theme_colors.py` 三个 exit 0 PASS。
+- 实机画面：1080p / ~840px 窗 / 有章节 / 无章节 / 经典 bar 回退，日志 0 error、0 traceback。
+
+## 2026-10-28 · 三平台适配：顶栏/分段进度条收口、platform.conf、Lua 跨平台、deploy.py
+
+本轮把「界面像 Mpv∞」和「能在 Windows/macOS 跑起来」拆成可验收的两条线，
+所有结论都有实机命令或截图证据；本机只能验证 Linux，Windows/macOS 一律写「待实测」。
+
+### Phase A · 顶栏与进度条
+
+- 顶栏改为右侧胶囊排：`文件标题 → 「章节 · 当前时间」→ 引擎状态 → 圆形窗口控制`，
+  全部从窗口控制左边缘向左排，标题最后拿剩余宽度，互不重叠。
+  - 新增 `TopBar:get_now_playing_chapter_text()` / `get_now_playing_time_text()`：
+    有章节显示「章节名 · HH:MM:SS」，无章节只显示时间，`[autoskip]` 内部章节视为无章节，
+    时间未知（待机/直播未起播）整颗胶囊隐藏，不画空占位。
+  - 文件名过长用 UTF-8 安全的 `fit_text_to_width()` 加「…」，不再硬裁半个字符；
+    空间不足时先丢章节名、再整颗隐藏，绝不压到右侧胶囊或窗口按钮。
+  - 引擎胶囊读 `user-data/hdr-pipeline/mode`（`get_property_native`，`native→原生`、
+    `toys→Toys`），点击发 `script-message-to hdr_pipeline toggle`；脚本未加载则隐藏。
+    `toys` 切换已实机截图验证，胶囊同步更新。
+  - 旧版「标题下方第二行章节 + 剩余时间」删除（同一信息不再出现两次）；
+    `top_bar_now_playing=no` 可回退旧布局的行为开关。
+- 新增配置 `top_bar_capsule`（默认 yes）：标题/进度/引擎胶囊与窗口按钮用全圆角，
+  关掉回退 `border_radius` 经典圆角。`top_bar_size=48`，与 `controls_size=40`、
+  `scale=1.3` 协调（实机 1080p 与 948px 窄窗均无重叠）。
+- 进度条 `timeline_style=segments` 重做：
+  - **有真实章节时 1 段 = 1 章**（2~40 章），无章节时才用 24 个等宽装饰段；
+    装饰段只服务视觉节奏，不当虚假章节。
+  - 段内分别画未播轨道、已缓冲（淡）、已播放（强调色部分填充），段间距按条高收窄，
+    极窄窗口自动压缩间距；播放位置用圆点表示，不单靠颜色。
+  - 两端新增当前时间 / 总时长文字（`state.time_human` 与 `format_time(duration)`），
+    先量宽再从两端预留空间；放不下整对隐藏。`Timeline:get_time_at_x()` 同步扣除这段
+    留白，点击/拖动坐标不会因为标签而偏移。
+  - 收起态（只剩底部细线）仍走原经典细线，分段块只在真正展开时绘制。
+- 未新增投屏 / Cast / 纯音频聆听 / 移动端传输入口（全仓库 grep 复核：`投屏|Cast|DLNA|纯音频`
+  只命中注释与文档）。字幕、音轨、章节、截图、缩放、去黑边、补帧、键盘映射全部保留。
+
+### Phase B · 平台分流
+
+- 新增 `platform.conf`，由 `mpv.conf` 以 `include=~~/platform.conf` 引入：
+  `[platform-linux]` → `gpu-context=waylandvk` + `ao=pipewire` +
+  `hwdec=nvdec-copy,vaapi-copy,auto-copy-safe`；`[platform-windows]` → `ao=wasapi` +
+  `hwdec=nvdec-copy,d3d11va-copy,auto-copy-safe`；`[platform-macos]` →
+  `ao=coreaudio` + `hwdec=videotoolbox,auto-copy-safe`。
+  macOS 条件写 `get("platform") == "darwin" or ... == "macos"`——mpv 在 macOS 报的是
+  `darwin`，只写 `macos` 会让整条 profile 永不生效。
+- `mpv.conf`：删除硬编码 `gpu-context=waylandvk` 与 `ao=pipewire`；全局
+  `hwdec=nvdec-copy,auto-copy-safe` 移到 `include` **之前**。原因不是风格：
+  实测 mpv 按配置出现顺序取值，全局项写在 include 之后会反向覆盖 profile
+  （复现：profile 设 `ao=pipewire/hwdec=nvdec-copy`，之后写 `ao=null/hwdec=no`，
+  运行值就是 `null/no`）。
+- `profiles.conf` 的 `[游戏]` 移除 `gpu-api=vulkan` / `gpu-context=waylandvk`
+  强制项，避免无 Vulkan 的 Windows 机器初始化失败；Linux 仍由 platform profile
+  注入 waylandvk。`--profile=游戏` 实机复核：`gpu-context=waylandvk`、
+  `video-sync=display-resample`、`vo-configured=True`。
+- 实机运行值（IPC）：`platform=linux`、`gpu-context=[waylandvk]`、
+  `ao=[pipewire]`、`current-ao=pipewire`、`hwdec=[nvdec-copy,vaapi-copy,auto-copy-safe]`。
+
+### Phase C · Lua 跨平台
+
+- `linux-video-policy.lua`：`require 'mp'` 之后、其它 require 之前加平台守卫，
+  非 Linux 直接 `msg.verbose` + `return`，不注册观察者/定时器、不写色彩管理属性。
+- `screenshot-to-clipboard.lua`：Wayland `wl-copy` / X11 `xclip -t image/png -i` /
+  Windows PowerShell `Clipboard::SetImage`（STA + 单引号转义）/ macOS
+  `osascript … «class PNGf»`；复制的是**图像数据**，成败都清理临时文件，三类失败
+  都给出可读 OSD。mpv 0.41 的 `stdin_data` 拒绝含 NUL 的二进制（PNG 必含 0x00），
+  Wayland 走常量 `sh -c … < "$1"`，路径只经位置参数，不做字符串拼接。
+- `open_dialog.lua`：平台判断改用 `mp.get_property('platform')`；macOS 新增
+  `choose folder` / `choose file … multiple selections` + `POSIX path of`；
+  取消（zenity/osascript 非零退出）静默返回，不再当错误；顺带修掉 Linux 也会调
+  powershell 的剪贴板兜底。
+- `online-media.lua` + `script-opts/online_media.conf`：Python 解析顺序
+  `~~/online-media/runtime/bin/python3` → Windows `Scripts/python.exe` → PATH
+  `python3`/`python`；`youtube_js_runtime` / `youtube_ytdl` 默认留空并走 PATH
+  （Windows 试 `.exe/.cmd/.bat`），非空配置原样尊重；纯 Lua PATH 扫描，无 shell。
+  实机日志：`python=…/runtime/bin/python3 (bundled)`、`deno=/usr/bin/deno (PATH)`、
+  `yt-dlp=/usr/bin/yt-dlp (PATH)`；PATH 清空时三项 missing + 可读告警，脚本不报错。
+- `copy-paste-URL-optimized.lua`：读取剪贴板加 `pbpaste`（darwin）与
+  `Get-Clipboard -Raw`（windows），Linux 的 `wl-paste`/`xclip`/`xsel` 顺序不变。
+- `manager.lua`：Windows 下 `replace` 在 `ensure_mirror` 之前拦下 → warn + `skipped`，
+  不进 staging、不执行 `git`/`env`/`cp -a`/`rm -rf`；`mkdir -p` 换 `make_directories()`；
+  Windows 不创建 staging/worktrees 目录；`check` 模式完全不变。
+- `rife.lua`：缓存候选 `~~cache` → `XDG_CACHE_HOME` → `HOME/.cache` →
+  Windows `TEMP`/`TMP` → `%LOCALAPPDATA%\mpv\cache` → 系统临时目录；删除全部
+  `os.execute("mkdir -p")`，分平台建目录；Linux 缓存路径不变。
+
+### Phase D · 部署工具与文档
+
+- 新增 `deploy.py`（仅标准库，Python 3.9+）：`--check` / `--prepare` /
+  `--fonts-dir` / `--skip-fonts` / `--json` / `--timeout`；四态
+  `available / degraded / unavailable / unverified`，退出码 0/2。
+  区分「检测到可执行文件」与「验证了后端」：硬解运行时在无窗口环境无法验证，
+  一律 `unverified`。
+- `--prepare` 幂等：运行时目录已存在则跳过；用户字体四字重齐全才复制到
+  `fonts/MFGA/`，缺字重整体跳过并报缺哪几个。`.gitignore` 新增 `fonts/MFGA/`，
+  126 MiB 字体不进 git（复制后 `git status fonts/` 为空，已实测）。
+- README 新增「三平台部署」章节；PORTABILITY-AUDIT 追加实现位置 / 能力矩阵 /
+  待验证清单与本轮运行时证据。
+
+### Phase E · 验证
+
+- Lua：`git diff --name-only | grep .lua` 共 20 个文件，`luajit -e "assert(loadfile(...))"`
+  全部通过（mpv 运行时是 LuaJIT）。`luac -p`（Lua 5.4）对
+  `scripts/uosc/lib/menus.lua` 报 `attempt to assign to const variable 'directory'`
+  ——HEAD 版本同样报，属 Lua 5.4 把 for 控制变量当常量的版本差异，不是回归。
+- 实机 UI（mpv 0.41 / Wayland / niri）：1080p 与 948px 窄窗截图确认顶栏胶囊排、
+  章节·时间、原生/Toys 切换、分段进度条两端时间、无章节 24 段、待机隐藏时间胶囊；
+  全程无 Lua 报错（`fresh.log` 只有 pipewire 状态日志）。
+- 剪贴板端到端：清空后触发 `script-message-to screenshot_to_clipboard screenshot-to-clipboard`，
+  `wl-paste -t image/png` 读回 960×540 PNG（测试片源分辨率），证明写的是图像而非路径。
+- 配置：`mpv --config-dir=~/.config/mpv` 实机启动 + IPC 读取 `platform/gpu-context/ao/
+  current-ao/hwdec/chapter-list`；`--profile=游戏` 复核无初始化失败。
+- 仓库：`git diff --check` 无输出（exit 0）；`audit/audit_bindings.py`、
+  `audit_readme_keys.py`、`audit_theme_colors.py` 三个脚本 exit 0 且结论 PASS；
+  `python3 deploy.py --check`、`--prepare`（连跑两次验证幂等）均 exit 0。
+- 未实测（明确列出，不冒充通过）：鼠标拖动/点击时间轴的自动化（mpv IPC 的合成
+  mouse 事件在本机不触发 uosc 的 zone，需桌面手动点一次）、悬停态视觉、
+  Windows/macOS 的 wasapi/coreaudio/videotoolbox/PowerShell 剪贴板/osascript 弹窗。
+
 ## 2026-10-28 · 审计脚本入库与配置卫生
 
 - 新增 `audit/` 目录：三个可复跑的一致性检查脚本（`audit_bindings.py` 按键

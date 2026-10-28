@@ -25,6 +25,7 @@
 - [脚本功能](#脚本功能)
 - [快捷键](#快捷键)
 - [第三方更新器](#第三方更新器)
+- [三平台部署](#三平台部署)
 - [依赖与注意事项](#依赖与注意事项)
 - [Yaozhi 可移植性审计](PORTABILITY-AUDIT.md)
 - [更新记录](CHANGELOG.md)
@@ -83,6 +84,8 @@ luac -p scripts/uosc/main.lua \
 ├── inputevent_key.conf              # 单击、双击、长按等增强键位
 ├── profiles.conf                    # 游戏、电影、动画、HDR 等场景 profile
 ├── menu.conf                        # select.lua 菜单数据，目前由动态菜单接管
+├── platform.conf                    # 平台分流：按 platform 属性注入 gpu-context / ao / hwdec
+├── deploy.py                        # 三平台部署自检与运行时准备（纯标准库，Python 3.9+）
 ├── scripts/                         # Lua / JavaScript 播放脚本
 ├── script-opts/                     # 各脚本的配置
 ├── script-modules/                  # 脚本共用模块
@@ -106,6 +109,8 @@ luac -p scripts/uosc/main.lua \
 | `mpv.conf` | 定义默认输出、解码、音频、字幕、截图、网络和 profile |
 | `input.conf` | 定义键位，并通过 `#menu:` 注释生成 uosc 菜单 |
 | `profiles.conf` | 定义可手动启用的场景模式 |
+| `platform.conf` | 按 mpv 的 `platform` 属性为 Linux / Windows / macOS 注入 `gpu-context`、`ao`、`hwdec`，三平台共用一份配置 |
+| `deploy.py` | 三平台部署自检：四态检测、补建运行时目录、按需复制字重（只用标准库） |
 | `script-opts/uosc.conf` | 定义 uosc 控件、颜色、字体、时间轴和动画 |
 | `manager.json` | 定义哪些第三方目录只检查，哪些目录允许整体替换 |
 | `scripts/manager.lua` | 异步检查、比较、备份和更新第三方脚本 / 着色器 |
@@ -172,6 +177,11 @@ Linux/libass 不做 emoji 字体回退，emoji 会显示为空白/方块。
 - `mpv.conf`：`osd-color`、`osd-back-color`、字幕颜色和轮廓。
 - `script-opts/uosc.conf`：uosc 控件、菜单、时间轴、选中状态和提示颜色。
 - `scripts/manager.lua`：更新器底部进度条的独立颜色。
+
+OSD 文本默认对齐左上（`osd-align-x=left` / `osd-align-y=top`，边距 16），而顶栏是
+48 高的胶囊栏——第一行正好压在文件标题胶囊上，跳转反馈、截图提示和脚本消息都会
+糊在标题上。`mpv.conf` 因此设 `osd-margin-y=84`（≈ `top_bar_size` × `scale` + 原边距），
+把顶部让出顶栏高度；`osd-scale-by-window` 会让它随窗口同比缩放。
 
 原生 OSC 通过 `osc=no` 禁用，由定制版 uosc 提供播放控制界面。
 
@@ -366,10 +376,12 @@ profile=HDR2SDR
 
 | 设置 | 当前值 | 作用 |
 | --- | --- | --- |
-| `top_bar` | `always` | 播放时始终显示顶栏（标题 + 窗口控制） |
+| `top_bar` | `always` | 允许渲染顶栏；实际显隐仍由 `autohide` + 鼠标接近度决定 |
+| `autohide` | `yes` | 播放中鼠标静止后，顶栏/底栏/时间轴一起淡出 |
 | `timeline_style` | `segments` | 分段式圆角块时间轴（对齐 Mpv∞） |
 | `timeline_size` | `18` | 时间轴元素高度（segments 样式下条高约 13px） |
-| `timeline_persistency` | `paused` | 暂停时保持时间轴展开，方便找位置 |
+| `timeline_persistency` | `paused` | 暂停时保持整个控制区展开（dock 主值来自时间轴，顶栏跟随） |
+| `timeline_media_info` | `auto` | 硬解/分辨率/HDR/编码/FPS/码率胶囊：跟时间轴显隐，可设 `always`/`never` |
 | `timeline_heatmap` | `overlay` | 热图以叠加层显示 |
 | `chapter_display` | `yes` | 在时间轴显示章节标记和名称 |
 | `controls_size` | `40` | 控制按钮尺寸 |
@@ -382,17 +394,32 @@ profile=HDR2SDR
 | `border_radius` | `10` | 控件和菜单圆角 |
 | `pause_indicator` | `static` | 暂停时显示中央常驻圆形指示器（对齐 Mpv∞） |
 | `opacity.controls` | `0.5` | 按钮圆角底衬可见，形成胶囊观感 |
-| `opacity.title` | `0.5` | 顶栏标题带胶囊底衬 |
+| `opacity.title` | `0.62` | 顶栏标题/章节胶囊底衬（亮画面上也看得见） |
 | `progress` | `windowed` | 窗口模式显示细进度条 |
 | `progress_playing_only` | `yes` | 只在实际播放时显示细进度条 |
 | `dock_animation` | `yes` | 启用底部 Dock 动画 |
 | `dock_animation_mode` | `smooth` | 平滑 Dock 动画 |
 
-界面风格对齐 Mpv∞（Android 播放器）：顶栏常驻标题排、底部控件带可见圆角
-底衬（胶囊观感）、暂停时中央常驻指示器、右侧速度胶囊、时间轴用 Dracula
-紫作进度强调色（`time_current=BD93F9`，同时作用于时钟文字）。空闲态底栏用
-前后 `space` 居中并补齐统计入口，与播放态观感一致。窗口过窄时 uosc 会
-按 narrow 角色自动丢弃低优先级按钮，属于响应式行为而非配置缺失。
+界面风格对齐 Mpv∞（Android 播放器）：底栏控件带可见圆角底衬（胶囊观感）、
+暂停时中央常驻指示器、右侧速度胶囊、时间轴用 Dracula 紫作进度强调色
+（`time_current=BD93F9`，同时作用于时钟文字）。空闲态底栏用前后 `space`
+居中并补齐统计入口，与播放态观感一致。窗口过窄时 uosc 会按 narrow 角色
+自动丢弃低优先级按钮，属于响应式行为而非配置缺失。
+
+信息分工（本轮确立）：
+
+| 位置 | 职责 |
+| --- | --- |
+| 顶栏 | 文件名（超长 UTF-8 安全截断）→「第 N 章 · 标题」→ 引擎胶囊（原生/Toys，可点切换）→ 窗口按钮 |
+| 时间轴 | 左端当前播放位置、右端总时长，是唯一的完整进度信息源 |
+| 底栏 | 只放操作，不再重复显示 `当前 / 剩余` |
+| 技术信息 | 默认随底栏淡出；`timeline_media_info=never` 可完全关闭，改用 stats 面板 |
+
+顶栏不再单独承载播放时间；章节胶囊在标题空间不足时优先让位，
+先丢章节、再整颗隐藏，保证文件名可读。
+
+想恢复底栏的 `当前 / 剩余`，在 `script-opts/uosc.conf` 的 `controls` 串里
+加回 `<video,audio>time` 即可（`TimeDisplay.lua` 仍在，未删能力）。
 
 ### 控制栏
 
@@ -403,6 +430,12 @@ profile=HDR2SDR
   保留在菜单与 `SHIFT+F11`）。
 - 右排：截图、睡眠定时器、统计信息、播放列表、速度胶囊、更多菜单。
 - 空闲状态：打开文件、最近播放、播放列表、统计信息、更多菜单，整组居中。
+
+统计信息按钮是一个带状态的开关：面板开着时按钮变成紫底深图标（uosc 的
+`active` 态），tooltip 变「关闭统计信息（Shift+I）」；再点一次关闭并恢复常态。
+它读的是 `stats.lua` 写出的 `user-data/mpv-emo/stats-visible`，所以用键盘
+`I`、右键菜单或任何脚本开关面板时，按钮高亮都会同步，不会出现「按钮亮着
+但面板已经关了」。
 
 时间轴右键绑定为 `uosc/chapters`，不会修改视频或片头片尾标记。
 画面区域右键菜单（`conditional-rightclick`）会在空间允许时贴近鼠标
@@ -417,6 +450,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | 脚本 | 功能 |
 | --- | --- |
 | `uosc/` | 主播放界面、菜单、时间轴、顶栏、缩放和自定义按钮 |
+| `stats-indicator.lua` | 观察 `user-data/mpv-emo/stats-visible`，把 stats 面板开关状态映射到 uosc 按钮高亮与 tooltip |
 | `uosc_danmaku/` | 弹幕搜索、加载、延迟、保存、源管理和弹幕样式菜单 |
 | `thumbfast.lua` | 时间轴缩略图预览，两阶段显示（先附近关键帧，再精确画面） |
 | `playlistmanager.lua` | 播放列表浏览、排序、移动、保存、随机和网络标题解析 |
@@ -841,6 +875,177 @@ profile：着色器配置组（`[动画]`、`[AnimeJaNai]` 等）用 `glsl-shade
 
 只有明确允许整体替换、且没有本地定制的目录，才使用
 `"mode": "replace"`。
+
+## 三平台部署
+
+仓库的主目标是 Linux / Wayland。`platform.conf` 用 mpv 的 `platform` 属性把
+`gpu-context`、`ao`、`hwdec` 分流给 Windows 与 macOS，所以三平台**共用同一份
+配置**；但运行时依赖（Python venv、VapourSynth 插件、剪贴板工具、字体）必须
+按平台各自准备。
+
+`deploy.py` 是仓库自带的自检与准备脚本：只用 Python 标准库，要求 Python 3.9+，
+检测结果分 `available` / `degraded` / `unavailable` / `unverified` 四态，不会
+因为可选组件缺失就报错退出。
+
+> 只有 Linux/Wayland 这台机器是实测过的。下面 Windows 与 macOS 的步骤是**按配置
+> 与脚本代码推导的部署流程**，尚未在真机上跑过，标注为「待实测」。
+
+### 命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `python3 deploy.py` | 默认 = `--check --prepare`：先检测，再补建缺失的运行时目录 |
+| `python3 deploy.py --check` | 只检测，不写任何文件 |
+| `python3 deploy.py --prepare` | 只创建缺失目录（已存在的跳过，可重复执行） |
+| `python3 deploy.py --fonts-dir PATH` | 显式指定用户字体目录（Windows / macOS 必用） |
+| `python3 deploy.py --skip-fonts` | 跳过字重复制（四字重齐全时 `--prepare` 默认会复制，`fonts/MFGA/` 已进 `.gitignore`） |
+| `python3 deploy.py --json` | 机器可读输出，stdout 只有 JSON |
+
+```bash
+cd ~/.config/mpv            # Windows: %APPDATA%\mpv
+python3 deploy.py --check
+python3 deploy.py --json | python3 -m json.tool | head -40
+```
+
+退出码只有两个：
+
+- `0`：关键依赖齐备，或仅存在降级 / 未验证项；
+- `2`：关键依赖缺失（`mpv` 不可用，或解释器低于 3.9）。
+
+### 检测报告的四态
+
+| 状态 | 含义 | 例子 |
+| --- | --- | --- |
+| `available` | 有命令输出或文件事实确认可用 | `pactl info` 里出现 `PulseAudio (on PipeWire 1.6.10)` |
+| `degraded` | 部分可用，会掉到兜底路径 | 会话是 Wayland 但只装了 `xclip`；`vsmlrt` 缺失导致补帧不可用 |
+| `unavailable` | 明确缺失 | PATH 里没有 `mpv`；用户字体目录里四个字重一个都没有 |
+| `unverified` | 本机无法验证，不做结论 | Windows 的 `wasapi`、macOS 的 `coreaudio`、真实硬解是否跑通 |
+
+**「列表里有」不等于「跑得通」**：`mpv --hwdec=help` 列出的是编译进 mpv 的后端，
+`nvidia-smi` 只证明驱动在，两者都不证明某张片子真的硬解成功。脚本因此把
+`hwdec`（后端列表）和 `hwdec_runtime`（运行时）拆成两项，后者恒为 `unverified`，
+直到你在有窗口的会话里实测。
+
+### Linux（已实测）
+
+```bash
+# 1. 依赖（Arch 系示例，其他发行版换包名）
+sudo pacman -S mpv yt-dlp git deno python wl-clipboard xclip zenity
+
+# 2. 自检
+cd ~/.config/mpv
+python3 deploy.py
+
+# 3. 起播
+mpv --force-window=yes
+```
+
+本机结果：`mpv v0.41.0` / `gpu-next + waylandvk` / PipeWire 1.6.10 /
+`wl-copy` + `wl-paste` 齐备；`vsmlrt` 缺失 → RIFE 补帧为 `degraded`。
+
+### Windows（待实测）
+
+```powershell
+# 1. mpv：把 mpv.exe 放进 PATH，或在配置目录旁放 portable_config
+mpv --version
+mpv --hwdec=help        # 期望看到 d3d11va / dxva2，本机无法代你确认
+
+# 2. Python 3.9+ 与 git
+py -3 --version
+git --version
+
+# 3. 自检（配置目录通常是 %APPDATA%\mpv）
+cd $env:APPDATA\mpv
+py -3 deploy.py --check --fonts-dir "$env:LOCALAPPDATA\Microsoft\Windows\Fonts\MFGA"
+
+# 4. 在线媒体 venv 必须用 Windows 解释器重建
+py -3 -m venv online-media\runtime
+online-media\runtime\Scripts\python.exe -m pip install -r online-media\requirements.txt
+```
+
+注意三点：
+
+1. **venv 的解释器是 `Scripts\python.exe`**，不是 Linux 的 `bin/python3`；
+   仓库里现存的 `online-media/runtime-manifest.json` 声明 `windows-x86_64`，
+   与当前 Linux venv 不一致时 `deploy.py` 会报 `degraded`。
+2. **`scripts/manager.lua` 的 `replace` 模式在 Windows 上只按「安全检查」对待**：
+   它会暂存、备份再整体替换目录，遇到本地修改会保护性跳过。真正会动文件，
+   想稳妥就在 `manager.json` 里把该来源改成 `check`（只比较、不覆盖）。
+3. 剪贴板走 PowerShell `Get-Clipboard` / `Set-Clipboard`
+   （`script-modules/extended-menu.lua`、`scripts/uosc/lib/utils.lua`），
+   未在 Windows 上实测。
+
+### macOS（待实测）
+
+```bash
+brew install mpv yt-dlp git deno python
+cd ~/.config/mpv
+python3 deploy.py --check --fonts-dir ~/Library/Fonts/MFGA
+
+# venv 用 macOS 的 bin/python3 重建
+python3 -m venv online-media/runtime
+online-media/runtime/bin/python3 -m pip install -r online-media/requirements.txt
+```
+
+macOS 侧只有 `cocoa + VideoToolbox`：`platform.conf` 的 `[platform-macos]` 不设
+`gpu-context`（交给 mpv 自选），`hwdec=videotoolbox,auto-copy-safe`。剪贴板分支
+是 `pbcopy` / `pbpaste`（`extended-menu.lua`）与 `osascript`
+（`scripts/screenshot-to-clipboard.lua`），同样未实测。
+
+### 必装与可选依赖
+
+| 类别 | 组件 | 缺失后果 |
+| --- | --- | --- |
+| 必装 | `mpv`（含 `gpu-next`） | 播放器不可用，`deploy.py` 返回 `2` |
+| 必装 | Python 3.9+ | 无法运行 `deploy.py` 与 `online-media/*.py` resolver |
+| 强烈建议 | `git` | `M` 更新器（`manager.lua`）无法检查上游 |
+| 强烈建议 | `yt-dlp` | `ytdl_hook` 失效，网络播放只能靠直链 |
+| 建议 | `deno` | `scripts/online-media.lua` 无法给 yt-dlp 传 `--js-runtimes deno:…`，YouTube 解析易失败（mpv 自带 JS 引擎跑 `scripts/*.js`，不依赖 deno） |
+| 建议 | `wl-clipboard`（Wayland）/ `xclip`（X11） | 复制标题、截图进剪贴板失效 |
+| 可选 | `zenity` | `scripts/open_dialog.lua` 的文件/目录选择对话框不可用（X11/Wayland 授权框同理） |
+| 可选 | VapourSynth + `vsmlrt` + TensorRT | RIFE 补帧与 AI 超分不可用（`degraded`） |
+| 可选 | `fc-match`（fontconfig） | 无法验证 `MFGA YouHei` 是否被真正解析 |
+
+### 已知降级与不保证的能力
+
+- **硬解**：`hwdec=nvdec-copy,vaapi-copy,auto-copy-safe` 是候选链，mpv 会跳过不存在的
+  后端；某些编码/驱动组合仍会回落到软解，`--hwdec=no` 是排查手段。
+- **补帧 / AI 超分**：依赖 VapourSynth 插件与显卡后端，`vsmlrt`、TensorRT、模型文件
+  缺一不可，且要按显卡选后端（`ncnn` / `ort_cuda` / `trt`）。
+- **剪贴板**：三平台实现完全不同，Windows / macOS 分支未实测。
+- **渲染上下文**：Linux 配置写死 `gpu-context=waylandvk`；X11 会话下需要改成
+  `x11vk` 或删掉该行（`platform.conf` 注释里已写明）。
+- **Windows 的 `manager.lua replace`**：只做安全检查与备份替换，不代表上游目录可以
+  无条件覆盖本地改动。
+
+### 字体授权与打包
+
+`MFGA YouHei` 字体模块**不在本仓库内**：整块模块约 237 MB，其中四个必需字重
+（`200.ttf` / `300.ttf` / `400.ttf` / `700.ttf`）合计约 126 MiB。
+
+- 默认**不复制、不入库**：`python3 deploy.py --prepare` 只报告字体状态，
+  不会把字体写进工作区。
+- `python3 deploy.py --prepare` 在检测到四个字重齐全时会复制到 `fonts/MFGA/`（该目录已进 `.gitignore`，不会被提交）；只想看状态就加 `--skip-fonts`。它会先确认四个字重
+  齐全，再逐个复制并按「已存在则跳过」处理；缺字重时整体跳过并报出缺哪几个。
+- **本机字体不等于可再分发字体**：复制前先确认授权，提交前确认 `fonts/MFGA/`
+  不会被 `git add` 进去（`.gitignore` 只排除了 `cache/`、`files/`、`.manager/` 等运行时数据，
+  没有忽略 `fonts/MFGA/`）。
+- 用户字体目录里缺字重时，fontconfig 会把 `MFGA YouHei` 静默回退到任意可用字体，
+  mpv 不报错——这正是需要自检脚本的原因。
+
+### 运行时目录
+
+`deploy.py --prepare` 只创建配置里确实引用的目录，已存在则跳过：
+
+| 目录 | 依据 |
+| --- | --- |
+| `cache/` | mpv 运行时缓存根目录 |
+| `files/` | 播放历史、书签、截图等运行时数据 |
+| `cache/shaders_cache/` | `mpv.conf` `gpu-shader-cache-dir` |
+| `cache/icc_cache/` | `mpv.conf` `icc-cache-dir` |
+| `files/screen/` | `mpv.conf` `screenshot-template=~~/files/screen/…` |
+
+这些目录都在 `.gitignore` 里，创建它们不会污染提交。
 
 ## 依赖与注意事项
 
