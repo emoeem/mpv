@@ -236,6 +236,14 @@ function Controls:init_options()
 					on_hide = function() self:reflow() end,
 				})
 				table_assign(control, {element = element, sizing = 'static', scale = 1, ratio = 1})
+				-- Managed buttons only expose icon/active/badge/command/tooltip, so
+				-- the窄屏保留身份必须按名字补回：竖屏（高 > 宽）时
+				-- portrait_transport 会隐藏所有没有 narrow_role 的控件，统计按钮
+				-- 原来靠 `command:analytics:...` 解析拿到 role，换成 managed 按钮后
+				-- 需要在同等位置补回来，否则高窄窗口/手机上它会消失。
+				if params[1] == 'stats_toggle' then
+					control.narrow_role = 'stats'
+				end
 			end
 		elseif kind == 'speed' then
 			if not Elements.speed then

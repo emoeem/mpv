@@ -552,6 +552,9 @@ function Timeline:init()
 	self.obstructed = false
 	self.size = 0
 	self.progress_size = 0
+	--- 分段式时间轴的几何缓存（渲染时写入，点击/拖动时反算时间用）
+	---@type {segments: {[1]: number, [2]: number}[], usable: number, gap: number, x0: number}|nil
+	self.seg_layout = nil
 	self.min_progress_size = 0 -- used for `flash-progress`
 	self.font_size = 0
 	self.top_border = 0
@@ -822,11 +825,41 @@ end
 
 function Timeline:get_time_at_x(x)
 	local line_width = (options.timeline_style == 'line' and self.line_width - 1 or 0)
-	local time_width = self.width - line_width - 1
+	-- 分段模式两端有时间文字，点击/拖动必须跳过这两段留白，
+	-- 否则用户点在「1:08:52」上的位置会被算成 0 秒。
+	local inset_l, inset_r = 0, 0
+	if options.timeline_style == 'segments' then
+		inset_l, inset_r = self.end_label_inset or 0, self.end_label_inset_r or 0
+		-- 分段模式：按渲染时缓存的同一份分段几何反算时间。
+		-- 线性换算会把段间 gap 一起摊进时间轴，拖动时圆点会落后光标
+		-- （24 段 × 4px 间距 ≈ 整轴 3%，两小时片源就是几分钟偏差）。
+		local layout = self.seg_layout
+		if layout then
+			-- lx 与 cursor 必须同一坐标系。layout.x0 就是渲染时的轴起点（已含左侧
+			-- 时间标签留白），所以 lx 相对 x0、cursor 从 0 累加。旧写法 lx 先减掉
+			-- ax+inset、cursor 却从绝对坐标 x0 起累加，两处各扣一次偏移：实测
+			-- 92s 的圆点位置被反算成 71s，点哪都跳不到哪（偏 8 个段宽）。
+			local lx = x - layout.x0
+			local cursor = 0
+			for _, segment in ipairs(layout.segments) do
+				local from, to = segment[1], segment[2]
+				local width = layout.usable * (to - from)
+				if lx <= cursor + width then
+					-- 落在 gap 里时收口到该段起点，而不是跳回 0
+					local inside = clamp(0, (lx - cursor) / width, 1)
+					return state.duration * (from + (to - from) * inside)
+				end
+				cursor = cursor + width + layout.gap
+			end
+			return state.duration
+		end
+	end
+	local time_width = self.width - inset_l - inset_r - line_width - 1
+	if time_width <= 1 then return 0 end
 	local fax = (time_width) * state.time / state.duration
 	local fbx = fax + line_width
 	-- time starts 0.5 pixels in
-	x = x - self.ax - 0.5
+	x = x - self.ax - inset_l - 0.5
 	if x > fbx then
 		x = x - line_width
 	elseif x > fax then
@@ -1348,12 +1381,60 @@ function Timeline:render()
 		bax, bbx = dock_motion:get_timeline_bounds(self.ax, self.bx, display.width)
 	end
 	local bar_width = bbx - bax
+	local is_segments = options.timeline_style == 'segments'
+	-- 收起态（只剩底部细线）继续用经典细线：分段块只在真正展开时有意义
+	local seg_active = is_segments and text_opacity > 0.5
+	-- 收起态不画分段，几何缓存必须一起失效，否则点击会按过期分段算时间
+	if not seg_active then self.seg_layout = nil end
+
+	-- 分段式时间轴的两端时间标签：先量文字宽度，再从两端预留同等空间。
+	-- 标签和时间轴互不侵占；宽度不够时整对隐藏，优先保证时间轴本身可读可点。
+	local label_opts, label_opts_muted
+	local label_inset_l, label_inset_r = 0, 0
+	local show_end_labels = seg_active and state.duration and state.time_human
+		and text_opacity > 0.5 and (not dock_motion or dock_geometry >= 0.98)
+	if show_end_labels then
+		local label_size = math.max(round(self.font_size * 0.95), round(11 * state.scale))
+		label_opts = {
+			size = label_size,
+			color = config.color.time_current or bgt,
+			opacity = visibility,
+			border = options.text_border * state.scale,
+			border_color = bg,
+		}
+		label_opts_muted = {
+			size = label_size,
+			color = config.color.time_muted or bgt,
+			opacity = visibility * 0.9,
+			border = options.text_border * state.scale,
+			border_color = bg,
+		}
+		local label_gap = round(10 * state.scale)
+		label_inset_l = timestamp_width(state.time_human, label_opts) + label_gap
+		label_inset_r = timestamp_width(format_time(state.duration, state.duration), label_opts_muted)
+			+ label_gap
+		if bar_width - label_inset_l - label_inset_r < round(160 * state.scale) then
+			show_end_labels = false
+			label_inset_l, label_inset_r = 0, 0
+		end
+	end
+	-- 记录给 Timeline:get_time_at_x 用：点击/拖动的坐标映射必须和画出来的轴对齐
+	self.end_label_inset, self.end_label_inset_r = label_inset_l, label_inset_r
+	local label_ax, label_bx = bax, bbx
+	bax, bbx = bax + label_inset_l, bbx - label_inset_r
+	bar_width = math.max(1, bbx - bax)
+
 	local hit_bay, hit_bby = visual_by - size - self.top_border, visual_by
 	local collapsed_bar_height = math.max(1, progress_size)
 	local expanded_bar_height = math.max(4, round(5 * state.scale))
 	-- Hover gives the seek target a little more visual weight instead of
 	-- abruptly changing its position or hitbox.
 	local hover_bar_height = math.max(expanded_bar_height, round(6 * state.scale))
+	-- 分段式的块状观感需要更高的条：默认展开条只有 ~5px，是"细"的根因
+	if is_segments then
+		expanded_bar_height = math.max(expanded_bar_height, round(13 * state.scale))
+		hover_bar_height = math.max(hover_bar_height, round(14 * state.scale))
+	end
 	local target_bar_height = self.is_hovered and hover_bar_height or expanded_bar_height
 	local bar_height = collapsed_bar_height
 		+ (target_bar_height - collapsed_bar_height) * dock_geometry
@@ -1361,6 +1442,13 @@ function Timeline:render()
 	local bby = bay + bar_height
 	local fax, fay, fbx, fby = 0, bay + self.top_border, 0, bby
 	local fcy = fay + (size / 2)
+
+	-- 两端时间文字：左=当前播放位置，右=媒体总时长（未知/直播时整对不画）
+	if show_end_labels then
+		local label_y = (fay + fby) / 2
+		ass:txt(label_ax, label_y, 4, state.time_human, label_opts)
+		ass:txt(label_bx, label_y, 6, format_time(state.duration, state.duration), label_opts_muted)
+	end
 
 	local line_width = 0
 
@@ -1388,14 +1476,36 @@ function Timeline:render()
 		return time <= state.time and x or x + line_width
 	end
 
-	-- Quiet neutral track under the cyan played section.
-	ass:rect(bax, bay, bbx, bby, {
-		color = config.color.timeline_track or fg,
-		opacity = track_visibility * config.opacity.timeline,
-		radius = bar_height / 2,
-	})
+	-- 分段模式下 t2x 的线性换算与"画出来的段"不一致（gap 占掉的空间被摊平），
+	-- 章节刻度、缓存纹理、intro/outro 手柄会落在错误的像素上。这里按与绘制、
+	-- 与 get_time_at_x 完全相同的那份几何换算，保证「画哪、点哪、跳哪」三者一致。
+	local function time2x(time)
+		local layout = seg_active and self.seg_layout or nil
+		if layout and state.duration and state.duration > 0 then
+			local frac = clamp(0, time / state.duration, 1)
+			local cursor = layout.x0
+			for index, segment in ipairs(layout.segments) do
+				local from, to = segment[1], segment[2]
+				local width = layout.usable * (to - from)
+				if frac <= to or index == #layout.segments then
+					return cursor + width * clamp(0, (frac - from) / (to - from), 1)
+				end
+				cursor = cursor + width + layout.gap
+			end
+		end
+		return t2x(time)
+	end
 
-	-- Buffered / loaded progress (safe, uses uncached_ranges + fallback)
+	-- Quiet neutral track under the played section. 分段模式自己逐段画轨道，
+	-- 这里跳过整条底轨，否则段与段之间的间隙会被底轨填成一条实线。
+	if not seg_active then
+		ass:rect(bax, bay, bbx, bby, {
+			color = config.color.timeline_track or fg,
+			opacity = track_visibility * config.opacity.timeline,
+			radius = bar_height / 2,
+		})
+
+		-- Buffered / loaded progress (safe, uses uncached_ranges + fallback)
 		local loaded_progress_min_ahead = 15
 		local loaded_progress_opacity = 0.22
 		local loaded_pos = self:get_loaded_pos_safe()
@@ -1412,9 +1522,105 @@ function Timeline:render()
 				})
 			end
 		end
+	end
 
 	-- Progress
 	local function draw_progress()
+		if seg_active then
+			-- 分段式圆角胶囊（对齐 Mpv∞）。
+			-- 分段依据：有真实章节时 1 段 = 1 章（2~40 章），否则用等宽装饰段。
+			-- 装饰段只服务视觉节奏，**不代表章节**；章节段则与 chapter-list 一一对应。
+			local segments = {}
+			local chapters = state.chapters or {}
+			local use_chapters = #chapters >= 2 and #chapters <= 40
+			if use_chapters then
+				for i, chapter in ipairs(chapters) do
+					local from = math.max(0, chapter.time)
+					local to = i < #chapters and math.min(state.duration, chapters[i + 1].time) or state.duration
+					if to > from then segments[#segments + 1] = {from / state.duration, to / state.duration} end
+				end
+			end
+			if #segments < 2 then
+				use_chapters = false
+				segments = {}
+				-- 装饰段数量跟轴宽走，而不是固定 24 段：段宽稳定在 ~56px 一档，
+				-- 窄窗少段、宽窗多段，间距占比恒定，避免"24 段挤在 670px 里"糊成一条。
+				local count = clamp(6, round(bar_width / (56 * state.scale)), 24)
+				for i = 0, count - 1 do segments[#segments + 1] = {i / count, (i + 1) / count} end
+			end
+
+			-- 间距跟条高走：太窄时两个圆头会合成一个菱形小孔（看起来像多出来的标记），
+			-- 间距接近半条高之后才读作"槽"。
+			local gap = math.max(3, round(bar_height * 0.5))
+			-- 段很多/窗口很窄时按比例收窄间距，保证每段还有可画的宽度
+			gap = math.min(gap, math.max(1, bar_width / (#segments * 5)))
+			local usable = bar_width - gap * (#segments - 1)
+			if usable / #segments <= 1 then
+				self.seg_layout = nil
+				return
+			end
+			-- 渲染和点击映射共用同一份几何：否则 gap 会让"画出来的位置"和
+			-- "点下去的时间"各算一套，拖动时圆点会落后于光标。
+			self.seg_layout = {segments = segments, usable = usable, gap = gap, x0 = bax}
+
+			local track_color = config.color.timeline_track or fg
+			local played_color = config.color.match
+			local loaded_pos = self:get_loaded_pos_safe()
+			local loaded_fraction = type(loaded_pos) == 'number' and state.duration > 0
+				and clamp(0, loaded_pos / state.duration, 1) or nil
+
+			local playhead_x = nil
+			local cursor_x = bax
+			for _, segment in ipairs(segments) do
+				local from, to = segment[1], segment[2]
+				local width = usable * (to - from)
+				local ax, bx2 = cursor_x, cursor_x + width
+				-- 圆角收一点：全圆头 + 窄间距会把段间缺口变成菱形小孔
+				local radius = math.min(round(bar_height * 0.42), width / 2)
+				cursor_x = bx2 + gap
+
+				-- 未播部分
+				ass:rect(ax, fay, bx2, fby, {
+					color = track_color,
+					opacity = track_visibility * config.opacity.timeline,
+					radius = radius,
+				})
+				-- 已缓冲（比已播放淡）：只在缓冲落后播放时才有意义
+				if loaded_fraction and loaded_fraction > from then
+					local filled = math.min(1, (loaded_fraction - from) / (to - from))
+					ass:rect(ax, fay, ax + width * filled, fby, {
+						color = played_color,
+						opacity = track_visibility * 0.22,
+						radius = radius,
+					})
+				end
+				-- 已播放：当前段按段内进度部分填充
+				if progress > from then
+					local filled = math.min(1, (progress - from) / (to - from))
+					ass:rect(ax, fay, ax + width * filled, fby, {
+						color = played_color,
+						opacity = bar_visibility * config.opacity.position,
+						radius = radius,
+					})
+					if progress < to then playhead_x = ax + width * filled end
+				end
+			end
+
+			-- 播放位置：用真实位置画圆点，不靠颜色单独表意
+			if not playhead_x then
+				playhead_x = progress < 0.5 and bax or bbx
+			end
+			-- 圆点收在轴内，避免 0% / 100% 时半个圆探到两侧时间文字上
+			playhead_x = clamp(bax, playhead_x, bbx)
+			local playhead_radius = math.max(2.5, bar_height * 0.62)
+			-- 用前景色圆点 + 一圈细描边：在已播（紫）/未播（灰）两种底色上都能立起来，
+			-- 又不会像"先画个底色大圆"那样在已播段里挖出一圈黑环。
+			ass:circle(playhead_x, (fay + fby) / 2, playhead_radius, {
+				color = config.color.foreground or fgt,
+				opacity = visibility * config.opacity.position,
+			})
+			return
+		end
 		ass:rect(fax, fay, fbx, fby, {
 			color = config.color.match,
 			opacity = bar_visibility * config.opacity.position,
@@ -1456,8 +1662,8 @@ function Timeline:render()
 		local offset = opts.size / (visibility > 0 and 24 or 28)
 		for _, range in ipairs(state.uncached_ranges) do
 			if options.timeline_cache then
-				local ax = range[1] < 0.5 and bax or math.floor(t2x(range[1]))
-				local bx = range[2] > state.duration - 0.5 and bbx or math.ceil(t2x(range[2]))
+				local ax = range[1] < 0.5 and bax or math.floor(time2x(range[1]))
+				local bx = range[2] > state.duration - 0.5 and bbx or math.ceil(time2x(range[2]))
 				opts.color, opts.opacity, opts.anchor_x = 'ffffff', 0.4 - (0.2 * visibility), bax
 				ass:texture(ax, fay, bx, fby, texture_char, opts)
 				opts.color, opts.opacity, opts.anchor_x = '000000', 0.6 - (0.2 * visibility), bax + offset
@@ -1469,9 +1675,9 @@ function Timeline:render()
 	-- Custom ranges
 	local segment_action_hovered = nil
 	for _, chapter_range in ipairs(visibility > 0.08 and state.chapter_ranges or {}) do
-		local rax = chapter_range.start < 0.1 and bax or t2x(chapter_range.start)
+		local rax = chapter_range.start < 0.1 and bax or time2x(chapter_range.start)
 		local rbx = chapter_range['end'] > state.duration - 0.1 and bbx
-			or t2x(math.min(chapter_range['end'], state.duration))
+			or time2x(math.min(chapter_range['end'], state.duration))
 		ass:rect(rax, fay, rbx, fby, {
 			color = chapter_range.color, opacity = chapter_range.opacity * visibility,
 		})
@@ -1497,8 +1703,8 @@ function Timeline:render()
 	-- disabled and the nearest green handle is moved instead.
 	if input_enabled and self.edit_active and state.duration and self.edit_end > self.edit_start then
 		local edit_color = config.color.match
-		local start_x = t2x(self.edit_start)
-		local end_x = t2x(self.edit_end)
+		local start_x = time2x(self.edit_start)
+		local end_x = time2x(self.edit_end)
 		local handle_radius = math.max(7, round(7 * state.scale))
 		local handle_hit_radius = math.max(14, round(15 * state.scale))
 		local handle_y = (fay + fby) / 2
@@ -1652,7 +1858,10 @@ function Timeline:render()
 				ass:draw_stop()
 			end
 
-			if #state.chapters > 0 then
+			-- 分段模式已经用"段"表达了章节边界，再叠一层菱形标记会把边框缝隙
+			-- 填成一个亮色小菱形（看起来像多出来的脏点），这里直接跳过。
+			-- A-B 循环标记仍然保留。
+			if not seg_active and #state.chapters > 0 then
 				-- Find hovered chapter indicator
 				local closest_delta = math.huge
 
@@ -1813,7 +2022,15 @@ function Timeline:render()
 
 	-- Media info: keep a comfortable gap above the timeline and, when the
 	-- window is letterboxed, clamp the full text line inside the video picture.
-	local mi_ok, mi_segments = pcall(build_media_info_segments)
+	-- 显隐策略：never 完全不画；auto（默认）只在时间轴真正展开时出现，
+	-- 鼠标离开底栏就跟着淡出，观影时不占画面；always 保持常驻。
+	local media_info_mode = options.timeline_media_info
+	local show_media_info = media_info_mode ~= 'never'
+	if show_media_info and media_info_mode ~= 'always' then show_media_info = visibility > 0.5 end
+	-- 悬停时缩略图卡片会盖住这排胶囊，此时让位给 thumbfast（按需显示，不双重遮挡）
+	if show_media_info and rendered_thumbnail then show_media_info = false end
+	local mi_ok, mi_segments = false, nil
+	if show_media_info then mi_ok, mi_segments = pcall(build_media_info_segments) end
 	if mi_ok and type(mi_segments) == 'table'
 		and #mi_segments > 0 and visibility > 0 then
 		local mi_x = bax

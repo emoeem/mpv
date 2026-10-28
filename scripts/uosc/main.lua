@@ -31,6 +31,7 @@ defaults = {
 	timeline_mbtn_right = '',
 	timeline_cache = true,
 	timeline_heatmap = 'overlay',
+	timeline_media_info = 'auto', -- auto: 跟随时间轴显隐；always: 常驻；never: 只留时间轴
 	timeline_mbtn_right = '',
 
 	controls =
@@ -67,6 +68,8 @@ defaults = {
 	top_bar_alt_title = '',
 	top_bar_alt_title_place = 'below',
 	top_bar_flash_on = 'video,audio',
+	top_bar_capsule = true, -- 全圆角胶囊形状（关闭则回退到 border_radius 的经典圆角）
+	top_bar_now_playing = true, -- 顶栏右侧显示「章节 · 当前时间」进度胶囊
 
 	window_border_size = 1,
 

@@ -188,16 +188,18 @@ local function update_menu_state_hints(items, image_subtitle_summary, media_load
 				item.hint = '○ 未启用'
 			end
 		elseif item.value == 'script-message-to hdr_pipeline toggle' then
-			item.hint = (mp.get_property('user-data/hdr-pipeline/mode', 'native') == 'toys')
+			-- user-data 的字符串必须用 get_property_native 读：
+			-- get_property 返回的是带引号的序列化形式（"toys"），比较恒不成立
+			item.hint = (mp.get_property_native('user-data/hdr-pipeline/mode') == 'toys')
 				and '● hdr-toys' or '○ 原生直通'
 		elseif item.value == 'script-message-to hdr_pipeline set-mode native' then
-			item.hint = (mp.get_property('user-data/hdr-pipeline/mode', 'native') ~= 'toys')
+			item.hint = (mp.get_property_native('user-data/hdr-pipeline/mode') ~= 'toys')
 				and '● 当前' or '○'
 		elseif item.value == 'script-message-to hdr_pipeline set-mode toys' then
-			item.hint = (mp.get_property('user-data/hdr-pipeline/mode', 'native') == 'toys')
+			item.hint = (mp.get_property_native('user-data/hdr-pipeline/mode') == 'toys')
 				and '● 当前' or '○'
 		elseif item.value == 'script-message-to hdr_pipeline status' then
-			local chain = mp.get_property('user-data/hdr-pipeline/chain', '')
+			local chain = mp.get_property_native('user-data/hdr-pipeline/chain') or ''
 			item.hint = chain ~= '' and ('链路：' .. chain) or '链路：native'
 		elseif item.value == 'change-list glsl-shaders toggle "~~/shaders/ambient/ambient_glow.glsl"' then
 			local shaders = mp.get_property('glsl-shaders', '')

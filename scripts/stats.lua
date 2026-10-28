@@ -1977,6 +1977,9 @@ local function clear_screen()
     release_overlay:remove()
     stats_measure:remove()
     if o.persistent_overlay then mp.set_osd_ass(0, 0, "") else mp.osd_message("", 0) end
+    -- 通知外部（uosc 底栏「统计信息」按钮的高亮状态）面板已关闭。
+    -- 这里是唯一的关闭出口（toggle 关闭 / oneshot 到期），所以放在这里不会漏。
+    mp.set_property_bool('user-data/mpv-emo/stats-visible', false)
 end
 
 local function scroll_delta(d)
@@ -2181,6 +2184,8 @@ process_key_binding = function(oneshot)
         add_page_bindings()
         print_page(curr_page)
         display_timer:resume()
+        -- 面板已经画在屏幕上，通知外部按钮进入高亮态。
+        mp.set_property_bool('user-data/mpv-emo/stats-visible', true)
     end
 end
 
