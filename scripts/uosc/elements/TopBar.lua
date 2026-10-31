@@ -97,6 +97,8 @@ end
 function TopBar:register_observers()
 	-- 引擎胶囊：HDR 处理链模式变化时重绘
 	mp.observe_property('user-data/hdr-pipeline/mode', 'string', function() request_render() end)
+	-- 引擎胶囊 hdr-only 显隐：内容在 SDR ↔ HDR 之间切换时重绘
+	self:observe_mp_property('video-params/gamma', 'string', function() request_render() end)
 	-- Main title
 	if #options.top_bar_title > 0 and options.top_bar_title ~= 'no' then
 		if options.top_bar_title == 'yes' then
@@ -405,7 +407,12 @@ function TopBar:render()
 	-- 是带引号的序列化形式（"toys"），直接比较会永远不成立。
 	-- 属性不存在（脚本未加载）时整颗胶囊隐藏，不做无功能的死按钮。
 	local engine_mode = mp.get_property_native('user-data/hdr-pipeline/mode')
-	if engine_mode and options.top_bar_controls and pill_height > 0 then
+	-- hdr-only 模式：引擎切换器只对 HDR 内容有意义，SDR 下整颗隐藏，避免顶栏挂着
+	-- 一颗无功能的开关。gamma 判定与 mpv 条件配置组（[HDR-PASS] 等）保持同一口径。
+	local gamma = mp.get_property_native('video-params/gamma')
+	local engine_chip_visible = not options.top_bar_engine_chip_hdr_only
+		or gamma == 'pq' or gamma == 'hlg'
+	if engine_mode and engine_chip_visible and options.top_bar_controls and pill_height > 0 then
 		local engine_label = engine_mode == 'toys' and 'Toys' or '原生'
 		local text_opts = {
 			size = self.font_size, wrap = 2,

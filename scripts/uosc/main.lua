@@ -53,6 +53,7 @@ defaults = {
 	speed_persistency = '',
 	speed_step = 0.1,
 	speed_step_is_factor = false,
+	speed_button_dim_at_default = true, -- 1.0x 默认速度时淡化速度胶囊文本，悬停/变速恢复全亮
 
 	menu_item_height = 36,
 	menu_min_width = 260,
@@ -70,6 +71,7 @@ defaults = {
 	top_bar_flash_on = 'video,audio',
 	top_bar_capsule = true, -- 全圆角胶囊形状（关闭则回退到 border_radius 的经典圆角）
 	top_bar_now_playing = true, -- 顶栏右侧显示「章节 · 当前时间」进度胶囊
+	top_bar_engine_chip_hdr_only = true, -- yes：引擎胶囊只在 HDR 内容（pq/hlg）时显示，SDR 下隐藏
 
 	window_border_size = 1,
 

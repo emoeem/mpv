@@ -80,10 +80,14 @@ function SpeedButton:render()
 		end
 	end
 	local value = format_speed(round(state.speed * 100) / 100)
+	-- 1.0x 默认速度时淡化文本，减少底栏常驻噪音；悬停或变速后恢复全亮。
+	-- 只改文本透明度：布局槽位与命中区不变，播放/暂停仍保持窗口居中。
+	local at_default_speed = math.abs(state.speed - 1) < 0.001
+	local dimmed = options.speed_button_dim_at_default and at_default_speed and not is_hover
 	local value_opts = {
 		size = self.font_size * transform.scale,
 		color = config.color.time_current or bgt,
-		opacity = visibility * 0.92,
+		opacity = visibility * (dimmed and 0.35 or 0.92),
 		border = options.text_border * state.scale,
 		border_color = bg,
 	}
