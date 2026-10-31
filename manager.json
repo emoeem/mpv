@@ -58,6 +58,30 @@
       "source": ".",
       "destination": "scripts/simple-mpv-webui",
       "mode": "check"
+    },
+    {
+      "name": "cunny_shaders",
+      "url": "https://github.com/pifroggi/CuNNy.git",
+      "branch": "master",
+      "source": ".",
+      "destination": "shaders/CuNNy",
+      "mode": "check"
+    },
+    {
+      "name": "mpv360",
+      "url": "https://github.com/kasper93/mpv360.git",
+      "branch": "master",
+      "source": ".",
+      "destination": "scripts/mpv360.lua",
+      "mode": "check"
+    },
+    {
+      "name": "equalizer_gui",
+      "url": "https://github.com/akFace/equalizer-gui.git",
+      "branch": "main",
+      "source": ".",
+      "destination": "scripts/equalizer-gui.lua",
+      "mode": "check"
     }
   ]
 }

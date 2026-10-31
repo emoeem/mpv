@@ -1994,12 +1994,10 @@ local video_enhancement_profiles = {
 mp.register_script_message('codex-set-video-enhancement-profile', function(name)
 	local profile = video_enhancement_profiles[tostring(name or '')]
 	if not profile then return end
-	mp.commandv('script-message-to', 'ai_interpolation', 'set-backend',
-		profile.backend, 'silent')
-	mp.commandv('script-message-to', 'ai_interpolation', 'set-hq-mode',
-		profile.hq, 'silent')
-	mp.commandv('script-message-to', 'adaptive_quality', 'set-profile',
-		profile.superres, profile.smooth, 'silent')
+	-- 本地定制：档位预设改由 content-adaptive 引擎处理（ai_interpolation/adaptive_quality
+	-- 为 Windows 专用脚本，Linux 上未启用；消息契约见 scripts/content-adaptive.lua）
+	mp.commandv('script-message-to', 'content_adaptive', 'set-profile',
+		tostring(name or ''))
 	mp.add_timeout(0.12, function()
 		local restart = mp.get_property_native(
 			'user-data/video-enhancement/ai-backend-restart-required') == 'yes'
@@ -2061,14 +2059,14 @@ open_video_enhancement_menu = function()
 			hint = choice.superres,
 			active = superres_mode == mode,
 			selectable = true,
-			value = {'script-message-to', 'adaptive_quality', 'set-superres', mode},
+			value = {'script-message-to', 'content_adaptive', 'set-superres', mode},
 		}
 		smooth_items[#smooth_items + 1] = {
 			title = choice.smooth_title,
 			hint = choice.smooth,
 			active = smooth_mode == mode,
 			selectable = true,
-			value = {'script-message-to', 'adaptive_quality', 'set-smooth', mode},
+			value = {'script-message-to', 'content_adaptive', 'set-smooth', mode},
 		}
 	end
 	local hq_pack_installed = mp.get_property_native(
