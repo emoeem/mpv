@@ -1,4 +1,69 @@
-# mpv 配置
+<div align="center">
+
+# mpv-Emo · 深度定制的 mpv 播放器配置
+
+**全网弹幕 · 在线中文字幕 · 内容自适应 AI 增强 · 360° 全景 · 可视化均衡器 · 统一右键菜单**
+
+![mpv](https://img.shields.io/badge/mpv-v0.41%2B-8be9fd)
+![UI](https://img.shields.io/badge/UI-uosc%20Dracula-bd93f9)
+![平台](https://img.shields.io/badge/平台-Linux%20%7C%20Windows%20%7C%20macOS-50fa7b)
+![License](https://img.shields.io/badge/License-LGPL--3.0-ffb86c)
+[![Stars](https://img.shields.io/github/stars/emoeem/mpv?style=social)](https://github.com/emoeem/mpv/stargazers)
+
+<img src="screenshots/main.png" alt="mpv-Emo 主界面" width="420"> <img src="screenshots/contextmenu.png" alt="右键菜单" width="420">
+
+*uosc Dracula 主题主界面 · 十余个分类的全平台统一右键菜单*
+
+</div>
+
+---
+
+## ✨ 特性一览
+
+| | |
+|---|---|
+| 🎯 **内容自适应画质** | 按动画/真人 × SD/HD/4K × 帧率自动挂载 Anime4K / ArtCNN / FSRCNNX / SSimSuperRes 超分组，掉帧自动降档，HDR 与直播源自动避让 |
+| 💬 **全网弹幕** | uosc_danmaku：弹幕搜索/自动加载/自动关联剧集，B 站与爱腾优源，overlay 高刷渲染 |
+| 🔍 **在线中文字幕** | ASSRT 射手网 + Wyzie(TMDb) 双源搜索，AI 本地生成字幕（whisper），自动对时 |
+| 🎛️ **可视化均衡器** | 10 段 EQ 图形化拖拽，14 种预设，配置持久化；与比特流直通模式互锁 |
+| 🌐 **360° 全景视频** | mpv360 全套：等距柱状/双鱼眼/EAC 投影，键鼠自由视角 |
+| 🖱️ **统一右键菜单** | `dyn_menu + uosc` 深度定制，十余个分类全部带中文菜单注解，档位勾选态可视化 |
+| 🎨 **超分与插帧武器库** | Anime4K 全集 / AnimeJaNai / CuNNy / FSRCNNX / ArtCNN / ravu / RIFE 补帧，右键按需加载 |
+| 📺 **HDR 双引擎** | gpu-next 原生直通与 hdr-toys 着色器链双模式，SDR 内屏自动 tone-map |
+| 🔄 **自更新器** | manager.lua 第三方脚本/着色器检查更新，本地定制永不覆盖 |
+| 🖥️ **三平台自检** | deploy.py 部署自检与运行时准备，四态依赖报告 |
+
+<details>
+<summary><b>📷 更多截图</b></summary>
+
+<br>
+
+| 可视化均衡器 | 超分与补帧 |
+|---|---|
+| <img src="screenshots/equalizer.png" width="420"> | <img src="screenshots/supermenu.png" width="420"> |
+
+| 中文增强 stats | 全功能右键菜单 |
+|---|---|
+| <img src="screenshots/stats.png" width="420"> | <img src="screenshots/contextmenu.png" width="420"> |
+
+</details>
+
+## 🚀 快速开始
+
+```bash
+# 1. 安装 mpv 0.41+（Arch: sudo pacman -S mpv）
+git clone https://github.com/emoeem/mpv.git ~/.config/mpv
+
+# 2. 依赖自检（自动报告缺失项与补建运行时目录）
+python3 ~/.config/mpv/deploy.py --check
+
+# 3. 字体：UI 字体 MFGA 因授权未定不入库，按 UI-FONTS.md 自行放置到 fonts/MFGA/
+# 4. 播放任意视频，右键打开菜单即可使用全部功能
+```
+
+> 🎬 **演示视频**：录制中，敬请期待 —— 录制脚本见 [`tools/record-demo.sh`](tools/record-demo.sh)
+
+## 📚 详细文档
 
 这是我的个人 mpv 配置仓库，主要面向 Linux / Wayland 桌面，使用
 `gpu-next + Vulkan` 输出，并围绕高质量视频、HDR/SDR 色彩处理、字幕、播放列表、
@@ -15,7 +80,7 @@
 > 文档以当前工作区中的实际文件为准。修改配置后，快捷键和参数说明应再次以
 > `input.conf`、`mpv.conf` 与 `script-opts/` 为最终依据。
 
-## 目录
+### 目录
 
 - [快速开始](#快速开始)
 - [目录结构](#目录结构)
@@ -289,8 +354,10 @@ profile=HDR2SDR
 
 ### `profiles.conf` 场景模式
 
-除 `网络流` 会按网络媒体属性自动触发外，其余场景 profile 需要在启动参数或配置中
-使用 `--profile=<名称>`；也可以通过快捷键动态应用部分着色器 profile。
+除 `网络流` 与 `直播` 会按网络媒体属性自动触发外（点播走 VOD 大缓冲，无时长的
+直播流走低延迟档，两者按 duration 互斥），其余场景 profile 需要在启动参数或配置中
+使用 `--profile=<名称>`；也可以通过快捷键动态应用部分着色器 profile，
+右键 `菜单 > 场景配置组`（`#@profiles` 动态生成）可一键应用。
 
 | Profile | 说明 |
 | --- | --- |
@@ -298,10 +365,33 @@ profile=HDR2SDR
 | `电影` | 高质量、插帧、去色带和 HDR 映射 |
 | `动画` | 动画专用 Anime4K 修复与去模糊 |
 | `低功耗` | 关闭硬解并降低缩放和解码负载，适合排查性能问题 |
-| `网络流` | 网络媒体自动触发，使用 30 秒预读、256 MiB 前向缓存和网络超时设置 |
+| `网络流` | 网络点播自动触发，使用 30 秒预读、256 MiB 前向缓存和网络超时设置 |
 | `HDR画质` | 手动 HDR 画质预设：目标峰值、色域映射和 PixelClipper |
 | `截图` | PNG 高质量截图和高质量缩放 |
-| `直播` | 低缓存、低延迟和流重连 |
+| `直播` | 无时长网络流自动触发：低缓存、低延迟和流重连 |
+
+### 内容自适应画质引擎（content-adaptive）
+
+`scripts/content-adaptive.lua` 在每次加载文件时按 **内容类型 × 分辨率 × 帧率** 自动
+挂载超分着色器组，与上面的手动配置组互补：
+
+```
+HDR 源（pq/hlg）      → 不挂超分，交给 HDR 处理链
+直播流（网络+无时长）  → 不挂超分，性能优先
+动画 SD               → FSRCNNX_distort + Krig
+动画 HD               → Ani4K ArtCNN + Krig（掉帧降档 → Anime4K 轻量 → 仅 Krig）
+真人 SD               → FSRCNNX_x2_8 + Krig
+真人 HD               → SSimSuperRes + Krig（掉帧降档 → 仅 Krig）
+4K                    → 仅 Krig，不做放大
+源帧率 >47fps         → 跳过 FSRCNNX 类重组
+```
+
+- 内容类型按文件名/路径关键词判定（压制组词库在 `script-opts/content_adaptive.conf`），
+  `CTRL+ALT+c` 可手动三态覆盖（动画/真人/自动）。
+- 手动改动着色器（`CTRL+0~9` / `ALT+1~8`）时本文件内自动让位，下个文件恢复；
+  uosc「超分与补帧」菜单（`Emo > 超分与补帧`）可切换 关闭/自动/性能/画质 四档并持久化。
+- 手动着色器跨文件不残留（`reset-on-next-file` 含 `glsl-shaders`），每个文件由引擎
+  重新决策；AI 补帧档位仅记录意图（vs-mlrt 运行时未装，播放保持原生）。
 
 ### 自动条件 profile
 
@@ -499,9 +589,12 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | 脚本 | 功能 |
 | --- | --- |
 | `dynamic-crop.lua` | 检测并切除黑边，只对视频流工作；起播尺寸未就绪时自动重试 |
+| `content-adaptive.lua` | 内容自适应画质引擎：按动画/真人 × SD/HD/4K × 帧率自动挂超分组，掉帧自动降档，手动让位，配置见 `script-opts/content_adaptive.conf` |
 | `hdr-mode.lua` | HDR 模式辅助 |
 | `hdr-pipeline.lua` | HDR 处理链双模式：原生直通 / hdr-toys，含属性守护与片源回退 |
 | `drcbox.lua` | 音频动态范围处理 |
+| `equalizer-gui.lua` | 可视化 10 段均衡器（`e` 键 / `音频` 菜单），14 种预设、配置持久化到 `script-opts/equalizer-gui.json`；与比特流直通互斥 |
+| `mpv360.lua` | 360° 全景视频（`视频 > 360°VR` 菜单），配合 `shaders/mpv360.glsl` 与 `script-opts/mpv360.conf`；键位仅 VR 激活期间生效 |
 | `music-mode.lua` | 音乐播放模式 |
 | `stats.lua` | 中文增强统计信息 |
 | `system-monitor.lua` | 系统监控 OSD：CPU/GPU 温度、功耗、内存、电池（对齐 Mpv∞ 的 Stats Page 6） |
@@ -524,7 +617,9 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 
 `shaders/` 按用途收录多类 GLSL 资源，包括：
 
-- Anime4K、Ani4K、AniSD、ArtCNN、ACNet、CuNNy。
+- Anime4K、Ani4K、AniSD、ArtCNN、ACNet、CuNNy（含 `dp4a/` 量化版，`着色器 > CuNNy` 菜单免键开关）。
+- `mpv360.glsl`：360° 全景投影重映射（equirect / 双鱼眼 / EAC 等），由 `scripts/mpv360.lua`
+  进入 VR 模式时 append、退出时 remove，菜单在 `视频 > 360°VR`。
 - FSRCNNX、NNEDI3、RAVU、SSIM、AiUpscale。
 - KrigBilateral、JointBilateral、色度升频和自适应锐化。
 - SMAA、DLAA、CMAA、去色带、降噪、翻转、旋转、缩放和色温滤镜。
@@ -835,6 +930,9 @@ profile：着色器配置组（`[动画]`、`[AnimeJaNai]` 等）用 `glsl-shade
 | `uosc_danmaku` | `scripts/uosc_danmaku` | `check` | 本地有弹幕适配和行为定制 |
 | `trakt_scrobble` | `scripts/trakt-scrobble` | `check` | 本地配置可能包含服务适配 |
 | `simple_mpv_webui` | `scripts/simple-mpv-webui` | `check` | 本地端口和页面有定制 |
+| `cunny_shaders` | `shaders/CuNNy` | `check` | 菜单条目按文件名引用，上游新增/改名需同步 input.conf |
+| `mpv360` | `scripts/mpv360.lua` | `check` | 配套 `shaders/mpv360.glsl` 不随上游更新替换 |
+| `equalizer_gui` | `scripts/equalizer-gui.lua` | `check` | 单文件脚本，本地不改实现 |
 | `anime4k` | `shaders/Anime4K/glsl` | `replace` | 允许整体替换上游 GLSL 目录 |
 | `file_browser` | `scripts/file-browser` | `replace` | 允许整体替换上游文件浏览器 |
 
@@ -1073,3 +1171,14 @@ macOS 侧只有 `cocoa + VideoToolbox`：`platform.conf` 的 `[platform-macos]` 
 - [thumbfast](https://github.com/po5/thumbfast)
 - [InputEvent](https://github.com/zhongfly/InputEvent)
 - [Dracula 调色板](https://draculatheme.com/contribute)
+- [mpv-sub-assrt](https://github.com/dyphire/mpv-sub-assrt)
+- [Anime4K](https://github.com/bloc97/Anime4K)
+- [mpv360](https://github.com/kasper93/mpv360)
+- [Equalizer-GUI](https://github.com/akFace/equalizer-gui)
+- [akFace/mpv.config](https://github.com/akFace/mpv.config)（均衡器 / VR / CuNNy 借鉴来源）
+
+## 许可
+
+本仓库整体以 [LGPL-3.0](COPYING.LESSER) 发布（见 `COPYING.LESSER`）。
+`scripts/` 与 `shaders/` 内的第三方组件保留其原始许可证（uosc GPL-3.0、Anime4K MIT/LGPL、
+mpv360 MIT 等），使用与分发时请一并遵守。MFGA UI 字体因授权未定不随仓库分发。

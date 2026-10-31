@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mpv-Emo · 深度定制的 mpv 播放器配置</title>
+<meta name="description" content="开箱即用的 mpv 深度定制配置：全网弹幕、在线中文字幕、内容自适应 AI 增强、360° 全景、可视化均衡器、全平台统一右键菜单。">
+<style>
+  :root {
+    --bg: #282a36; --bg-alt: #21222c; --panel: #343746;
+    --fg: #f8f8f2; --muted: #b7bcc9;
+    --purple: #bd93f9; --pink: #ff79c6; --green: #50fa7b;
+    --cyan: #8be9fd; --orange: #ffb86c; --red: #ff5555;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; line-height: 1.7; }
+  a { color: var(--cyan); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .container { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+  /* hero */
+  .hero { text-align: center; padding: 88px 0 56px; background: linear-gradient(180deg, #21222c 0%, var(--bg) 100%); }
+  .hero h1 { font-size: 44px; letter-spacing: 1px; }
+  .hero h1 .accent { color: var(--purple); }
+  .hero .tagline { margin: 18px 0 26px; font-size: 18px; color: var(--muted); }
+  .hero .tagline b { color: var(--pink); font-weight: 600; }
+  .badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 34px; }
+  .badge { padding: 4px 14px; border-radius: 999px; font-size: 13px; border: 1px solid #44475a; background: var(--panel); }
+  .badge.p { color: var(--purple); } .badge.c { color: var(--cyan); } .badge.g { color: var(--green); } .badge.o { color: var(--orange); }
+  .cta { display: inline-block; margin: 0 8px 8px; padding: 12px 28px; border-radius: 10px; font-weight: 600; font-size: 15px; }
+  .cta.primary { background: var(--purple); color: #191a21; }
+  .cta.primary:hover { background: #d6acff; text-decoration: none; }
+  .cta.ghost { border: 1px solid #6272a4; color: var(--fg); }
+  .cta.ghost:hover { border-color: var(--purple); text-decoration: none; }
+  .hero-shot { margin-top: 52px; border-radius: 14px; border: 1px solid #44475a; box-shadow: 0 24px 80px rgba(0,0,0,.55); max-width: 760px; width: 92%; }
+
+  /* sections */
+  section { padding: 64px 0; }
+  section.alt { background: var(--bg-alt); }
+  h2 { font-size: 28px; margin-bottom: 8px; }
+  h2 .k { color: var(--green); }
+  .sub { color: var(--muted); margin-bottom: 34px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+  .card { background: var(--panel); border: 1px solid #44475a; border-radius: 12px; padding: 22px 24px; }
+  .card .icon { font-size: 26px; }
+  .card h3 { font-size: 17px; margin: 8px 0 6px; }
+  .card p { color: var(--muted); font-size: 14.5px; }
+
+  .gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+  .gallery figure { background: var(--panel); border: 1px solid #44475a; border-radius: 12px; overflow: hidden; }
+  .gallery img { width: 100%; display: block; }
+  .gallery figcaption { padding: 10px 16px; color: var(--muted); font-size: 14px; }
+
+  pre { background: #191a21; border: 1px solid #44475a; border-radius: 10px; padding: 18px 22px; overflow-x: auto; font-size: 14px; color: #e2e2dc; }
+  pre .c { color: #6272a4; }
+  .keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px 28px; }
+  .keys li { list-style: none; display: flex; justify-content: space-between; border-bottom: 1px dashed #44475a; padding: 7px 2px; font-size: 15px; }
+  kbd { background: var(--panel); border: 1px solid #6272a4; border-radius: 6px; padding: 1px 9px; font-size: 13px; color: var(--cyan); }
+
+  footer { border-top: 1px solid #44475a; padding: 34px 0 44px; color: var(--muted); font-size: 14px; text-align: center; }
+  footer .links a { margin: 0 8px; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="container">
+    <h1>mpv-<span class="accent">Emo</span></h1>
+    <p class="tagline">开箱即用的 <b>mpv 深度定制配置</b> —— 把播放器调成你想要的样子</p>
+    <div class="badges">
+      <span class="badge c">mpv v0.41+</span>
+      <span class="badge p">uosc · Dracula</span>
+      <span class="badge g">Linux / Windows / macOS</span>
+      <span class="badge o">LGPL-3.0</span>
+    </div>
+    <a class="cta primary" href="https://github.com/emoeem/mpv">GitHub 仓库</a>
+    <a class="cta ghost" href="https://github.com/emoeem/mpv/releases">下载懒人包</a>
+    <br>
+    <img class="hero-shot" src="assets/main.png" alt="mpv-Emo 主界面截图">
+  </div>
+</header>
+
+<section>
+  <div class="container">
+    <h2><span class="k">✨</span> 特性</h2>
+    <p class="sub">每一个功能都带中文菜单注解，右键即可触达。</p>
+    <div class="grid">
+      <div class="card"><div class="icon">🎯</div><h3>内容自适应画质</h3><p>按动画/真人 × SD/HD/4K × 帧率自动挂载 Anime4K / ArtCNN / FSRCNNX / SSimSuperRes 超分组，掉帧自动降档，HDR 与直播自动避让。</p></div>
+      <div class="card"><div class="icon">💬</div><h3>全网弹幕</h3><p>uosc_danmaku：搜索、自动加载、剧集自动关联，B 站与爱腾优源，独立 overlay 高刷渲染不占字幕轨。</p></div>
+      <div class="card"><div class="icon">🔍</div><h3>在线中文字幕</h3><p>ASSRT 射手网 + Wyzie(TMDb) 双源搜索；whisper 本地生成字幕；自动时轴对齐。</p></div>
+      <div class="card"><div class="icon">🎛️</div><h3>可视化均衡器</h3><p>10 段 EQ 图形化拖拽、14 种预设、配置持久化，与比特流直通模式智能互锁。</p></div>
+      <div class="card"><div class="icon">🌐</div><h3>360° 全景视频</h3><p>mpv360 全套：等距柱状 / 双鱼眼 / EAC 投影，键鼠自由视角与 FOV 控制。</p></div>
+      <div class="card"><div class="icon">🖱️</div><h3>全平台统一右键菜单</h3><p>十余个分类、数百项功能的菜单体系，动态轨道/章节/配置组注入，档位勾选态可视化。</p></div>
+      <div class="card"><div class="icon">📺</div><h3>HDR 双引擎</h3><p>gpu-next 原生直通与 hdr-toys 着色器链双模式切换，SDR 屏自动 tone-map，峰值动态计算。</p></div>
+      <div class="card"><div class="icon">🔄</div><h3>自更新器</h3><p>manager.lua 检查 uosc / 弹幕插件 / Anime4K 等上游更新——只报告，永不覆盖本地定制。</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="container">
+    <h2><span class="k">📷</span> 界面预览</h2>
+    <p class="sub">uosc Dracula 主题 · 顶栏进度胶囊 · 底栏语境控件带。</p>
+    <div class="gallery">
+      <figure><img src="assets/contextmenu.png" alt="右键菜单"><figcaption>全功能右键菜单（十余个分类）</figcaption></figure>
+      <figure><img src="assets/equalizer.png" alt="可视化均衡器"><figcaption>可视化 10 段均衡器</figcaption></figure>
+      <figure><img src="assets/supermenu.png" alt="超分与补帧"><figcaption>超分与补帧控制面板</figcaption></figure>
+      <figure><img src="assets/stats.png" alt="中文 stats"><figcaption>中文增强 stats 页</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <h2><span class="k">🚀</span> 30 秒快速开始</h2>
+    <p class="sub">mpv 0.41+ · 一个 git clone 就绪。</p>
+<pre><span class="c"># 依赖自检（自动报告缺失项）</span>
+git clone https://github.com/emoeem/mpv.git ~/.config/mpv
+python3 ~/.config/mpv/deploy.py --check
+
+<span class="c"># UI 字体按 UI-FONTS.md 放入 fonts/MFGA/（授权未定，需自备）</span>
+<span class="c"># 然后播放任意视频，右键打开菜单</span></pre>
+    <h2 style="margin-top:44px"><span class="k">⌨️</span> 常用快捷键</h2>
+    <ul class="keys">
+      <li><span>右键菜单</span><kbd>鼠标右键</kbd></li>
+      <li><span>弹幕开关 / 菜单</span><kbd>CTRL+D / CTRL+SHIFT+D</kbd></li>
+      <li><span>ASSRT 在线字幕</span><kbd>CTRL+F</kbd></li>
+      <li><span>内容类型切换（动画/真人/自动）</span><kbd>CTRL+ALT+C</kbd></li>
+      <li><span>可视化均衡器</span><kbd>E</kbd></li>
+      <li><span>画质配置组切换</span><kbd>ALT+1~8</kbd></li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p>以 LGPL-3.0 发布 · 第三方组件保留其原始许可证 · MFGA 字体授权未定不随包分发</p>
+    <p class="links">
+      <a href="https://github.com/emoeem/mpv">GitHub</a> ·
+      <a href="https://github.com/emoeem/mpv/releases">Releases</a> ·
+      <a href="https://github.com/tomasklaen/uosc">uosc</a> ·
+      <a href="https://github.com/Tony15246/uosc_danmaku">uosc_danmaku</a> ·
+      <a href="https://github.com/bloc97/Anime4K">Anime4K</a> ·
+      <a href="https://github.com/akFace/mpv.config">akFace/mpv.config</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

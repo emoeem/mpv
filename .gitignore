@@ -25,3 +25,12 @@ __pycache__/
 
 # 可选随配置携带的 MFGA 字体（约 126 MiB，授权未定，绝不入库）
 fonts/MFGA/
+
+# 配置迁移工具留下的备份（2026-10-29 mux），不入库
+*.bak-mux-*
+
+# trakt 应用凭据（client_id/secret 曾随历史入库，已从跟踪移除；需去 trakt.tv 轮换）
+script-opts/trakt_scrobble.conf
+
+# 发布产物走 GitHub Releases，不入库
+dist/

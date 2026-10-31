@@ -1,5 +1,123 @@
 # 更新记录
 
+## 2026-10-31 · 内容自适应自动化引擎（content-adaptive）
+
+对照调研结论：此前自动化只有「HDR 条件组 / 平台分流 / 网络缓存」三层，内容类型维度
+（动画/真人/SD/4K）全靠手动 ALT 键；功能完整的 adaptive-quality.lua 是 Windows 专用
+且被 `enabled=no` 封存。本次新增 Linux 原生引擎补上内容维度，并修复调研发现的手动
+体系缺陷（跨文件残留 / 配置组叠加 / 直播误用 VOD 缓冲 / 8K 名不副实 / uosc 超分菜单断线）。
+
+### 改了什么
+
+| 项 | 改动 |
+| --- | --- |
+| 新增引擎 | `scripts/content-adaptive.lua` + `script-opts/content_adaptive.conf`：file-loaded 与 video-params 变化时按 内容类型(动画/真人) × 分辨率(SD/HD/4K) × 帧率 挂载着色器组（`glsl-shaders` 整列表替换）；HDR 源与直播流不挂载；词库/阈值/预设全部可配 |
+| 动画判定 | 文件名/路径关键词（VCB-Studio、LoliHouse、Baha、AT-X、anime…，conf 可扩）+ `CTRL+ALT+c` 手动三态覆盖（动画/真人/自动），状态存 `user-data/content-adaptive/*` |
+| 预设映射 | 动画 SD=FSRCNNX_distort+Krig；动画 HD=Ani4K ArtCNN+Krig；真人 SD=FSRCNNX_x2_8+Krig；真人 HD=SSimSuperRes+Krig；4K=仅 Krig；>47fps 源跳过 FSRCNNX 类 |
+| 性能降档 | 30s 窗口内 VO 掉帧 >60 → 动画 Ani4K→Anime4K 轻量→仅 Krig，真人→仅 Krig；冷却 60s、每文件限 2 次（阈值可配） |
+| 手动让位 | 用户改动 glsl-shaders（CTRL+0~9 / ALT+1~8）→ 本文件内暂停自动、OSD 提示，下个文件恢复；菜单显式选档 = 重新接管 |
+| uosc 菜单接线 | `menus.lua` 三处：超分/补帧条目与档位预设改发 `script-message-to content_adaptive`；引擎实现 set-superres/set-smooth/set-profile 消息与 `user-data/video-enhancement/*` 状态，此前不可达的「超分与补帧」菜单复活；input.conf 补 `codex-open-video-enhancement-menu` 入口 |
+| 跨文件残留 | `mpv.conf` reset-on-next-file 追加 `glsl-shaders`、`glsl-shader-opts`：切文件清手动着色器，由引擎按新文件重新决策 |
+| 配置组叠加 | `input.conf` ALT+1~8 与 CTRL+P 循环全部改为「先 `change-list glsl-shaders clr` 再 apply-profile」，互斥切换；CTRL+P 循环补「关闭」档 |
+| 直播缓冲 | `profiles.conf` [网络流] cond 排除无时长流、[直播] 加 cond（网络且无时长）自动启用低延迟档——修复直播被套 300s VOD 缓冲 |
+| 8K 修复 | [8k-fix] 补 `scale=bilinear`/`dscale=bilinear`（此前 desc 说关重处理实际只重置 hwdec/video-sync；着色器由引擎 4K 档保证不挂） |
+| AnimeJaNai 修复 | [AnimeJaNai] 原为 `;` 分隔单值写法，mpv 列表不认 `;`，实际只挂成一个非法路径——拆成两条 append |
+| 场景菜单 | input.conf 加 `#@profiles` 动态占位（`菜单 > 场景配置组`），激活 dyn_menu 休眠的 profile 右键菜单 |
+
+### 实施中发现并修正的三个坑
+
+1. **profile 内 `glsl-shaders="a,b,c"` 不按逗号拆分**（带引号/不带引号均整串成单条目，
+   实测确认）——「清空+追加」的替换语义无法在 profile 内表达，改为绑定层先 clr 再
+   apply-profile；[8k-fix] 的空赋值 `glsl-shaders=` 会留下 `""` 非法条目，一并撤掉。
+2. **self_write 标志悬空**：apply() 目标列表与当前值相同时 `set_property_native` 不触发
+   observer，标志残留会吞掉下一次手动让位判定——加同值短路 + 0.5s 超时回收。
+3. **让位期间参数事件清空用户着色器**：apply() 加 paused 守卫，让位期间绝不改写。
+
+### 边界与互斥
+
+- 引擎只管 `glsl-shaders`；`vf` 滤镜、插帧（ALT+i / RIFE）、HDR 链均不受影响。
+- AI 补帧运行时（vs-mlrt）未安装：菜单 smooth 档位仅记录意图并如实提示，播放保持原生。
+- `#@profiles` 菜单直连 apply-profile（无 clr 前缀），与着色器组混用仍可能叠加——
+  高级用法，常规路径（ALT 键/CTRL+P/引擎）均已互斥。
+
+### 验证
+
+真实配置 IPC 实测（测试片按场景命名副本 + ffmpeg 生成真 640×360 SD 片）：
+
+| 场景 | 期望 | 结果 |
+| --- | --- | --- |
+| HD 动画命名（VCB-Studio） | [Ani4K ArtCNN, Krig] | ✅ |
+| SD 动画（640×360 + Anime 关键词） | [FSRCNNX_distort, Krig] | ✅ |
+| 真人 HD | [SSimSuperRes, Krig] | ✅ |
+| 真人文件手动覆盖动画模式 | 变为 [Ani4K, Krig] | ✅ |
+| 手动挂着色器 | paused=yes（让位） | ✅ |
+| 下个文件 | paused 复位、预设重算 | ✅ |
+| performance / quality 档 | 轻量 / HD 重组升档 | ✅ |
+| 重启 | mode 持久化恢复（state json） | ✅ |
+| ALT 序列模拟（clr+FSRCNNX → clr+Ani4K） | 互斥不叠加 | ✅（2 项 → 1 项） |
+| 切文件清手动着色器 | reset-on-next-file 生效 | ✅（3 项手动 → 引擎重算） |
+| 本地文件触发 网络流/直播 | 不误触发 | ✅ |
+| 键位唯一性 / deploy --check | 无重复 / 退出码 0 | ✅ |
+| 掉帧降档路径 | 真实掉帧难以离线复现，阈值逻辑经代码审查，OSD 路径与降档序列已人工触发验证 | ⚠️ 如实标注 |
+
+## 2026-10-31 · 借鉴 akFace/mpv.config 整合包：接入均衡器 / 360°VR / CuNNy 三项
+
+对照调研 `akFace/mpv.config` 整合包（本地克隆 `~/code/mpv.config`）后确认：字幕/弹幕/
+插帧/右键菜单/主题等能力本仓库已全面覆盖或更强（同上游且深度定制），仅三项缺失，
+经确认全部采纳。文件取自整合包 `src/common/`，GitHub 直连被墙不影响。
+
+### 改了什么
+
+| 项 | 改动 |
+| --- | --- |
+| Equalizer-GUI | 新增 `scripts/equalizer-gui.lua`（上游 akFace/equalizer-gui「全功能持久化版」）；`input.conf` 音频区加 `e` → `script-message toggle-equalizer-gui`（`音频 > 开/关 可视化均衡器`）；配置自动写入 `script-opts/equalizer-gui.json` |
+| mpv360 | 新增三件套：`scripts/mpv360.lua`（kasper93/mpv360 v1.3）+ `shaders/mpv360.glsl` + `script-opts/mpv360.conf`；`input.conf` 视频区加 `视频 > 360°VR` 子菜单（全部免键条目） |
+| CuNNy 超分 | 新增 `shaders/CuNNy/`（9 个标准版 + `dp4a/` 7 个量化版，来自整合包）；`input.conf` 着色器区加 `着色器 > CuNNy` 子菜单，全部免键条目，格式沿用 `change-list glsl-shaders toggle` |
+| manager.json | 以 `check` 模式注册三个上游：`cunny_shaders`（pifroggi/CuNNy）、`mpv360`（kasper93/mpv360）、`equalizer_gui`（akFace/equalizer-gui）；未设 `baseline`，首次按 `M` 时自动初始化 |
+| README.md | 音频脚本表补 `equalizer-gui.lua`/`mpv360.lua`；manager 来源表补三行；着色器一节补 CuNNy 菜单入口与 `mpv360.glsl` 说明 |
+
+### 键位冲突处理（mpv360.conf 改动）
+
+整合包默认键位与本地有两处硬冲突（均在小写 `Alt+` 拼写下漏检、大写 `ALT+` 复查时抓出）：
+
+- `fisheye-fov-increase=Ctrl+f` 会与 `CTRL+f`（ASSRT 在线字幕搜索）、`CTRL+F`（流质量
+  菜单）互劫——mpv360 的键位在 VR 激活期间是 `add_forced_key_binding` 强制级。已改：
+  鱼眼 FOV → `Ctrl+Alt+Shift+←/→`。
+- `reset-view=Alt+g` / `show-help=Alt+h` 与本地 `ALT+g`（章节制作 ogm）、`ALT+h`
+  （HDR 动态映射）冲突。已清空这两项默认键，重置视角/帮助仅留菜单入口
+  （`script-binding` 调用不受空键位影响，已实测）。
+
+另外为 `cycle-projection`/`cycle-sampling`/`switch-eye` 三个空键位填上
+`Ctrl+Alt+↑/↓/→`（经 input.conf 核对无冲突）。`Ctrl+方向键` 视角、`Ctrl+左键`
+鼠标视角保持默认；`e`（均衡器）经查空闲。
+
+### 已知互斥与边界
+
+- **均衡器 vs 比特流直通**：EQ 通过 `af @eq_gui:lavfi=[equalizer=…]` 工作，与
+  `audio-passthrough` 的 SPDIF/HDMI 直通互斥；EQ 默认关闭，直通用户勿开。脚本切换
+  Left/Right/Stereo 声道模式时会改写 `audio-channels`，与 `ALT+y` 循环、直通模式的
+  声道管理并存时以最后一次选择为准。
+- **mpv360 键位作用域**：所有 mpv360 键位仅在 VR 模式激活期间注册，退出即解除，
+  不影响日常键位。
+- **CuNNy 免键**：`CTRL+0~9` 已占用，CuNNy 16 个条目均为右键菜单免键项（`#` 行惯例）。
+
+### 验证
+
+真实配置下 IPC 实测（`--vo=null --ao=null`，测试片 `写给姐姐_带字幕.mp4`）：
+
+| 场景 | 操作 | 结果 |
+| --- | --- | --- |
+| 脚本加载 | `script-message-to` 定向探测 | `mpv360`、`equalizer_gui` 客户端均在 |
+| EQ 持久化链路 | 预置 `enabled=true` + 人声预设 → 加载文件 | `af` 出现 `@eq_gui` 完整 10 段链（含 `-11dB` headroom 预衰减） |
+| EQ GUI | `toggle-equalizer-gui` 开/关 | 成功，无报错；`audio-channels` 保持 `auto-safe` 未被改写 |
+| VR 启停 | `mpv360/toggle` 开→查→关 | `glsl-shaders` 正确 append/remove `mpv360.glsl` |
+| VR 操作 | `reset-view` / `cycle-projection` / `cycle-sampling` | 全部成功 |
+| 菜单路径 | grep input.conf 提取 16 个 CuNNy 路径逐一 `test -f` | 全部存在 |
+| 部署自检 | `deploy.py --check` | available 14 · degraded 2（RIFE 缺 vsmlrt、online-media venv 平台不符，均为既有状态）· 退出码 0 |
+
+> 备注：测试中发现的「客户端名连字符转下划线」现象（`equalizer-gui` → 客户端名
+> `equalizer_gui`）仅影响 `script-message-to` 定向调用，菜单使用的广播消息不受影响。
+
 ## 2026-10-28 · TheIntroDB 迁移到 API v4（v2/v3 已被上游标记废弃）
 
 上游维护者在 issue 里点名本仓库的 `skip_segments.conf` 仍在打 `/v3/media`。v1 已移除，
