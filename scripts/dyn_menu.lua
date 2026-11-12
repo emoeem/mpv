@@ -491,7 +491,10 @@ local function update_profiles_menu(menu)
                 profile.name == 'encoding' or profile.name == 'libmpv') then
             append_menu(submenu, {
                 title = profile.name,
-                cmd = string.format('show-text %s; apply-profile %s', profile.name, profile.name),
+                -- 与 input.conf ALT 键/CTRL+P 一致：先清手动着色器再 apply-profile，
+                -- 防止与内容自适应引擎/手动着色器组叠加（2026-10-31 引擎文档记录的已知隐患）。
+                cmd = string.format('show-text %s; change-list glsl-shaders clr ""; apply-profile %s',
+                    profile.name, profile.name),
             })
         end
     end

@@ -1,5 +1,29 @@
 # 更新记录
 
+## 2026-11-13（第三轮）· 优化收口：场景菜单着色器互斥与孤儿清理
+
+第二轮实机探测后的三个小收口，全部为低风险改动：
+
+1. **`#@profiles` 场景菜单着色器互斥**（`scripts/dyn_menu.lua update_profiles_menu`）：
+   菜单项从裸 `apply-profile` 改为与 input.conf ALT 键/CTRL+P 完全一致的
+   `change-list glsl-shaders clr ""; apply-profile` 流程，消除 2026-10-31 引擎文档记录的
+   「菜单直连 apply-profile 与手动着色器/自适应引擎叠加」隐患。
+2. **删除孤儿 `scripts/uosc_danmaku/modules/update.lua`**：check-update 键位已移除，
+   该模块全库零引用（同步时确认过加载链断裂，属死代码）。
+3. **补帧链核对结论（无需改代码）**：`rife.lua` 的 `build_vpy()` 已全自动生成 rife.vpy
+   （场景检测/倍数/scale/模型映射/后端参数/32 对齐补边/像素格式回转全齐），
+   `script-opts/rife.conf` 已注明依赖包（emoeem 仓库的 mlrt-ort/trt runtime）。
+   点亮步骤只剩：安装 vs-mlrt 插件与 RIFE 模型（系统包，自行安装）→ `rife.conf
+   enabled=yes` 或直接 CTRL+ALT+r。当前 vapoursynth 已在、缺 vs-mlrt 插件。
+
+同步确认项：窗口尺寸记忆已由 `save-position-on-quit=yes` 覆盖（公告八的 Linux 等价）；
+Linux 系统监控由本地 `system-monitor.lua` 提供（无需 stats-system）。
+
+### 验证
+
+- `luac5.1 -p` 通过；宿主机 `mpv --idle` 冒烟无 error/Lua 输出。
+- 菜单 cmd 字符串引号配对与 `;` 拆分结构静态校验通过。
+
 ## 2026-11-13（第二轮）· 同步收尾：紧急回退、实机冒烟修复与上游修复移植
 
 同步提交 `d850ecf` 之后的实机验证轮。宿主机实测：mpv v0.41.0，yt-dlp 2026.10.26、deno 2.9.8、
