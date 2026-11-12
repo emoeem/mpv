@@ -81,6 +81,8 @@ local options = {
 }
 read_options(options)
 
+mp.set_property_native("user-data/dynamic-crop/state", "unavailable")
+
 if options.mode == 0 then
     mp.msg.info("mode = 0, disable script.")
     return
@@ -89,6 +91,7 @@ end
 -- forward declarations
 local cleanup, on_toggle
 local s = {}
+local state_file_ready = false
 
 -- labels
 local label_prefix = mp.get_script_name()
@@ -181,6 +184,14 @@ local function is_cropable()
         if track.type == 'video' and track.selected then return not track.albumart end
     end
     return false
+end
+
+local function publish_state()
+    local state = "unavailable"
+    if state_file_ready and s.started and not s.f_missing and is_cropable() then
+        state = ({[1] = "enabled", [2] = "keep-crop", [3] = "disabled"})[s.toggled] or state
+    end
+    mp.set_property_native("user-data/dynamic-crop/state", state)
 end
 
 local function filter_state(label, key, value)
@@ -702,6 +713,7 @@ end
 local ENABLE, DISABLE_WITH_CROP, DISABLE = 1, 2, 3
 function on_toggle(auto)
     if s.f_missing then
+        publish_state()
         mp.osd_message("Libavfilter cropdetect missing", 3)
         return
     end
@@ -736,6 +748,7 @@ function on_toggle(auto)
         resume(EVENT)
         if not auto then mp.osd_message(string.format("%s: enabled.", label_prefix), 3) end
     end
+    publish_state()
 end
 
 local function pause(event, is_paused)
@@ -764,6 +777,8 @@ local function cancel_start_retry()
 end
 
 function cleanup()
+    state_file_ready = false
+    publish_state()
     cancel_start_retry()
     start_retry_count = 0
     if not s.started then return end
@@ -787,6 +802,8 @@ function cleanup()
 end
 
 local function on_start()
+    state_file_ready = false
+    publish_state()
     mp.msg.info("File loaded.")
     if not is_cropable() then
         mp.msg.warn("Exit, only works for videos.")
@@ -855,10 +872,13 @@ local function on_start()
     mp.register_event("log-message", collect_metadata)
     s.toggled = (options.mode % 2 == 1) and DISABLE or ENABLE
     s.started = true -- everything ready
+    state_file_ready = true
+    publish_state()
 end
 
 mp.add_key_binding("C", "toggle_crop", on_toggle)
 mp.register_event("end-file", cleanup)
+mp.register_event("video-reconfig", function() publish_state() end)
 mp.register_event("file-loaded", function()
     cancel_start_retry()
     start_retry_count = 0

@@ -1,3 +1,5 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
+local Color = require("modules/color")
 local msg = require('mp.msg')
 local utils = require("mp.utils")
 
@@ -39,6 +41,7 @@ end
 
 local function episode_request_is_current(request)
     if type(request) ~= "table" then return true end
+    if request.is_current and not request.is_current() then return false end
     if request.generation ~= episode_request_generation then return false end
     local current_path = get_current_path()
     return not request.path or not current_path or request.path == current_path
@@ -104,21 +107,43 @@ local function forget_resolver(query, server, context)
     end
 end
 
+local function rendered_source_count(query)
+    local count = 0
+    for _, event in ipairs(COMMENTS or {}) do
+        if event.source == query then count = count + 1 end
+    end
+    return count
+end
+
+local function load_resolved_source(query, from_menu)
+    -- A mirror's count and the raw row count do not prove that a supported,
+    -- unblocked comment reached the renderer. Only then is loading successful.
+    if not load_danmaku(from_menu, true) or rendered_source_count(query) == 0 then
+        return false
+    end
+    show_loaded(true)
+    return true
+end
+
 local function apply_resolver_data(data, query, from_menu, server, mode, context)
-    if data and data.xml ~= nil and (type(data.xml) ~= "table" or #data.xml > 0) then
+    if data and type(data.xml) == "table" and #data.xml > 0 then
         DANMAKU.sources[query] = DANMAKU.sources[query] or {from = "user_custom"}
         DANMAKU.sources[query].data = data.xml
-        remember_resolver(query, server, mode, context)
-        load_danmaku(from_menu)
-        return true
+        if load_resolved_source(query, from_menu) then
+            remember_resolver(query, server, mode, context)
+            return true
+        end
+        DANMAKU.sources[query].data = nil
     end
 
-    local count = data and data.comments and (tonumber(data.count) or #data.comments) or 0
-    if data and data.comments and count > 1 then
-        save_danmaku_data(data.comments, query, "user_custom")
-        remember_resolver(query, server, mode, context)
-        load_danmaku(from_menu)
-        return true
+    local comments = data and data.comments
+    if type(comments) == 'table' and #comments > 0 then
+        if save_danmaku_data(comments, query, "user_custom") > 0
+            and load_resolved_source(query, from_menu) then
+            remember_resolver(query, server, mode, context)
+            return true
+        end
+        DANMAKU.sources[query].data = nil
     end
     return false
 end
@@ -153,6 +178,23 @@ local function try_resolver_affinity(query, record, from_menu, context, callback
     end, {silent = true, callback_on_error = true})
 end
 
+local function report_comment_failure(reason)
+    if not danmaku_remote_status then return end
+    local empty = reason == 'empty' or reason == 'no_data'
+    local retained = type(COMMENTS) == 'table' and #COMMENTS > 0
+    danmaku_remote_status(empty and 'empty' or 'error',
+        empty and (retained and '当前来源无有效弹幕，已保留之前的弹幕' or '当前来源没有可显示的弹幕，请更换来源')
+        or (retained and '弹幕下载暂失败，已保留之前的弹幕' or '弹幕下载暂失败，请重试或更换来源'))
+end
+
+-- Only known curl transport failures get one same-source retry. HTTP failures
+-- use exit 22 (--fail), and malformed/empty responses are never retryable here.
+local function transient_comment_error(reason)
+    local code = type(reason) == 'string' and reason:match('^curl 请求失败%. Exit code: (%d+) Error:')
+    code = tonumber(code)
+    return code and ({[6]=true,[7]=true,[18]=true,[28]=true,[35]=true,[52]=true,[55]=true,[56]=true})[code] == true
+end
+
 -- 写入history.json
 -- 读取episodeId获取danmaku
 function set_episode_id(input, from_menu, api_server, episode_number, request_options)
@@ -171,17 +213,20 @@ function set_episode_id(input, from_menu, api_server, episode_number, request_op
         end
     end
 
-    DANMAKU.api_server = selected_server
-
     local episodeId = tonumber(input)
-    if not episodeId or not selected_server or selected_server == "" then
-        show_message("弹幕关联无效", 3)
+    if not episodeId or episodeId < 1 or episodeId % 1 ~= 0 or
+        not selected_server or selected_server == "" then
+        report_comment_failure('invalid_selection')
+        show_message(i18n.t("弹幕关联无效"), 3)
         msg.warn("弹幕关联缺少有效 episodeId 或服务器")
+        if request_options.on_complete then pcall(request_options.on_complete, false, "invalid_selection") end
         return
     end
 
-    begin_danmaku_association()
+    DANMAKU.api_server = selected_server
+    begin_danmaku_association(request_options)
     DANMAKU.source = "dandanplay"
+    DANMAKU.extra = nil
 
     episode_request_generation = episode_request_generation + 1
     local request = {
@@ -196,6 +241,7 @@ function set_episode_id(input, from_menu, api_server, episode_number, request_op
             source = DANMAKU.source,
         },
         on_complete = request_options.on_complete,
+        is_current = request_options.is_current,
     }
     request.history_record = request_options.history_record or {
         animeTitle = request.association.animeTitle,
@@ -209,6 +255,7 @@ function set_episode_id(input, from_menu, api_server, episode_number, request_op
     local function finish(success, reason)
         if not episode_request_is_current(request) then return end
         if success then
+            request.committed = true
             write_history(episodeId, selected_server, episode_number, request.association)
             if request.on_complete then pcall(request.on_complete, true) end
             return
@@ -230,19 +277,23 @@ function set_episode_id(input, from_menu, api_server, episode_number, request_op
 end
 
 -- 回退使用额外的弹幕获取方式
-function get_danmaku_fallback(query, skip_server, from_menu, resolver_context)
+function get_danmaku_fallback(query, skip_server, from_menu, resolver_context, on_failed, skip_native, on_success)
     if from_menu == nil then from_menu = true end
     resolver_context = resolver_context or capture_resolver_context(query)
 
     local function do_fallback()
-        if options.fallback_server == "" then return end
+        if options.fallback_server == "" then
+            if on_failed then on_failed() end
+            return
+        end
         local servers = get_fallback_server_list(skip_server)
 
         local function try_server(index)
             local server = servers[index]
             if not server then
                 msg.info("全部备用服务器均无数据或返回格式不正确")
-                show_message("备用服务器无数据或返回格式不正确", 3)
+                show_message(i18n.t("备用服务器无数据或返回格式不正确"), 3)
+                if on_failed then on_failed() end
                 return
             end
 
@@ -260,6 +311,7 @@ function get_danmaku_fallback(query, skip_server, from_menu, resolver_context)
 
             fetch_danmaku_data(args, function(data, err)
                 if not err and apply_resolver_data(data, query, from_menu, server, "fallback", resolver_context) then
+                    if on_success then on_success() end
                     return
                 end
                 msg.info("备用服务器无数据，尝试下一节点：" .. server)
@@ -270,44 +322,44 @@ function get_danmaku_fallback(query, skip_server, from_menu, resolver_context)
         try_server(1)
     end
 
-    if query:find('bilibili.com') or query:find('bilivideo.c[nom]+') then
+    if not skip_native and (query:find('bilibili.com') or query:find('bilivideo.c[nom]+')) then
         load_danmaku_for_bilibili(query, function(success)
-            if not success then do_fallback() end
+            if success then if on_success then on_success() end else do_fallback() end
         end)
         return
     end
 
-    if query:find('bahamut.akamaized.net') then
+    if not skip_native and query:find('bahamut.akamaized.net') then
         load_danmaku_for_bahamut(query, function(success)
-            if not success then do_fallback() end
+            if success then if on_success then on_success() end else do_fallback() end
         end)
         return
     end
 
-    if query:find('mgtv.com') then
+    if not skip_native and query:find('mgtv.com') then
         load_danmaku_for_mgtv(query, function(success)
-            if not success then do_fallback() end
+            if success then if on_success then on_success() end else do_fallback() end
         end)
         return
     end
 
-    if query:find('iqiyi.com') then
+    if not skip_native and query:find('iqiyi.com') then
         load_danmaku_for_iqiyi(query, function(success)
-            if not success then do_fallback() end
+            if success then if on_success then on_success() end else do_fallback() end
         end)
         return
     end
 
-    if query:find('v.qq.com') then
+    if not skip_native and query:find('v.qq.com') then
         load_danmaku_for_tencent(query, function(success)
-            if not success then do_fallback() end
+            if success then if on_success then on_success() end else do_fallback() end
         end)
         return
     end
 
-    if query:find('v.youku.com') then
+    if not skip_native and query:find('v.youku.com') then
         load_danmaku_for_youku(query, function(success)
-            if not success then do_fallback() end
+            if success then if on_success then on_success() end else do_fallback() end
         end)
         return
     end
@@ -345,7 +397,9 @@ function make_danmaku_request_args(method, url, headers, body, request_options)
         table.insert(args, 'Content-Type: application/json')
     end
 
-    if url:find("api%.dandanplay%.") then
+    -- Sign only the official HTTPS authority; a query/path may contain its name.
+    local authority = (url:match("^https://([^/?#]+)") or ""):lower()
+    if authority == "api.dandanplay.net" or authority == "api.dandanplay.net:443" then
         local time = os.time()
         local appid = "UgjRIH45lE1BBLNmir1WKw=="
         local app_accept = "SzuWlFZAPRMqeWf9qmfp8dcvYr3hvxuSrIRZuAeEfko="
@@ -381,7 +435,7 @@ function make_danmaku_request_args(method, url, headers, body, request_options)
 end
 
 local function normalize_danmaku_response(d)
-    if not d then return d end
+    if type(d) ~= 'table' then return nil end
     -- 已经是 comments/count 格式则直接返回
     if d.comments or d.count then return d end
 
@@ -403,14 +457,8 @@ local function normalize_danmaku_response(d)
                 mode = 5
             end
 
-            local colorDec = 16777215
-            if type(color) == "number" then
-                colorDec = color
-            elseif type(color) == "string" then
-                colorDec = hex_to_int_color(color)
-            end
-
-            local p = string.format("%.2f,%d,%d", time, mode, colorDec)
+            local colorDec = Color.normalize(color, "hex") or ""
+            local p = string.format("%.2f,%d,%s", time, mode, colorDec)
             table.insert(out, { p = p, m = content })
         end
         return { comments = out, count = tonumber(d.danum) or #out }
@@ -443,7 +491,7 @@ local function match_episode(animeTitle, bangumiId, episode_num, api_server)
 
     call_cmd_async(args, function(error, json)
         if error then
-            show_message("HTTP 请求失败，打开控制台查看详情", 5)
+            show_message(i18n.t("HTTP 请求失败，打开控制台查看详情"), 5)
             msg.error(error)
             return
         end
@@ -672,7 +720,13 @@ local function match_file(file_path, file_name, callback)
         set_episode_id(selected.episodeId, nil, server, expected_episode or matched_episode, {
             on_complete = function(success, reason)
                 if callback then
-                    pcall(callback, success and nil or (reason or "弹幕内容为空"))
+                    -- Lua's a and nil or b always evaluates to b, even when
+                    -- a is true. Report successful commits without an error.
+                    if success then
+                        pcall(callback, nil)
+                    else
+                        pcall(callback, reason or "弹幕内容为空")
+                    end
                 end
             end,
         })
@@ -694,7 +748,7 @@ function fetch_danmaku_data(args, callback, request_options)
     request_options = request_options or {}
     call_cmd_async(args, function(error, json)
         if error then
-            if not request_options.silent then show_message("获取数据失败", 3) end
+            if not request_options.silent then show_message(i18n.t("获取数据失败"), 3) end
             if request_options.silent then
                 msg.debug("HTTP 请求失败：" .. error)
             else
@@ -723,6 +777,13 @@ function save_danmaku_data(comments, query, danmaku_source)
 
     if DANMAKU.sources[query] ~= nil then
         DANMAKU.sources[query]["data"] = danmaku_list
+        if danmaku_source == 'api_server' then
+            -- A newly selected episode must not inherit a blocked/stale
+            -- history entry sharing this URL.
+            DANMAKU.sources[query].from = 'api_server'
+            DANMAKU.sources[query].blocked = false
+            DANMAKU.sources[query].from_history = nil
+        end
     else
         DANMAKU.sources[query] = {from = danmaku_source, data = danmaku_list}
     end
@@ -763,14 +824,13 @@ end
 
 -- 处理获取到的数据
 function handle_fetched_danmaku(data, url, from_menu, silent_empty)
-    local comments = data and data["comments"]
+    local comments = type(data) == 'table' and data["comments"]
     -- Trust the actual payload instead of a mirror's advertised count; some
     -- community nodes return a stale count while comments are still present.
     local count = type(comments) == "table" and #comments or 0
     if type(comments) == "table" and count > 0 and #comments > 0 then
         local saved_count = save_danmaku_data(comments, url, "api_server")
-        if saved_count and saved_count > 0 then
-            load_danmaku(from_menu)
+        if saved_count and saved_count > 0 and load_resolved_source(url, from_menu) then
             return true
         end
     end
@@ -781,7 +841,7 @@ function handle_fetched_danmaku(data, url, from_menu, silent_empty)
     end
 
     if not silent_empty then
-        show_message("该集弹幕内容为空，结束加载", 3)
+        show_message(i18n.t("该集弹幕内容为空，结束加载"), 3)
     end
     msg.verbose("该集弹幕内容为空，结束加载")
     -- 上游 d8c1cd8：自动加载失败时通知主脚本触发搜索框回退。受
@@ -796,36 +856,78 @@ end
 -- 匹配弹幕库 comment, 仅匹配dandan本身弹幕库
 -- 通过danmaku api（url）+id获取弹幕
 function fetch_danmaku(episodeId, from_menu, api_server, callback, request)
+    local record
+    if request then
+        if not episode_request_is_current(request) or request.committed then
+            msg.debug("丢弃过期/已提交弹幕请求 generation=" .. tostring(request.generation))
+            return
+        end
+        -- IDs are mirror-local. A pending or settled source/ID must not start
+        -- again when history rediscovers it. Only our one transport retry can.
+        request.comment_requests = request.comment_requests or {}
+        local key = normalize_server(api_server) .. "/" .. tostring(episodeId)
+        record = request.comment_requests[key]
+        if record and (record.state ~= 'retry_ready' or record.attempts >= 2) then
+            msg.debug("跳过重复弹幕请求 generation=" .. request.generation .. " episode=" .. key)
+            if callback then callback(false, "duplicate_episode") end
+            return
+        end
+        record = record or {attempts=0}
+        request.comment_requests[key] = record
+        record.attempts, record.state = record.attempts + 1, 'pending'
+    end
     local url = api_server .. "/api/v2/comment/" .. episodeId .. "?withRelated=true&chConvert=0"
-    show_message("弹幕加载中...", 30)
+    if danmaku_remote_status then danmaku_remote_status('downloading', '正在下载弹幕') end
+    show_message(i18n.t("弹幕加载中..."), 30)
     msg.verbose("尝试获取弹幕：" .. url)
     local args = make_danmaku_request_args("GET", url, nil, nil, {
         connect_timeout = 3,
-        max_time = 12,
+        -- A full linked episode may exceed 1 MB; preserve the existing bounds.
+        max_time = from_menu and 20 or 15,
         fail_http = true,
     })
-
     if args == nil then
+        if record then record.state = 'failed' end
+        report_comment_failure('no_args')
         if callback then callback(false, "no_args") end
         return
     end
-
     fetch_danmaku_data(args, function(data, err)
-        if request and not episode_request_is_current(request) then
+        if request and (not episode_request_is_current(request) or request.committed) then
             msg.debug("忽略已过期的弹幕请求：" .. url)
             return
         end
-
         if err then
-            if not (request and request.history_record) then
-                show_message("获取数据失败", 3)
+            if request then request.last_failure = err end
+            if record and record.attempts == 1 and transient_comment_error(err)
+                and type(add_danmaku_timeout) == 'function' then
+                record.state = 'retry_wait'
+                if danmaku_remote_status then danmaku_remote_status('downloading', '连接暂时中断，正在重试弹幕下载（1/1）') end
+                -- This tracked timer is cancelled by the existing request
+                -- invalidation boundary; callback guards also reject late work.
+                add_danmaku_timeout(0.4, function()
+                    if not episode_request_is_current(request) or request.committed or record.state ~= 'retry_wait' then return end
+                    record.state = 'retry_ready'
+                    fetch_danmaku(episodeId, from_menu, api_server, callback, request)
+                end)
+                return
             end
+            if record then record.state = 'failed' end
+            report_comment_failure(err)
+            if not (request and request.history_record) then show_message(i18n.t("获取数据失败"), 3) end
             if callback then callback(false, err) end
             return
         end
-
-        local success, reason = handle_fetched_danmaku(
-            data, url, from_menu, request and request.history_record ~= nil)
+        local success, reason = handle_fetched_danmaku(data, url, from_menu, request and request.history_record ~= nil)
+        if record then record.state = success and 'loaded' or 'failed' end
+        if success and request then
+            request.committed = true
+            msg.debug(("danmaku load generation=%s episode=%s source=%s state=resolved commit=true")
+                :format(request.generation, episodeId, api_server))
+        elseif not success then
+            if request then request.last_failure = reason end
+            report_comment_failure(reason)
+        end
         if callback then callback(success, reason) end
     end, {silent = true, callback_on_error = true})
 end
@@ -851,6 +953,14 @@ local function is_series_type(value)
         or kind == "电视剧" or kind == "電視劇"
 end
 
+-- The number of an episode does not make an animated web series a TV drama.
+-- Keep the TV-only guard for explicitly labelled drama history, and permit
+-- only the additional episodic types observed in compatible API responses.
+local function is_episodic_type(value)
+    local kind = trim_text(value):lower()
+    return is_series_type(kind) or kind == "web" or kind == "动漫"
+end
+
 local function choose_history_candidate(animes, history_record, episode_number)
     if type(animes) ~= "table" then return nil, "no_animes" end
 
@@ -858,9 +968,10 @@ local function choose_history_candidate(animes, history_record, episode_number)
         split_history_title(history_record and history_record.animeTitle)
     if target_base == "" then return nil, "no_title" end
 
-    local require_series = tonumber(episode_number) and tonumber(episode_number) > 1
-        or target_raw:find("电视剧", 1, true) ~= nil
+    local require_tv_series = target_raw:find("电视剧", 1, true) ~= nil
         or target_raw:find("電視劇", 1, true) ~= nil
+    local require_series = tonumber(episode_number) and tonumber(episode_number) > 1
+        or require_tv_series
     local best, best_score, tied = nil, -1, false
 
     for _, anime in ipairs(animes) do
@@ -876,10 +987,13 @@ local function choose_history_candidate(animes, history_record, episode_number)
             end
 
             if score and target_year and year and target_year ~= year then score = nil end
-            if score and require_series and not is_series_type(anime.type) then score = nil end
+            local type_matches = not require_series
+                or require_tv_series and is_series_type(anime.type)
+                or not require_tv_series and is_episodic_type(anime.type)
+            if score and not type_matches then score = nil end
             if score then
                 if target_year and year == target_year then score = score + 10 end
-                if require_series and is_series_type(anime.type) then score = score + 3 end
+                if require_series and is_episodic_type(anime.type) then score = score + 3 end
                 if target_source and source == target_source then score = score + 8 end
 
                 if score > best_score then
@@ -907,7 +1021,8 @@ recover_history_association = function(request, failed_server, failure_reason)
         or failure_reason == "episode_changed"
         or failure_reason == "association_refresh"
     if query_title == "" or not episode_number then
-        show_message(association_label .. "无效，请手动重新关联", 4)
+        report_comment_failure('missing_identity')
+        show_message(association_label .. i18n.t("无效，请手动重新关联"), 4)
         msg.warn(association_label .. "缺少可安全重匹配的片名或集数")
         if request.on_complete then pcall(request.on_complete, false, "missing_identity") end
         return
@@ -925,14 +1040,16 @@ recover_history_association = function(request, failed_server, failure_reason)
     for _, server in ipairs(get_api_server_list(options.api_server)) do add_server(server) end
 
     if proactive_refresh then
-        show_message("正在校验" .. association_label .. "...", 30)
+        show_message(i18n.t("正在校验") .. association_label .. "...", 30)
         msg.info(("%s开始安全刷新：%s (%s)")
             :format(association_label, tostring(failed_server), tostring(failure_reason)))
     else
-        show_message(association_label .. "已失效，正在自动重新匹配...", 30)
+        show_message(association_label .. i18n.t("已失效，正在自动重新匹配..."), 30)
         msg.info(("%s失效，开始自愈：%s (%s)")
             :format(association_label, tostring(failed_server), tostring(failure_reason)))
     end
+
+    if danmaku_remote_status then danmaku_remote_status('matching', '正在重新匹配弹幕关联') end
 
     local original_anime = DANMAKU.anime
     local original_episode = DANMAKU.episode
@@ -947,7 +1064,8 @@ recover_history_association = function(request, failed_server, failure_reason)
     local function finish_failed(reason)
         if not episode_request_is_current(request) then return end
         restore_metadata()
-        show_message(association_label .. "无有效数据，请手动重新关联", 4)
+        report_comment_failure(request.last_failure or reason)
+        show_message(association_label .. i18n.t("无有效数据，请手动重新关联"), 4)
         msg.warn(association_label .. "自愈失败：" .. tostring(reason))
         if request.on_complete then pcall(request.on_complete, false, reason) end
     end
@@ -1104,18 +1222,48 @@ function add_danmaku_source_local(query, from_menu)
 end
 
 --通过输入源url获取弹幕库
-function add_danmaku_source_online(query, from_menu)
+function add_danmaku_source_online(query, from_menu, on_failed, prefer_native, on_complete)
     from_menu = from_menu or false
     set_danmaku_button()
-    show_message("弹幕加载中...", 30)
+    show_message(i18n.t("弹幕加载中..."), 30)
     msg.verbose("尝试获取弹幕：" .. query)
+    if danmaku_remote_status then danmaku_remote_status('loading', '正在加载弹幕') end
+
+    local completed = false
+    local function complete(success)
+        if completed then return end
+        completed = true
+        if on_complete then pcall(on_complete, success) end
+    end
+    local original_on_failed = on_failed
+    on_failed = function()
+        complete(false)
+        if original_on_failed then original_on_failed() end
+    end
 
     local resolver_context = capture_resolver_context(query)
+    local native_tried = false
+
+    local function native_loader()
+        local host = type(query) == 'string' and query:match('^https?://([^/:]+)')
+        if not host then return nil end
+        host = host:lower()
+        local function is_host(domain)
+            return host == domain or host:sub(-#domain - 1) == '.' .. domain
+        end
+        if host == 'v.youku.com' then return load_danmaku_for_youku end
+        if host == 'v.qq.com' then return load_danmaku_for_tencent end
+        if is_host('iqiyi.com') then return load_danmaku_for_iqiyi end
+        if is_host('mgtv.com') then return load_danmaku_for_mgtv end
+        if is_host('bilibili.com') then return load_danmaku_for_bilibili end
+        return nil
+    end
 
     local function run_regular_chain(skip_server)
         local servers = get_extcomment_server_list(skip_server)
         if #servers == 0 then
-            get_danmaku_fallback(query, skip_server, from_menu, resolver_context)
+            get_danmaku_fallback(query, skip_server, from_menu, resolver_context, on_failed, native_tried,
+                function() complete(true) end)
             return
         end
 
@@ -1141,12 +1289,14 @@ function add_danmaku_source_online(query, from_menu)
             if not apply_resolver_data(data, query, from_menu, server, "api", resolver_context) then return end
             matched = true
             if cancel_fn then pcall(cancel_fn) end
+            complete(true)
         end
 
         local function final_cb()
             if not matched then
                 msg.info("所有服务器均无有效弹幕，尝试备用服务器")
-                get_danmaku_fallback(query, skip_server, from_menu, resolver_context)
+                get_danmaku_fallback(query, skip_server, from_menu, resolver_context, on_failed, native_tried,
+                    function() complete(true) end)
             end
         end
 
@@ -1156,19 +1306,36 @@ function add_danmaku_source_online(query, from_menu)
 
     local affinity = type(read_danmaku_resolver_affinity) == "function" and
         read_danmaku_resolver_affinity(query, resolver_context) or nil
-    if not affinity then
-        run_regular_chain()
-        return
+    local function run_resolver_chain()
+        if not affinity then
+            run_regular_chain()
+            return
+        end
+        local affinity_server = normalize_server(affinity.server)
+        try_resolver_affinity(query, affinity, from_menu, resolver_context, function(success, reason)
+            if success then complete(true) return end
+            msg.info(("上次成功的弹幕节点已失效，恢复完整回退：%s (%s)")
+                :format(affinity_server, tostring(reason)))
+            forget_resolver(query, affinity_server, resolver_context)
+            run_regular_chain(affinity_server)
+        end)
     end
 
-    local affinity_server = normalize_server(affinity.server)
-    try_resolver_affinity(query, affinity, from_menu, resolver_context, function(success, reason)
-        if success then return end
-        msg.info(("上次成功的弹幕节点已失效，恢复完整回退：%s (%s)")
-            :format(affinity_server, tostring(reason)))
-        forget_resolver(query, affinity_server, resolver_context)
-        run_regular_chain(affinity_server)
-    end)
+    local loader = prefer_native and native_loader() or nil
+    if loader then
+        native_tried = true
+        msg.info('优先直连已选择的站点弹幕源')
+        loader(query, function(success)
+            if success and rendered_source_count(query) > 0 then
+                show_loaded(true)
+                complete(true)
+            else
+                run_resolver_chain()
+            end
+        end)
+    else
+        run_resolver_chain()
+    end
 end
 
 -- 将弹幕转换为 Lua table
@@ -1176,28 +1343,28 @@ function save_danmaku_to_list(comments)
     local danmaku_list = {}
 
     for _, comment in ipairs(comments) do
-        local p = comment["p"]
-        local shift = comment["shift"]
-        if p then
-            local fields = split(p, ",")
-            if shift ~= nil then
-                fields[1] = tonumber(fields[1]) + tonumber(shift)
-            end
+        local p = type(comment) == 'table' and comment.p
+        if type(p) == 'string' and type(comment.m) == 'string' then
+            local fields = Color.csv(p)
             local time = tonumber(fields[1])
+            local shift = comment.shift and tonumber(comment.shift)
+            if time and shift then time = time + shift end
             local type = tonumber(fields[2])
-            local color = tonumber(fields[3]) or 0xFFFFFF
-            local size = 25
+            local color = Color.normalize(fields[3])
             local m_value = comment["m"]
                             :gsub("[%z\1-\31]", "")
                             :gsub("\\", "")
                             :gsub("\"", "")
-            table.insert(danmaku_list, {
-                time = time,
-                type = type,
-                size = size,
-                color = color,
-                text = m_value
-            })
+            if time and time == time and type and type >= 1 and type <= 5
+                and m_value ~= '' then
+                table.insert(danmaku_list, {
+                    time = time,
+                    type = type,
+                    size = 25,
+                    color = color,
+                    text = m_value
+                })
+            end
         end
     end
 

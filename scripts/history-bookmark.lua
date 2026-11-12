@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 --lite version of the code written by sorayuki
 --only keep the function to record the histroy and recover it
 
@@ -50,9 +51,9 @@ local locals = {
         msg3 = 'Press 1 to confirm, 0 to cancel',
     },
     ['chs'] = {
-        msg1 = '成功恢复上次播放',
-        msg2 = '是否恢复当前目录的上次播放文件',
-        msg3 = '按1确认，按0取消',
+        msg1 = i18n.t('成功恢复上次播放'),
+        msg2 = i18n.t('是否恢复当前目录的上次播放文件'),
+        msg3 = i18n.t('按1确认，按0取消'),
     }
 }
 
@@ -75,6 +76,8 @@ local normalize_path = nil
 
 local wait_msg
 local on_key = false
+local wait_jump_timer, timer4saving_history, record_timer
+local record_generation = 0
 
 if o.history_dir:find('^/:dir%%mpvconf%%') then
     history_dir = o.history_dir:gsub('/:dir%%mpvconf%%', mp.find_config_file('.'))
@@ -458,14 +461,13 @@ end
 
 local function unbind_key()
     msg.verbose('Unbinding keys')
-    wait_jump_timer:kill()
+    if wait_jump_timer then wait_jump_timer:kill(); wait_jump_timer = nil end
     mp.remove_key_binding('key_jump')
     mp.remove_key_binding('key_cancel')
 end
 
 local function key_jump()
     on_key = true
-    wait_jump_timer:kill()
     unbind_key()
     current_idx = pl_idx
     mp.register_event('file-loaded', jump_resume)
@@ -475,7 +477,6 @@ end
 
 local function key_cancel()
     on_key = true
-    wait_jump_timer:kill()
     unbind_key()
 end
 
@@ -485,6 +486,25 @@ local function bind_key()
 end
 
 -- creat a .history file
+local function premature_eof(eof)
+    if not eof or not path or is_protocol(path) then return false end
+    -- Unload hooks run while the current demuxer is still available. Preserve
+    -- the existing behavior for intentional ranges and unknown/live sources.
+    if not mp.get_property_bool('seekable', false)
+        or not mp.get_property_bool('options/rebase-start-time', true)
+        or mp.get_property('play-direction', 'forward') ~= 'forward'
+        or mp.get_property('options/end', 'none') ~= 'none'
+        or mp.get_property('options/length', 'none') ~= 'none'
+        or mp.get_property('options/frames', 'all') ~= 'all'
+        or mp.get_property_number('ab-loop-b') ~= nil then return false end
+    local duration = mp.get_property_number('duration')
+    local position = mp.get_property_number('time-pos')
+    if not duration or not position or duration ~= duration or position ~= position
+        or duration <= 0 or duration >= math.huge or position <= 0
+        or position >= duration then return false end
+    return position / duration * 100 < 90 and duration - position > 2
+end
+
 local function record_history()
     if not o.enabled or not file_loaded then return end
     refresh_globals()
@@ -492,7 +512,7 @@ local function record_history()
     get_bookmark_path(dir)
     local eof = mp.get_property_bool("eof-reached")
     local percent_pos = mp.get_property_number("percent-pos", 0)
-    if not eof and percent_pos < 90 then
+    if (not eof or premature_eof(eof)) and percent_pos < 90 then
         if fname ~= nil then
             local file = io.open(bookmark_path, "w")
             file:write(fname .. "\n")
@@ -527,6 +547,7 @@ end
 -- record the file name when video is paused
 -- and stop the timer
 local function pause(_, paused)
+    if not timer4saving_history then return end
     if paused then
         timer4saving_history:stop()
         record_history()
@@ -535,9 +556,17 @@ local function pause(_, paused)
     end
 end
 
+local function stop_recording()
+    record_generation = record_generation + 1
+    if record_timer then record_timer:kill(); record_timer = nil end
+    if timer4saving_history then timer4saving_history:kill(); timer4saving_history = nil end
+    unbind_key()
+    mp.unobserve_property(pause)
+end
+
 -- main function of the file
 local function record()
-    if not o.enabled then return end
+    if not o.enabled or not file_loaded then return end
     refresh_globals()
     if pl_count and pl_count < 1 then return end
     if not path or is_protocol(path) or not file_exist(path) then return end
@@ -586,7 +615,8 @@ local function record()
         pl_idx = current_idx
         pl_name = fname
         pl_path = path
-    elseif current_idx and (pl_idx ~= current_idx) then
+    elseif current_idx and (pl_idx ~= current_idx) and o.timeout > 0 then
+        timeout, on_key = o.timeout, false
         wait_msg = pl_idx
         msg.verbose('Last watched episode -- ' .. wait_msg)
         wait_jump_timer = mp.add_periodic_timer(1, wait_jumping)
@@ -596,6 +626,7 @@ local function record()
 end
 
 mp.register_event('file-loaded', function()
+    stop_recording()
     file_loaded = true
     local path = mp.get_property("path")
     if not is_protocol(path) then
@@ -604,13 +635,19 @@ mp.register_event('file-loaded', function()
     else
         directory = nil
     end
-    if directory ~= nil and directory ~= dir then
-        mp.add_timeout(0.5, record)
+    if directory ~= nil then
+        local generation = record_generation
+        record_timer = mp.add_timeout(0.5, function()
+            if generation ~= record_generation or not file_loaded then return end
+            record_timer = nil
+            record()
+        end)
     end
 end)
 
 mp.add_hook("on_unload", 50, function()
-    mp.unobserve_property(pause)
+    stop_recording()
     record_history()
     file_loaded = false
 end)
+mp.register_event('shutdown', stop_recording)

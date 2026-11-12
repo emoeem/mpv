@@ -6,13 +6,14 @@ local o = {
     enabled = true,
     path = "~~/recent.json",
     title = 'Recently played',
-    length = 10,
+    length = 1000,
     width = 88,
-    ignore_same_series = true,
+    ignore_same_series = false,
     reduce_io = false,
     keep_signed_urls = true,
 }
 options.read_options(o, _, function() end)
+local i18n = dofile(mp.command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 
 local path = mp.command_native({ "expand-path", o.path })
 
@@ -219,7 +220,7 @@ function is_iso_file(path)
 end
 
 function get_disc_iso_path()
-    local iso_path = mp.get_property("user-data/auto-iso-loader/original-path")
+    local iso_path = mp.get_property_native("user-data/auto-iso-loader/original-path")
     if is_iso_file(iso_path) then return iso_path end
 
     local bd_dev = mp.get_property("bluray-device") or ""
@@ -439,10 +440,84 @@ function clip_uosc_menu_item(menu)
         local display_item = {}
         for k, v in pairs(item) do display_item[k] = v end
         display_item.title = clip_recent_title(item.title)
+        -- A UI label, not the stored source identity or loadfile target.
+        if type(item.hint) == 'string' then
+            local suffix = item.hint:match('^NETWORK%-MEDIA(%s*|.*)$')
+            if suffix then
+                display_item.hint = (i18n.is_english() and 'Network' or '网盘') .. suffix
+            end
+        end
         table.insert(menu_items, display_item)
     end
     menu.items = menu_items
     return menu
+end
+
+local function recent_series_key(item)
+    if type(item) ~= 'table' or type(item.value) ~= 'table'
+        or item.value[1] ~= 'loadfile' or type(item.value[2]) ~= 'string' then
+        return nil
+    end
+
+    local item_path = item.value[2]
+    -- Query parameters can identify an account or a different stream, not
+    -- only an expiring signature. Do not hide distinct query-based sources.
+    if is_protocol(item_path) and item_path:find('[?#]') then return nil end
+    local display_path = is_protocol(item_path) and strip_url_query(item_path) or item_path
+    local directory, filename = split_path(display_path)
+    if is_protocol(item_path) then filename = url_decode(filename) end
+
+    -- Only explicit episode markers identify a series. Keep title numbers and
+    -- season numbers; years, movie parts and similar titles are not evidence.
+    local first, season, episode, last = filename:match('()[sS](%d%d?)[%s%._%-]*[eE][pP]?(%d+)()')
+    local chinese_marker = false
+    if not first then
+        first, episode, last = filename:match('()[eE][pP]?(%d+)()')
+        season = nil
+    end
+    if not first then
+        first, episode, last = filename:match('()第(%d+)集()')
+        season = nil
+        chinese_marker = true
+    end
+    if not first then return nil end
+
+    local prefix, suffix = filename:sub(1, first - 1), filename:sub(last)
+    -- Avoid treating words such as "Step01" or suffixes such as "E01movie"
+    -- as an episode marker. Chinese titles need no separating ASCII space.
+    if not chinese_marker and (prefix:match('[%w]$') or suffix:match('^[%w]')) then return nil end
+    prefix = trim_trailing_punctuation(prefix):lower()
+    -- A leading episode marker leaves the work's name in an unknown suffix.
+    -- Likewise, a later season label cannot be discarded as release metadata.
+    if prefix == '' or suffix:lower():find('%f[%w]s%d+%f[%W]')
+        or suffix:lower():find('%f[%w]season%f[%W]')
+        or suffix:lower():find('%f[%w]season%d+%f[%W]') or suffix:find('第.-季') then
+        return nil
+    end
+    local season_key = season and tostring(tonumber(season)) or ''
+    return directory .. '\0' .. prefix .. '\0' .. season_key
+end
+
+local function recent_menu_items()
+    local items, seen = {}, {}
+    -- History is already newest first. Project once without modifying the
+    -- retained records or changing which signed URL will actually be loaded.
+    for _, item in ipairs(menu.items) do
+        local key = recent_series_key(item)
+        if not key or not seen[key] then
+            items[#items + 1] = item
+            if key then seen[key] = true end
+        end
+    end
+    return items
+end
+
+local function recent_menu_data()
+    local display_menu = {}
+    for key, value in pairs(menu) do display_menu[key] = value end
+    display_menu.title = i18n.t(display_menu.title)
+    display_menu.items = recent_menu_items()
+    return clip_uosc_menu_item(display_menu)
 end
 
 function append_item(path, title, hint)
@@ -493,34 +568,52 @@ local function get_meta_safe_gap(menu_width)
     return clamp(math.floor(menu_width * 0.010), 6, 12)
 end
 
-function remove_item(index)
-    table.remove(menu.items, index)
-    clip_uosc_menu_item(menu)
+function remove_item(index, value)
+    read_json()
+    -- Real menu callbacks include the selected value, including after search.
+    -- Keep index-only callers working by resolving against the projected list.
+    local selected = value or (recent_menu_items()[index] or {}).value
+    if type(selected) ~= 'table' or selected[1] ~= 'loadfile'
+        or type(selected[2]) ~= 'string' then return end
+    local raw_index
+    for i, item in ipairs(menu.items) do
+        if item.value and item.value[1] == 'loadfile' and item.value[2] == selected[2] then
+            raw_index = i
+            break
+        end
+    end
+    if not raw_index then return end
+    table.remove(menu.items, raw_index)
     local min_width = get_recent_menu_min_width()
     if min_width then menu.min_width = min_width end
-    local json = utils.format_json(menu)
+    local json = utils.format_json(recent_menu_data())
     mp.commandv('script-message-to', 'uosc', 'update-menu', json)
     write_json()
 end
 
 function open_menu_uosc()
-    clip_uosc_menu_item(menu)
+    update_recent_menu_width()
+    read_json(false, true)
     local min_width = get_recent_menu_min_width()
     if min_width then menu.min_width = min_width end
-    local json = utils.format_json(menu)
+    local json = utils.format_json(recent_menu_data())
     mp.commandv('script-message-to', 'uosc', 'open-menu', json)
 end
 
 function open_menu_command_palette()
-    local json = utils.format_json(menu)
+    update_recent_menu_width()
+    read_json(false, true)
+    local json = utils.format_json(recent_menu_data())
     mp.commandv('script-message-to',
         'command_palette',
         'show-command-palette-json', json)
 end
 
 function open_menu_select()
+    update_recent_menu_width()
+    read_json(false, true)
     local item_titles, item_values = {}, {}
-    for i, v in ipairs(menu.items) do
+    for i, v in ipairs(recent_menu_items()) do
         item_titles[i] = v.title
         item_values[i] = v.value
     end
@@ -549,8 +642,6 @@ function update_recent_menu_width()
 end
 
 function open_menu()
-    update_recent_menu_width()
-    read_json(false, true)
     if uosc_available then
         open_menu_uosc()
     elseif input_available then
@@ -598,12 +689,14 @@ mp.register_script_message('uosc-callback', function(json)
     end
 
     if event.type == "activate" and event.action == "remove" then
-        remove_item(event.index)
+        if type(event.value) == 'table' then remove_item(event.index, event.value) end
         return
     end
 
-    if event.type == "key" and event.id == "del" then
-        remove_item(event.selected_item.index)
+    if event.type == "key" and event.id == "del" and event.selected_item then
+        if type(event.selected_item.value) == 'table' then
+            remove_item(event.selected_item.index, event.selected_item.value)
+        end
         return
     end
 end)

@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 -- auto_iso_loader.lua
 -- 统一 ISO 自动播放入口
 
@@ -5,6 +6,7 @@ local mp = require 'mp'
 local msg = require 'mp.msg'
 local assdraw = require 'mp.assdraw'
 local options = require 'mp.options'
+local utils = require 'mp.utils'
 
 local o = {
     auto_local_menu = true,
@@ -22,12 +24,18 @@ local previous_disc_menu = nil
 local local_menu_autostart = false
 local local_menu_autostart_timer = nil
 local local_menu_autostart_attempt = 0
+local local_menu_start_edition = nil
 local local_menu_dvd_root_attempted = false
 local local_menu_navigation_hint_shown = false
+-- True only after a requested discnav jump has actually started.  This lets
+-- the loading overlay cover Blu-ray First Play / BD-J initialization without
+-- hiding the real menu once navigation has entered its transition.
+local local_menu_navigation_started = false
 local local_menu_initial_action = "menu"
 local forced_local_menu_once = false
 local forced_local_menu_action = nil
 local current_local_menu_session = false
+local disc_generation = 0
 local remote_loading_overlay = nil
 local remote_loading_timer = nil
 local remote_loading_started = nil
@@ -65,6 +73,8 @@ local REMOTE_LOADING_MAX_FRAME_STEP = 1 / 30
 -- Play segment. Keep retrying at a low rate long enough to cross that segment;
 -- this does not add reads or delay the disc open itself.
 local LOCAL_MENU_AUTOSTART_DELAYS = {0.35, 1.8, 3.5, 7, 12, 12}
+local local_menu_preserve_intro = false
+local local_menu_intro_started = 0
 -- 本地 ISO 不需要额外扫描来估算进度。只按真实经过时间刷新说明文字，
 -- 不读取镜像、不伪造百分比，也不参与 libbluray 的打开流程。
 local LOCAL_LOADING_RENDER_INTERVAL = 0.5
@@ -114,6 +124,7 @@ local function stop_local_menu_autostart()
     end
     local_menu_autostart = false
     local_menu_autostart_attempt = 0
+    local_menu_start_edition = nil
     local_menu_dvd_root_attempted = false
 end
 
@@ -129,7 +140,8 @@ local function stop_remote_loading_timer()
 end
 
 local function restore_stream_buffer()
-    if stream_buffer_changed and saved_stream_buffer_size then
+    if stream_buffer_changed and saved_stream_buffer_size
+        and mp.get_property_native('stream-buffer-size') == REMOTE_ISO_STREAM_BUFFER then
         mp.set_property_native("stream-buffer-size", saved_stream_buffer_size)
     end
     saved_stream_buffer_size = nil
@@ -347,8 +359,10 @@ end
 local function render_local_loading()
     if not local_loading_overlay or not local_loading_started then return end
 
+    local now = mp.get_time()
     local elapsed_second = math.floor(math.max(
-        0, mp.get_time() - local_loading_started))
+        0, now - local_loading_started))
+
     if elapsed_second ~= local_loading_elapsed_second then
         local_loading_elapsed_second = elapsed_second
         mp.set_property_number(
@@ -367,7 +381,11 @@ local function render_local_loading()
 
     if local_loading_expects_menu and local_loading_phase == "menu-wait" then
         phase_text = "原盘已识别，正在等待自带菜单显示"
-        footer_text = "部分原盘会先播放不可跳过片头"
+        footer_text = "部分原盘会先执行自带片头或菜单初始化"
+    elseif local_loading_expects_menu and
+            local_loading_phase == "menu-transition" then
+        phase_text = "原盘菜单正在切换，等待导航完成"
+        footer_text = "无需操作 · 菜单显示后会自动关闭等待界面"
     elseif local_loading_phase == "dvd-fallback" then
         phase_text = "未识别为蓝光原盘，正在尝试 DVD 影碟模式"
         footer_text = "无需操作 · 播放器会自动选择可用方式"
@@ -447,7 +465,10 @@ local function iso_url_path(path)
     if not path or path == "" then return "" end
     -- OpenList /d links append a sign query.  Match the URL path instead of
     -- requiring the whole string to end in .iso.
-    return path:gsub("[?#].*$", ""):gsub("%%2[eE]", ".")
+    if path:match('^%a[%w+.-]*://') then
+        return path:gsub("[?#].*$", ""):gsub("%%2[eE]", ".")
+    end
+    return path
 end
 
 local function is_iso_file(path)
@@ -460,7 +481,32 @@ end
 
 local function is_disc_protocol(target)
     if not target or target == "" then return false end
-    return target:find("bd://") or target:find("dvd://")
+    local protocol = target:match('^(%a+)://')
+    return protocol == 'bd' or protocol == 'br' or protocol == 'bluray' or protocol == 'dvd'
+end
+
+local function local_disc_directory(path)
+    if path:match('^%a[%w+.-]*://') then return nil end
+    local info = utils.file_info(path)
+    if not info then return nil end
+    local normalized = path:gsub('\\', '/'):gsub('/+$', '')
+    local root = normalized
+    if not info.is_dir then
+        local name = normalized:match('([^/]+)$'):lower()
+        if name ~= 'index.bdmv' and name ~= 'movieobject.bdmv' and name ~= 'video_ts.ifo' then return nil end
+        root = normalized:match('^(.*)/[^/]+$') or ''
+    end
+    local leaf = (root:match('([^/]+)$') or ''):upper()
+    if leaf == 'BDMV' or leaf == 'VIDEO_TS' then root = root:match('^(.*)/[^/]+$') or '' end
+    local function header(relative, expected)
+        local file = io.open(root .. '/' .. relative, 'rb')
+        if not file then return false end
+        local prefix = file:read(#expected)
+        file:close()
+        return prefix == expected
+    end
+    if header('BDMV/MovieObject.bdmv', 'MOBJ') then return root, 'bd://' end
+    if header('VIDEO_TS/VIDEO_TS.IFO', 'DVDVIDEO-VMG') then return root, 'dvd://' end
 end
 
 local function is_current_local_disc()
@@ -470,6 +516,41 @@ local function is_current_local_disc()
     return is_disc_protocol(stream_fn) or demuxer == "disc"
 end
 
+local function local_root_navigation_started(navigation_seek)
+    local target = mp.get_property("stream-open-filename") or ""
+    if target:match("^dvd://") or local_menu_initial_action == "popup" then
+        return false
+    end
+    if local_menu_autostart_attempt == 0 then return false end
+    -- A same-title menu jump also goes through mpv's seek/resync path.
+    -- Explicit user seeks should likewise take control from autostart.
+    if navigation_seek == true then return true end
+    local edition = mp.get_property_native("current-edition")
+    return type(local_menu_start_edition) == "number"
+        and local_menu_start_edition >= 0
+        and type(edition) == "number"
+        and edition >= 0 and edition ~= local_menu_start_edition
+end
+
+local function stop_started_root_navigation(navigation_seek)
+    if not local_menu_autostart or not is_current_local_disc()
+        or not local_root_navigation_started(navigation_seek) then return false end
+    -- A Blu-ray menu can have a non-interactive intro. Its title changes
+    -- before disc-menu-active becomes true; another Top Menu call restarts
+    -- that intro. Once navigation has moved on, let the disc finish it.
+    local_menu_navigation_started = true
+    msg.info("[ISO] 原盘已开始切换，停止自动菜单重试，释放等待层给原盘菜单渲染")
+    stop_local_menu_autostart()
+    -- V18 kept the ASS loading overlay until the post-jump playback-restart.
+    -- On BD-J/HDMV discs this can cover the window while libbluray is creating
+    -- the real menu graphics plane, leaving the user looking at the menu
+    -- background/title after the overlay disappears.  The navigation jump is
+    -- already confirmed here, so release only our loading overlay now and let
+    -- libbluray finish the menu transition without another artificial delay.
+    hide_local_loading("menu-navigation-started")
+    return true
+end
+
 local function schedule_local_menu_autostart()
     if not local_menu_autostart then return end
     if local_menu_autostart_timer then local_menu_autostart_timer:kill() end
@@ -477,7 +558,9 @@ local function schedule_local_menu_autostart()
     local delay = LOCAL_MENU_AUTOSTART_DELAYS[
         math.min(local_menu_autostart_attempt + 1,
             #LOCAL_MENU_AUTOSTART_DELAYS)]
+    local generation = disc_generation
     local_menu_autostart_timer = mp.add_timeout(delay, function()
+        if generation ~= disc_generation then return end
         local_menu_autostart_timer = nil
         if not local_menu_autostart or not is_current_local_disc() then
             stop_local_menu_autostart()
@@ -488,10 +571,24 @@ local function schedule_local_menu_autostart()
             stop_local_menu_autostart()
             return
         end
+        if stop_started_root_navigation() then return end
 
         local_menu_autostart_attempt = local_menu_autostart_attempt + 1
         local stream_fn = mp.get_property("stream-open-filename") or ""
         local is_dvd = stream_fn:match("^dvd://") ~= nil
+        -- Automatic entry should let an authored short First Play finish.
+        -- An explicit Home/menu request still takes effect immediately.
+        -- Do not confuse a paused intro with a failed navigator.
+        local duration = mp.get_property_number('duration', 0) or 0
+        if not is_dvd and local_menu_preserve_intro
+            and (mp.get_property_bool('pause', false)
+                or (duration > 0 and duration <= 180
+                    and not mp.get_property_bool('eof-reached', false)
+                    and mp.get_time() - local_menu_intro_started < 180)) then
+            local_menu_autostart_attempt = local_menu_autostart_attempt - 1
+            schedule_local_menu_autostart()
+            return
+        end
         local action = local_menu_initial_action or "menu"
         if is_dvd and action == "menu" then
             -- Some authored DVDs expose no Root menu even though their Title
@@ -517,7 +614,12 @@ local function schedule_local_menu_autostart()
         if local_menu_autostart_attempt < #LOCAL_MENU_AUTOSTART_DELAYS then
             schedule_local_menu_autostart()
         else
-            set_local_loading_phase("menu-unresponsive")
+            -- By this point any real video frame has already dismissed the
+            -- loading card from the playback-restart handler.  Keep the
+            -- diagnostic state only when no playable frame ever appeared.
+            if local_loading_overlay then
+                set_local_loading_phase("menu-unresponsive")
+            end
             stop_local_menu_autostart()
         end
     end)
@@ -527,8 +629,14 @@ local function get_disc_iso_path()
     local bd_dev = mp.get_property("bluray-device") or ""
     local dvd_dev = mp.get_property("dvd-device") or ""
 
-    if is_iso_file(bd_dev) then return bd_dev end
-    if is_iso_file(dvd_dev) then return dvd_dev end
+    local target = mp.get_property('stream-open-filename') or ''
+    if target == '' then target = mp.get_property('path') or '' end
+    local title, device = target:match('^%a+://([^/]*)(.*)$')
+    if title == 'mpls' then device = device:match('^/[^/]+(.*)$') end
+    if device and device:sub(1, 1) == '/' and #device > 1 then return device:sub(2) end
+    if target:match('^dvd://') then return dvd_dev ~= '' and dvd_dev or nil end
+    if bd_dev ~= '' then return bd_dev end
+    if dvd_dev ~= '' then return dvd_dev end
     return nil
 end
 
@@ -596,7 +704,14 @@ local function configure_temporary_local_menu(menu_enabled, initial_action)
     local_menu_autostart_attempt = 0
     local_menu_dvd_root_attempted = false
     local_menu_initial_action = initial_action or "menu"
+    local_menu_preserve_intro = initial_action == nil
+    local_menu_intro_started = mp.get_time()
     local_menu_navigation_hint_shown = false
+    local_menu_navigation_started = false
+    -- Blu-ray's menu auxiliary PIDs can be misidentified as MP3 when lavf
+    -- deeply probes streams after a PlayItem jump. Keep the local disc's
+    -- stream list supplied by the navigator; do not affect ordinary media.
+    mp.set_property('file-local-options/demuxer-lavf-probe-info', 'nostreams')
     mp.set_property_bool("disc-menu", current_local_menu_session)
     publish_auto_menu_state()
     if current_local_menu_session then
@@ -613,17 +728,21 @@ end
 
 local function restore_disc_menu_option()
     if not temporary_disc_menu then return end
-    mp.set_property_bool("disc-menu", previous_disc_menu == true)
+    if mp.get_property_native('disc-menu') == current_local_menu_session then
+        mp.set_property_bool("disc-menu", previous_disc_menu == true)
+    end
     temporary_disc_menu = false
     previous_disc_menu = nil
 end
 
 local function clear_iso_state()
+    disc_generation = disc_generation + 1
     hide_remote_loading("end-file")
     hide_local_loading("end-file")
     restore_disc_menu_option()
     stop_local_menu_autostart()
     local_menu_navigation_hint_shown = false
+    local_menu_navigation_started = false
     local_menu_initial_action = "menu"
     current_local_menu_session = false
     iso_path = nil
@@ -633,12 +752,38 @@ local function clear_iso_state()
     publish_auto_menu_state()
 end
 
-local function consume_local_menu_request()
+local function consume_local_menu_request(target)
     local menu_enabled = o.auto_local_menu or forced_local_menu_once
-    local action = forced_local_menu_action or "menu"
+    local action = forced_local_menu_action
+    local title = tostring(target or ''):match('^%a+://([^/]*)')
+    local edition = mp.get_property_native('edition')
+    if forced_local_menu_once then
+        mp.set_property('file-local-options/edition', 'auto')
+    elseif type(edition) == 'number' and edition >= 0 then
+        menu_enabled = false
+    elseif title and title ~= '' then
+        -- Explicit title/playlist/longest requests take precedence over the
+        -- automatic preference; an explicit menu URI keeps its own intent.
+        menu_enabled = title == 'menu'
+    end
     forced_local_menu_once = false
     forced_local_menu_action = nil
     return menu_enabled, action
+end
+
+local function allow_local_strm_disc(path)
+    -- Native local playlists restrict device protocols, including our bd://
+    -- adapter. Permit that adapter only for an existing local disc referenced
+    -- by an existing local STRM. Keep network playlist restrictions intact and
+    -- let mpv restore this option at the end of this one entry.
+    local parent = mp.get_property('playlist-path', '') or ''
+    if not parent:lower():match('%.strm$') or parent:match('^%a[%w+.-]*://')
+        or path:match('^%a[%w+.-]*://') then return end
+    local parent_info, source_info = utils.file_info(parent), utils.file_info(path)
+    if parent_info and parent_info.is_file and source_info
+        and (source_info.is_file or source_info.is_dir) then
+        mp.set_property('file-local-options/load-unsafe-playlists', 'yes')
+    end
 end
 
 ----------------------------------------------------------------------
@@ -647,6 +792,8 @@ end
 mp.add_hook("on_load", 30, function()
     local path = mp.get_property("path") or ""
     local stream_fn = mp.get_property("stream-open-filename") or ""
+    disc_generation = disc_generation + 1
+    if stream_fn ~= '' and stream_fn ~= path then path = stream_fn end
 
     if is_iso_file(path) then
         local display_path = iso_url_path(path)
@@ -658,7 +805,8 @@ mp.add_hook("on_load", 30, function()
             show_remote_loading()
             prepare_remote_stream_buffer()
         else
-            local menu_enabled, action = consume_local_menu_request()
+            allow_local_strm_disc(path)
+            local menu_enabled, action = consume_local_menu_request(path)
             mp.osd_message("ISO: " .. short_path(display_path, 50), 2)
             show_local_loading(menu_enabled)
             configure_temporary_local_menu(menu_enabled, action)
@@ -674,9 +822,24 @@ mp.add_hook("on_load", 30, function()
         local disc_iso_path = get_disc_iso_path()
         if disc_iso_path then set_iso_state(disc_iso_path) end
         if not is_remote_iso(iso_path) then
-            local menu_enabled, action = consume_local_menu_request()
+            local menu_enabled, action = consume_local_menu_request(path)
             configure_temporary_local_menu(menu_enabled, action)
         end
+        return
+    end
+
+    -- Native BDMV probing happens after on_load. Apply the same local menu
+    -- policy before opening a directory/index, preserving the original entry.
+    local directory, protocol = local_disc_directory(path)
+    if directory then
+        allow_local_strm_disc(directory)
+        set_iso_state(directory)
+        local menu_enabled, action = consume_local_menu_request(path)
+        configure_temporary_local_menu(menu_enabled, action)
+        show_local_loading(menu_enabled)
+        mp.set_property(protocol == 'bd://' and 'bluray-device' or 'dvd-device', directory)
+        mp.set_property('stream-open-filename', protocol)
+        msg.info('[DISC] 已识别原盘目录；' .. (menu_enabled and '载入原盘菜单' or '播放主标题'))
         return
     end
 
@@ -696,7 +859,7 @@ mp.add_hook("on_load_fail", 45, function()
         if is_remote_iso(iso_path) then
             msg.error("[ISO] 远程蓝光打开失败；服务器必须支持稳定 HTTP Range")
             hide_remote_loading("open-failed")
-            mp.osd_message("远程蓝光 ISO 打开失败：请检查服务器 Range 支持", 6)
+            mp.osd_message(i18n.t("远程蓝光 ISO 打开失败：请检查服务器 Range 支持"), 6)
             -- Keep the remote marker until end-file. on_load_fail performs one
             -- retry after hooks return; clearing here could let a later failure
             -- fall through to the local-only DVD probe.
@@ -711,7 +874,7 @@ mp.add_hook("on_load_fail", 45, function()
     if stream_fn == "dvd://" then
         msg.error("[ISO] BD/DVD 均失败")
         hide_local_loading("open-failed")
-        mp.osd_message("ISO 播放失败，请检查镜像类型", 5)
+        mp.osd_message(i18n.t("ISO 播放失败，请检查镜像类型"), 5)
         clear_iso_state()
         return
     end
@@ -726,6 +889,7 @@ mp.register_event("file-loaded", function()
         stop_local_menu_autostart()
         local_menu_autostart = true
         local_menu_autostart_attempt = 0
+        local_menu_start_edition = mp.get_property_native("current-edition")
         set_local_loading_phase("menu-wait")
         schedule_local_menu_autostart()
     end
@@ -747,7 +911,7 @@ mp.register_script_message("set-auto-menu", function(value)
         requested = parse_boolean(value)
     end
     if requested == nil then
-        mp.osd_message("原盘菜单启动设置无效", 3)
+        mp.osd_message(i18n.t("原盘菜单启动设置无效"), 3)
         return
     end
 
@@ -755,8 +919,8 @@ mp.register_script_message("set-auto-menu", function(value)
     persist_auto_menu_state()
     publish_auto_menu_state()
     mp.osd_message(requested
-        and "自动进入原盘菜单：已开启（下次打开生效）"
-        or "自动进入原盘菜单：已关闭（下次打开直接播放正片）", 4)
+        and i18n.t("自动进入原盘菜单：已开启（下次打开生效）")
+        or i18n.t("自动进入原盘菜单：已关闭（下次打开直接播放正片）"), 4)
 end)
 
 mp.register_script_message("open-menu-once", function(action)
@@ -765,7 +929,7 @@ mp.register_script_message("open-menu-once", function(action)
         action = 'menu'
     end
     if is_remote_iso(iso_path) then
-        mp.osd_message("网盘 ISO 保持主标题模式，暂不载入原盘菜单", 4)
+        mp.osd_message(i18n.t("网盘 ISO 保持主标题模式，暂不载入原盘菜单"), 4)
         return
     end
     if current_local_menu_session and is_current_local_disc() then
@@ -779,14 +943,22 @@ mp.register_script_message("open-menu-once", function(action)
         if is_disc_protocol(stream_fn) then target = stream_fn end
     end
     if not target or target == '' then
-        mp.osd_message("当前原盘无法重新载入菜单", 4)
+        mp.osd_message(i18n.t("当前原盘无法重新载入菜单"), 4)
         return
     end
 
     forced_local_menu_once = true
     forced_local_menu_action = action
-    mp.osd_message("正在重新载入原盘菜单（仅本次）", 3)
+    mp.osd_message(i18n.t("正在重新载入原盘菜单（仅本次）"), 3)
     mp.commandv("loadfile", target, "replace")
+end)
+
+mp.observe_property("current-edition", "number", function()
+    stop_started_root_navigation()
+end)
+
+mp.register_event("seek", function()
+    stop_started_root_navigation(true)
 end)
 
 mp.observe_property("disc-menu-active", "bool", function(_, active)
@@ -796,7 +968,7 @@ mp.observe_property("disc-menu-active", "bool", function(_, active)
     if local_menu_navigation_hint_shown then return end
     local_menu_navigation_hint_shown = true
     mp.osd_message(
-        "蓝光菜单：方向键选择 · Enter 确认 · Esc / Backspace 返回 · Home 回蓝光菜单根目录",
+        i18n.t("蓝光菜单：方向键选择 · Enter 确认 · Esc / Backspace 返回 · Home 回蓝光菜单根目录"),
         5)
 end)
 
@@ -804,7 +976,15 @@ mp.register_event("playback-restart", function()
     if is_remote_iso(iso_path) then
         hide_remote_loading("playback-restart")
     elseif iso_path then
-        hide_local_loading("playback-restart")
+        -- The loading card represents "no usable picture yet", not "the disc
+        -- menu is already interactive".  Some BD-J/DIY discs legitimately
+        -- mask Top Menu during First Play; keeping the card until that mask
+        -- clears leaves it visibly covering already-playing video and also
+        -- regresses ordinary ISOs.  As soon as mpv reports a real playback
+        -- restart, release only our blocking overlay.  The bounded discnav
+        -- retry chain intentionally keeps running in the background and can
+        -- still enter the authored menu later without covering the picture.
+        hide_local_loading("playback-restart-video-ready")
     end
 end)
 

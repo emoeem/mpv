@@ -1,3 +1,4 @@
+i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 -- Display some stats.
 --
 -- Please consult the readme for information about usage and configuration:
@@ -15,18 +16,18 @@ local mp = require 'mp'
 local utils = require 'mp.utils'
 local input = require 'mp.input'
 
-local function load_audio_stats_info()
+local function load_stats_info(name)
     local candidates = {}
     local function add(path)
         if path and path ~= '' then candidates[#candidates + 1] = path end
     end
-    add(mp.command_native({'expand-path', '~~/script-modules/audio-stats-info.lua'}))
+    add(mp.command_native({'expand-path', '~~/script-modules/' .. name .. '.lua'}))
     local source = debug.getinfo(1, 'S').source:gsub('^@', '')
     local script_dir = select(1, utils.split_path(source))
     local parent = ''
     for _ = 1, 4 do
         parent = parent .. '../'
-        add(utils.join_path(script_dir, parent .. 'script-modules/audio-stats-info.lua'))
+        add(utils.join_path(script_dir, parent .. 'script-modules/' .. name .. '.lua'))
     end
     local last_error = ''
     for _, path in ipairs(candidates) do
@@ -34,10 +35,11 @@ local function load_audio_stats_info()
         if ok and type(result) == 'table' then return result end
         last_error = tostring(result)
     end
-    error('Unable to load audio-stats-info.lua: ' .. last_error)
+    error('Unable to load ' .. name .. '.lua: ' .. last_error)
 end
 
-local AudioStatsInfo = load_audio_stats_info()
+local AudioStatsInfo = load_stats_info('audio-stats-info')
+local MediaFormatInfo = load_stats_info('media-format-info')
 local release_path = mp.find_config_file('script-modules/emo-release.lua')
 local release_ok, release_info = pcall(dofile, release_path or '')
 local release = release_ok and type(release_info) == 'table' and release_info or nil
@@ -51,10 +53,13 @@ local o = {
     key_page_3 = "3",
     key_page_4 = "4",
     key_page_5 = "5",
+    key_page_6 = "6",
     key_page_0 = "0",
     -- For pages which support scrolling
     key_scroll_up = "UP",
     key_scroll_down = "DOWN",
+    key_help_prev = "LEFT",
+    key_help_next = "RIGHT",
     key_search = "/",
     key_exit = "ESC",
     scroll_lines = 1,
@@ -63,6 +68,10 @@ local o = {
     redraw_delay = 1,                -- acts as duration in the toggling case
     ass_formatting = true,
     persistent_overlay = false,      -- whether the stats can be overwritten by other output
+    -- 外观开关：两项都为 no 时回到 9.2 旧版的纯文字外观。
+    -- 只影响配色与底板，不增删任何统计项、也不改布局与徽标等新功能。
+    panel_background = true,         -- 统计卡片背景底板（旧版无此项）
+    accent_colors = true,            -- 标题/标签/滚动提示使用主题色（旧版无此项）
     filter_params_max_length = 100,  -- show one filter per line if list exceeds this length
     file_tag_max_length = 128,       -- only show file tags shorter than this length in bytes
     file_tag_max_count = 16,         -- only show the first x file tags
@@ -180,14 +189,89 @@ local process_key_binding
 local perf_page_overlay = mp.create_osd_overlay("ass-events")
 local perf_page_overlay_visible = false
 local release_overlay = mp.create_osd_overlay("ass-events")
+local stats_overlay = mp.create_osd_overlay("ass-events")
+local stats_scroll_overlay = mp.create_osd_overlay("ass-events")
+local stats_background = mp.create_osd_overlay("ass-events")
+stats_background.z = 99
+
+-- 统计面板可见性，发布给装饰性叠加层避让用（启动页品牌图居中绘制，
+-- 与统计文字的左上角区域重叠）。读方必须用 mp.get_property_native：
+-- 字符串经 mp.get_property 读回会带 JSON 引号。
+local function publish_stats_visible(visible)
+    local value = visible and 'yes' or 'no'
+    if mp.get_property_native('user-data/stats/visible') ~= value then
+        mp.set_property('user-data/stats/visible', value)
+    end
+end
+-- Distinguish the persistent toggle from a temporary/one-shot display. Remote
+-- controls need the toggle even when no video window can render the overlay.
+local function publish_stats_toggled(toggled)
+    if mp.get_property_native('user-data/stats/toggled') ~= toggled then
+        mp.set_property_bool('user-data/stats/toggled', toggled)
+    end
+end
+publish_stats_visible(false)
+publish_stats_toggled(false)
+mp.register_event('shutdown', function()
+    publish_stats_visible(false)
+    publish_stats_toggled(false)
+end)
+-- Statistics are foreground controls, above ordinary subtitles and danmaku.
+stats_overlay.z, perf_page_overlay.z, release_overlay.z = 100, 100, 101
+stats_scroll_overlay.z = stats_overlay.z
+-- Request synchronous libass bounds only when a panel actually needs them.
+stats_overlay.compute_bounds, perf_page_overlay.compute_bounds = false, false
+local overlay_submissions = {help_page=1}
+local function submit_stats_overlay(overlay, hidden)
+    overlay.hidden = hidden == true
+    local previous = overlay_submissions[overlay]
+    local key = table.concat({overlay.res_x, overlay.res_y, tostring(overlay.hidden),
+        tostring(overlay.compute_bounds), overlay.data}, '\0')
+    if previous and previous.key == key then return previous.bounds end
+    local bounds = overlay:update()
+    overlay_submissions[overlay] = {key=key, bounds=bounds}
+    return bounds
+end
+local function hide_stats_overlay(overlay)
+    -- Removing an ASS overlay destroys its renderer/font caches. Keep the few
+    -- stats layers hidden between openings; shutdown releases them with mpv.
+    if overlay_submissions[overlay] and not overlay.hidden then
+        local bounds = overlay.compute_bounds
+        overlay.compute_bounds = false
+        submit_stats_overlay(overlay, true)
+        overlay.compute_bounds = bounds
+    end
+end
 local stats_measure = mp.create_osd_overlay("ass-events")
+local stats_safe_bottom, stats_line_height, convert_osd_ass_controls, fit_overview, stats_page_footer
+local stats_line_cache_key, stats_line_cache_value
+local overview_layout
+local overview_panels
 stats_measure.compute_bounds, stats_measure.hidden = true, true
+-- Prepare only the overview renderers while mpv is still loading the first
+-- video. Creating each libass font provider during playback can hold the OSD
+-- lock for tens of milliseconds; the on_preloaded hook precedes presentation.
+mp.add_hook('on_preloaded', 50, function()
+    if overlay_submissions.warmed or not o.ass_formatting or mp.get_property('vid') == 'no' then return end
+    if overlay_submissions[stats_overlay] then overlay_submissions.warmed=true;return end
+    local video = false
+    for _,track in ipairs(mp.get_property_native('track-list') or {}) do
+        if track.type == 'video' and not track.albumart then video=true;break end
+    end
+    if not video then return end
+    stats_overlay.res_x, stats_overlay.res_y = 512, 288
+    stats_overlay.data = ''
+    submit_stats_overlay(stats_overlay, true)
+    stats_measure.res_x, stats_measure.res_y = 512, 288
+    stats_measure.compute_bounds = false
+    stats_measure:update()
+    stats_measure.compute_bounds = true
+    overlay_submissions.warmed = true
+end)
 local PERF_PAGE_RES_Y = 288
 local PERF_PAGE_MAX_COLUMNS = 4
 local PERF_PAGE_MIN_COLUMN_WIDTH = 112
 local PERF_PAGE_COLUMN_GAP = 5
-local PERF_PAGE_FULLSCREEN_FONT_SIZE = 17
-local PERF_PAGE_ROW_HEIGHT = 1.10
 local PERF_PAGE_FOUR_COLUMN_FONT_SCALE_X = 90
 
 local property_cache = {}
@@ -441,19 +525,35 @@ local function append_perfdata(header, s, dedicated_page)
     -- ensure that the fixed title is one element and every scrollable line is
     -- also one single element.
     local h = dedicated_page and header or s
-    h[#h+1] = format("%s%s%s%s%s%s%s%s",
-                     dedicated_page and "" or o.nl, dedicated_page and "" or o.indent,
-                     bold("Frame Timings:"), o.prefix_sep, font_small,
-                     "(last/average/peak μs)", font_normal,
-                     dedicated_page and scroll_hint() or "")
+    local overview_columns = not dedicated_page and o.use_ass and o.auto_layout
+        and not (o.custom_header and o.custom_header ~= '')
+    local readable_table = dedicated_page and o.use_ass and o.auto_layout
+        and not (o.custom_header and o.custom_header ~= '')
+    if readable_table then
+        h[#h+1] = bold(i18n.t('渲染耗时（μs）：')) .. o.nl .. o.indent .. o.indent
+            .. font_mono .. i18n.t(' 最近 /  平均 /  峰值 ') .. o.prefix_sep .. indent
+            .. i18n.t('占比') .. font .. o.prefix_sep .. o.prefix_sep .. i18n.t('渲染步骤')
+    elseif overview_columns then
+        h[#h+1] = o.nl .. o.indent .. bold(i18n.t("渲染耗时：")) .. o.prefix_sep
+            .. font_mono .. i18n.t(" 最近 /  平均 /  峰值  μs") .. font
+    else
+        h[#h+1] = format("%s%s%s%s%s%s%s%s",
+                         dedicated_page and "" or o.nl, dedicated_page and "" or o.indent,
+                         bold(i18n.t("渲染耗时：")), o.prefix_sep, font_small,
+                         i18n.t("（最近/平均/峰值 μs）"), font_normal,
+                         dedicated_page and scroll_hint() or "")
+    end
 
-    for _,frame in ipairs(sorted_keys(vo_p)) do  -- ensure fixed display order
+    for index,frame in ipairs(sorted_keys(vo_p)) do  -- ensure fixed display order
         local data = vo_p[frame]
+        local label = ({fresh=i18n.t("新帧（Fresh）"), redraw=i18n.t("重绘（Redraw）")})[frame]
+            or frame:gsub("^%l", string.upper)
         local f = "%s%s%s%s%s / %s / %s %s%s%s%s%s%s"
 
         if dedicated_page then
+            if readable_table and index>1 then s[#s+1]=o.nl end
             s[#s+1] = format("%s%s%s:", o.nl, o.indent,
-                             bold(frame:gsub("^%l", string.upper)))
+                             bold(label))
 
             for _, pass in ipairs(data) do
                 s[#s+1] = format(f, o.nl, o.indent, o.indent,
@@ -475,13 +575,19 @@ local function append_perfdata(header, s, dedicated_page)
             s[#s+1] = format(f, o.nl, o.indent, o.indent,
                              font_mono, pp(last_s[frame]),
                              pp(avg_s[frame]), pp(peak_s[frame]),
-                             o.prefix_sep, bold("Total"), font, "", "", "")
+                             o.prefix_sep, bold(i18n.t("合计")), font, "", "", "")
         else
             -- for the simplified view, we just print the sum of each pass
-            s[#s+1] = format(f, o.nl, o.indent, o.indent, font_mono,
+            local row = format(f, "", overview_columns and "" or o.indent,
+                            overview_columns and "" or o.indent, font_mono,
                             pp(last_s[frame]), pp(avg_s[frame]), pp(peak_s[frame]),
                             "", "", font, o.prefix_sep, o.prefix_sep,
-                            frame:gsub("^%l", string.upper))
+                            label)
+            s[#s+1] = o.nl .. row
+            if overview_columns then
+                s.overview_value_rows = s.overview_value_rows or {}
+                s.overview_value_rows[#s.overview_value_rows+1] = row
+            end
         end
     end
 end
@@ -603,9 +709,9 @@ local function get_kbinfo_lines()
     local kpre = term and "" or format("{\\q2\\fn%s}%s", o.font_mono, LTR)
     local kpost = term and " " or format(" {\\fn%s}", o.font)
     local spre = term and kspaces .. "   "
-                       or format("{\\q2\\fn%s}%s   {\\fn%s}{\\fs%d\\u1}",
-                                 o.font_mono, kspaces, o.font, 1.3*font_size)
-    local spost = term and "" or format("{\\u0\\fs%d}%s", font_size, text_style())
+                       or format("{\\q2\\fn%s}%s   {\\fn%s}{\\fs%.3f\\u1}",
+                                 o.font_mono, kspaces, o.font, font_size)
+    local spost = term and "" or "{\\u0}"
 
     -- create the display lines
     local info_lines = {}
@@ -693,32 +799,108 @@ local function append_display_sync(s)
 end
 
 
+-- Summarize only this package's managed AI graph. Keep generic filters and
+-- debug output intact; never decode or expose device binding data here.
+local function ai_filter_summary(f, prop, source)
+    if prop ~= 'vf' or f.label ~= 'yaozhi_ai' or f.name ~= 'vapoursynth'
+        or type(f.params) ~= 'table' then return nil end
+    local file = tostring(f.params.file or ''):gsub('\\', '/'):match('([^/]+)$')
+    if file ~= 'yaozhi-rife.vpy' and file ~= 'yaozhi-rife-nvidia-hq.vpy' then return nil end
+    local fields = {}
+    for value in (tostring(f.params['user-data'] or '') .. 'x'):gmatch('(.-)x') do
+        fields[#fields + 1] = value
+        if #fields >= 12 then break end
+    end
+    local function property(name)
+        return mp.get_property_native('user-data/video-enhancement/' .. name)
+    end
+    local function fps(value)
+        value = tonumber(value)
+        if not value or value ~= value or value <= 0 or value >= math.huge then return nil end
+        return value
+    end
+    local function rate(value)
+        return string.format('%.3f', value):gsub('0+$', ''):gsub('%.$', '')
+    end
+    local superres = file == 'yaozhi-rife-nvidia-hq.vpy' and fields[7] == '2'
+    local backend = superres and 'AnimeJaNai TensorRT'
+        or file == 'yaozhi-rife-nvidia-hq.vpy' and 'RIFE TensorRT' or 'RIFE Vulkan'
+    local processing = superres and i18n.t('AI 超分') or fields[12] == '1' and i18n.t('普通 HDR 兼容')
+        or fields[5] == '3' and 'HDR' or 'SDR'
+    local state = property('ai-state')
+    local status
+    if f.enabled == false then
+        status = i18n.t('已禁用')
+    elseif state == 'starting' then
+        status = i18n.t('初始化中')
+    elseif superres and state == 'spatial' and property('hq-superres-active') == 'yes' then
+        status = i18n.t('已启用')
+    elseif not superres and state == 'active' and property('ai-active') == 'yes' then
+        local source, result = fps(property('ai-source-fps')), fps(property('ai-result-fps'))
+        status = source and result and math.abs(result / source - 2) <= 0.07
+            and (rate(source) .. '→' .. rate(result) .. ' FPS') or i18n.t('帧率待确认')
+    elseif state == 'failed' then
+        status = i18n.t('已回退')
+    elseif state == 'off' or state == 'protected' or state == 'native' or state == 'idle' then
+        status = i18n.t('未生效')
+    else
+        status = i18n.t('状态待确认')
+    end
+    local inference
+    if type(source) == 'table' and not superres and f.enabled ~= false
+        and state == 'active' and property('ai-active') == 'yes' then
+        local function dimension(value)
+            if type(value) == 'string' and not value:match('^%d+$') then return nil end
+            value = tonumber(value)
+            if value and value > 0 and value < math.huge and value % 1 == 0 then return value end
+        end
+        local w, h = dimension(source.w), dimension(source.h)
+        local max_w, max_h = dimension(fields[2]), dimension(fields[3])
+        if w and h and max_w and max_h then
+            -- Match both managed VS graphs: the actual filter caps are
+            -- bounds, not the inference canvas (e.g. 3840x1600 -> 2560x1066).
+            local scale = math.min(1, math.max(320, max_w) / w, math.max(180, max_h) / h)
+            local iw = math.max(2, math.floor(w * scale / 2) * 2)
+            local ih = math.max(2, math.floor(h * scale / 2) * 2)
+            inference = format('%d×%d（%s）', iw, ih,
+                (iw < w or ih < h) and i18n.t('降分辨率') or i18n.t('原分辨率'))
+        end
+    end
+    return not o.debug and (backend .. ' · ' .. processing .. ' · ' .. status) or nil, inference
+end
+
 local function append_filters(s, prop, prefix)
     local length = 0
     local filters = {}
 
     for _,f in ipairs(mp.get_property_native(prop, {})) do
-        local n = f.name
-        if f.enabled ~= nil and not f.enabled then
-            n = n .. " (disabled)"
-        end
-
-        if f.label ~= nil then
-            n = "@" .. f.label .. ": " .. n
-        end
-
-        local p = {}
-        for _,key in ipairs(sorted_keys(f.params)) do
-            p[#p+1] = key .. "=" .. f.params[key]
-        end
-        if #p > 0 then
-            p = " [" .. table.concat(p, " ") .. "]"
+        local summary = ai_filter_summary(f, prop)
+        if summary then
+            length = length + #summary
+            filters[#filters+1] = no_ASS(summary)
         else
-            p = ""
-        end
+            local n = f.name
+            if f.enabled ~= nil and not f.enabled then
+                n = n .. " (disabled)"
+            end
 
-        length = length + n:len() + p:len()
-        filters[#filters+1] = no_ASS(n) .. it(no_ASS(p))
+            if f.label ~= nil then
+                n = "@" .. f.label .. ": " .. n
+            end
+
+            local p = {}
+            for _,key in ipairs(sorted_keys(f.params)) do
+                p[#p+1] = key .. "=" .. f.params[key]
+            end
+            if #p > 0 then
+                p = " [" .. table.concat(p, " ") .. "]"
+            else
+                p = ""
+            end
+
+            length = length + n:len() + p:len()
+            filters[#filters+1] = no_ASS(n) .. it(no_ASS(p))
+        end
     end
 
     if #filters > 0 then
@@ -982,6 +1164,21 @@ local function append_img_params(s, r, ro, show_superres)
     end
 
     append_resolution(s, r, "Resolution:", "w", "h", true)
+    local superres_active = show_superres and mp.get_property_native(
+        "user-data/video-enhancement/superres-active") == "yes"
+    if show_superres and not superres_active then
+        local input = mp.get_property_native('video-params') or {}
+        for _, f in ipairs(mp.get_property_native('vf', {})) do
+            local _, inference = ai_filter_summary(f, 'vf', input)
+            if inference then
+                append(s, inference, {prefix="AI Inference:"})
+                break
+            end
+            -- An earlier enabled filter may resize/crop the decoded source.
+            -- Its output geometry is not exposed here; do not invent a canvas.
+            if f.enabled ~= false then input = {} end
+        end
+    end
     if ro and (r["w"] ~= ro["dw"] or r["h"] ~= ro["dh"]) then
         if ro["crop-w"] and (crop_noop(r["w"], r["h"], ro) or crop_equal(r, ro)) then
             ro["crop-w"] = nil
@@ -994,15 +1191,13 @@ local function append_img_params(s, r, ro, show_superres)
         -- resolution fields cannot identify whether the final display upscale
         -- is using the managed SSim/FSRCNNX path. Reuse the publication that
         -- also drives the video-enhancement menu; this keeps both UIs truthful.
-        local superres_active = mp.get_property_native(
-            "user-data/video-enhancement/superres-active") == "yes"
         local superres_effective = mp.get_property_native(
             "user-data/video-enhancement/superres-effective")
         local superres_detail = mp.get_property_native(
             "user-data/video-enhancement/superres-detail")
         local superres_status = superres_active and superres_detail or superres_effective
         if superres_status and superres_status ~= "" and superres_status ~= "等待视频" then
-            append(s, superres_status, {prefix="Super Resolution:"})
+            append(s, i18n.status(superres_status), {prefix="Super Resolution:"})
         end
     end
 
@@ -1028,7 +1223,7 @@ local function append_img_params(s, r, ro, show_superres)
                                 r["prim-blue-x"] or 0, r["prim-blue-y"] or 0,
                                 r["prim-white-x"] or 0, r["prim-white-y"] or 0),
             {prefix="Primaries:", nl="", indent=indent})
-        append(s, r["primaries"], {prefix="使用", nl="", indent=" ", prefix_sep=" ",
+        append(s, r["primaries"], {prefix=i18n.t("使用"), nl="", indent=" ", prefix_sep=" ",
                                    no_prefix_markup=true})
     else
         append(s, r["primaries"], {prefix="Primaries:", nl="", indent=indent})
@@ -1115,6 +1310,15 @@ local function add_video_out(s)
 end
 
 
+local function append_dolby_vision(s, dv)
+    if not dv then return end
+    -- Keep the structured metadata unchanged; give the displayed layer
+    -- components the same breathing room as the surrounding detail fields.
+    local details = dv.details ~= '' and dv.details:gsub('%+', ' + ') or 'DV'
+    append(s, details, {prefix='Dolby Vision:'})
+end
+
+
 local function add_video(s)
     local r = mp.get_property_native("video-params")
     local ro = mp.get_property_native("video-out-params")
@@ -1181,6 +1385,7 @@ local function add_video(s)
         append_fps(s, "container-fps", "estimated-vf-fps")
     end
     append_img_params(s, r, ro, true)
+    append_dolby_vision(s, MediaFormatInfo.collect().dolby_vision)
     append_hdr(s, ro)
     append_property(s, "video-bitrate", {prefix="Bitrate:"})
     append_filters(s, "vf", "Filters:")
@@ -1286,6 +1491,24 @@ local function split(str, pat, plain)
     return r
 end
 
+local function stats_page_entries(ass)
+    local entries = {}
+    for i,label in ipairs({i18n.t('概览'),i18n.t('渲染'),i18n.t('缓存'),i18n.t('快捷键'),i18n.t('轨道'),i18n.t('帮助')}) do
+        local key = o['key_page_'..i]
+        local text = format('%s %s',key,label)
+        if ass then
+            text = convert_osd_ass_controls(no_ASS(text))
+            if key == curr_page then
+                local active = o.accent_colors and '\\1c&HFFF070&' or ''
+                local normal = o.accent_colors and '\\1c&H'..(o.font_color~='' and o.font_color or 'FFFFFF')..'&' or ''
+                text = '{\\b1'..active..'}'..text..'{\\b0'..normal..'}'
+            end
+        end
+        entries[#entries+1] = text
+    end
+    return entries
+end
+
 -- Composes the output with header and scrollable content
 -- Returns string of the finished page and the actually chosen offset
 --
@@ -1293,6 +1516,64 @@ end
 -- content     : table of the content where each entry is one line
 -- apply_scroll: scroll the content
 local function finalize_page(header, content, apply_scroll)
+    pages[curr_page].render_scale = 1
+    if o.use_ass and o.auto_layout and not (o.custom_header and o.custom_header ~= "") then
+        -- Count physical ASS rows, not append fragments (one fragment may
+        -- contain several rows). Keep font size and the title origin fixed.
+        local title = convert_osd_ass_controls(table.concat(header))
+        local body = convert_osd_ass_controls(table.concat(content))
+        if body:sub(1, #o.nl) == o.nl then body = body:sub(#o.nl + 1) end
+        local rows = split(body, o.nl, true)
+        local header_rows = title:gsub('{[^}]*}', '') ~= '' and #split(title, o.nl, true) or 0
+        local footer = pages[curr_page].idx~=0 and stats_page_footer(font_size,#rows)
+        local footer_height = footer and max(footer.height,footer.size*1.3)+footer.border+2 or font_size*1.2
+        local capacity = max(1, math.floor((stats_safe_bottom() - position_y - footer_height - border_size * 2)
+            / stats_line_height()) - header_rows)
+        local page = pages[curr_page]
+        local max_offset = max(1, #rows - capacity + 1)
+        -- Measured wraps may reduce capacity below the line-height estimate.
+        -- Keep the requested row until that real capacity is known.
+        local from = max(1, min(page.offset or 1, footer and #rows or max_offset))
+        local function compose(count)
+            return text_style() .. title .. (header_rows>0 and o.nl or '')
+                .. table.concat(rows,o.nl,from,min(#rows,from+count-1))
+        end
+        local output = compose(capacity)
+        if footer then
+            -- A short line-height sample cannot account for automatic wraps
+            -- and fallback fonts on a complete page. Check the bounded slice.
+            local w,h=mp.get_osd_size()
+            local bottom=stats_safe_bottom()-footer_height
+            -- Do not infer a larger capacity from a short suffix: it would
+            -- reset a valid scroll offset just before reaching the last row.
+            capacity=min(capacity,#rows-from+1)
+            local fit_key=table.concat({w,h,bottom,from,#rows,compose(capacity)},'\0')
+            if page.fit_key==fit_key then
+                capacity=page.fit_capacity
+            else
+                local function fits(count)
+                    stats_measure.res_x,stats_measure.res_y=288*w/h,288
+                    stats_measure.data=compose(count)
+                    local b=stats_measure:update()
+                    return not b or not b.y1 or b.y1<=bottom
+                end
+                if not fits(capacity) then
+                    local lo,hi=1,capacity
+                    while lo<hi do
+                        local mid=math.floor((lo+hi+1)/2)
+                        if fits(mid) then lo=mid else hi=mid-1 end
+                    end
+                    capacity=lo
+                end
+                page.fit_key,page.fit_capacity=fit_key,capacity
+            end
+            max_offset=max(1,#rows-capacity+1)
+            output=compose(capacity)
+        end
+        page.offset, page.max_offset = from, max_offset
+        page.visible_last, page.total_rows = min(#rows, from + capacity - 1), #rows
+        return output, from
+    end
     local term_height = mp.get_property_native("term-size/h", 24)
     local from, to = 1, #content
     if apply_scroll then
@@ -1319,11 +1600,23 @@ end
 local function default_stats()
     local stats = {}
     eval_ass_formatting()
+    if o.use_ass and o.auto_layout and not (o.custom_header and o.custom_header ~= '') then
+        -- add_file appends its first line without a newline to an existing
+        -- row. Seed that row so the filename is not stored at Lua index 0.
+        local sections = {{'',title=i18n.t('文件与系统')}, {title=i18n.t('显示与渲染')},
+                          {title=i18n.t('视频信息')}, {title=i18n.t('音频输出')}}
+        add_file(sections[1], true, false)
+        add_video_out(sections[2])
+        add_video(sections[3])
+        add_audio(sections[4])
+        return fit_overview(stats, sections)
+    end
     add_header(stats)
     add_file(stats, true, false)
     add_video_out(stats)
     add_video(stats)
     add_audio(stats)
+    append(stats, i18n.t("按键切页  ") .. table.concat(stats_page_entries(false),' · '), {indent=""})
     return finalize_page({}, stats, false)
 end
 
@@ -1332,9 +1625,81 @@ local function vo_stats()
     local header, content = {}, {}
     eval_ass_formatting()
     add_header(header)
+    append(header, "", {prefix=pages[o.key_page_2].desc, nl="", indent=""})
+    local readable = o.use_ass and o.auto_layout and not (o.custom_header and o.custom_header~='')
+    if readable then header[#header+1]=o.nl end
+    append(header, i18n.t("单位：微秒（μs），1000 μs = 1 ms。"), {indent=""})
+    if readable then
+        append(header, format(i18n.t('仅含 VO 渲染计时，非端到端延迟；详见 %s 帮助。'),o.key_page_6), {indent=''})
+    else
+        append(header, i18n.t("仅含视频输出（VO）的渲染计时，非端到端延迟。"), {indent=""})
+        append(header, i18n.t("解码、补帧及系统合成成本未全覆盖。"), {indent=""})
+        append(header, format(i18n.t("按 %s 查看统计说明与排障。"), o.key_page_6), {indent=""})
+    end
+    header[#header+1] = readable and o.nl..o.nl or o.nl
     append_perfdata(header, content, true)
+    if not mp.get_property_native("vo-passes") then
+        append(content, i18n.t("当前输出未提供渲染计时。"), {indent=""})
+    end
     header = {table.concat(header)}
     return finalize_page(header, content, true)
+end
+
+-- Presentation guidance only: no additional polling, inference or counters.
+local function troubleshooting_stats()
+    local header, content = {}, {}
+    eval_ass_formatting()
+    add_header(header)
+    append(header, "", {prefix=pages[o.key_page_6].desc, nl="", indent=""})
+    local topics={i18n.t('基本操作'),i18n.t('丢帧与同步'),i18n.t('渲染指标'),i18n.t('排障与限制')}
+    local readable=o.use_ass and o.auto_layout and not (o.custom_header and o.custom_header~='')
+    append(header, format(i18n.t('帮助 %d/4：%s'),overlay_submissions.help_page,topics[overlay_submissions.help_page]), {indent=""})
+    if not readable then
+        append(header, format(i18n.t('%s/%s 切换帮助子页。'),
+            o.key_help_prev,o.key_help_next), {indent=""})
+        append(header, format(i18n.t("%s/%s 滚动；I（Shift+i）常驻开关。"),
+            o.key_scroll_up, o.key_scroll_down), {indent=""})
+    end
+    header[#header+1] = o.nl
+    local sections = {
+        {i18n.t("打开统计"), i18n.t("i：临时显示；I（Shift+i）：常驻开关。")},
+        {i18n.t("关闭统计"), i18n.t("I（Shift+i）可关闭常驻统计。"),
+            i18n.t("直接以常驻方式打开时，"),
+            format(i18n.t("也可按 %s 关闭。"), o.key_exit)},
+        {i18n.t("切换页面"), i18n.t("显示统计时按页面键切换："),
+            format(i18n.t("%s 概览 · %s 渲染 · %s 缓存"), o.key_page_1, o.key_page_2, o.key_page_3),
+            format(i18n.t("%s 快捷键 · %s 轨道 · %s 帮助 · %s 内部"),
+                o.key_page_4, o.key_page_5, o.key_page_6, o.key_page_0)},
+        {i18n.t("累计丢帧"), i18n.t("观察播放中是否持续增长。"),
+            i18n.t("启动、跳转的历史值不等于持续卡顿。")},
+        {i18n.t("解码与输出"), i18n.t("解码丢帧：检查硬解与片源负载。"),
+            i18n.t("输出丢帧：结合渲染和呈现节奏排查。")},
+        {i18n.t("刷新率与帧率"), i18n.t("显示器 Hz 不等于弹幕实际刷新。"),
+            i18n.t("片源 FPS 不等于实际呈现频率。")},
+        {i18n.t("渲染耗时"), i18n.t("单位：微秒（μs）；1000 μs = 1 ms。"),
+            i18n.t("仅为视频输出（VO）的渲染阶段计时。"),
+            i18n.t("不等于整帧端到端延迟。"),
+            i18n.t("未覆盖解码、补帧和合成全部成本。")},
+        {i18n.t("新帧与重绘"), i18n.t("Fresh / Redraw 的含义依渲染后端而异。"),
+            i18n.t("不可简单相加作为总延迟。"),
+            i18n.t("各项峰值之和并非同一帧峰值。")},
+        {i18n.t("同步与抖动"), i18n.t("结合实际启用的同步模式判断。"),
+            i18n.t("未启用显示同步时，估算值可能无效。"),
+            i18n.t("单项抖动不能证明显卡性能不足。")},
+        {i18n.t("逐项排查"), i18n.t("先看实际画面与音画同步。"),
+            i18n.t("一次只改一项设置，比较前后表现。")},
+        {i18n.t("缺失数据"), i18n.t("未提供的数据不代表零耗时。")},
+    }
+    local groups={{1,2,3},{4,5,6,9},{7,8},{10,11}}
+    for order, index in ipairs(groups[overlay_submissions.help_page]) do
+        local section=sections[index]
+        if readable and order>1 then content[#content+1]=o.nl end
+        append(content, "", {prefix=section[1], indent=""})
+        for i=2,#section do
+            append(content, section[i], readable and {indent=o.prefix_sep,prefix_sep=''} or {})
+        end
+    end
+    return finalize_page({table.concat(header)}, content, true)
 end
 
 local kbinfo_lines = nil
@@ -1453,12 +1818,15 @@ local function add_track(c, t, i)
         append(c, t["replaygain-album-peak"], {prefix="Peak:", suffix=" dB",
                                                nl="", indent=o.prefix_sep})
     end
-    if t["dolby-vision-profile"] or t["dolby-vision-level"] then
-        append(c, "", {prefix="Dolby Vision:"})
-        append(c, t["dolby-vision-profile"], {prefix="Profile:", nl="", indent=""})
-        append(c, t["dolby-vision-level"], {prefix="Level:", nl="",
-                                            indent=t["dolby-vision-profile"] and
-                                            o.prefix_sep .. o.prefix_sep or ""})
+    if t.type == 'video' then
+        -- Current-frame metadata belongs only to the selected video track.
+        local current = mp.get_property_native('current-tracks/video', {})
+        local snapshot = {video_track = t}
+        if current.type == 'video' and current.id ~= nil and current.id == t.id then
+            snapshot.video_frame_info = mp.get_property_native('video-frame-info', {})
+        end
+        local dv = MediaFormatInfo.from_snapshot(snapshot).dolby_vision
+        append_dolby_vision(c, dv)
     end
 end
 
@@ -1492,12 +1860,12 @@ end
 
 local function hide_perf_page_overlay()
     if perf_page_overlay_visible then
-        perf_page_overlay:remove()
+        hide_stats_overlay(perf_page_overlay)
         perf_page_overlay_visible = false
     end
 end
 
-local function convert_osd_ass_controls(text)
+convert_osd_ass_controls = function(text)
     if o.persistent_overlay or ass_stop == "" or not text:find(ass_stop, 1, true) then
         return text
     end
@@ -1527,15 +1895,22 @@ end
 
 -- Keep statistics above the dock and its media badges, even while the dock is
 -- transiently hovered (osc/margins only describes persistent controls).
-local function stats_safe_bottom()
+stats_safe_bottom = function()
     local margins = mp.get_property_native('user-data/osc/margins') or {}
-    local has_uosc = mp.get_property('user-data/uosc/dock-animation-mode') ~= nil
+    local has_uosc = mp.get_property_native('user-data/uosc/dock-animation-mode') ~= nil
     return 288 * (1 - max(tonumber(margins.b) or 0, has_uosc and 0.18 or 0.025))
 end
 
-local function show_release_badge()
+local function stats_danmaku_area()
+    if mp.get_property_native('user-data/uosc_danmaku/has-danmaku') ~= true then return nil end
+    local layout = mp.get_property_native('user-data/uosc_danmaku/layout')
+    if type(layout) == 'table' and layout.visible == false then return nil end
+    return type(layout) == 'table' and tonumber(layout.top) or 0
+end
+
+local function show_release_badge(compose)
     if not release or not o.use_ass or not has_vo_window() then
-        release_overlay:remove()
+        hide_stats_overlay(release_overlay)
         return
     end
     local w, h = mp.get_osd_size()
@@ -1544,60 +1919,440 @@ local function show_release_badge()
     -- Independent upper-right label: no extra row in any statistics page.
     local x = release_overlay.res_x - max(position_x, 6)
     local y = position_y
-    if mp.get_property('user-data/startup-format-logos/visible') == 'yes' then
+    if mp.get_property_native('user-data/startup-format-logos/visible') == 'yes' then
         y = max(y, 288 * 0.15)
     end
     if w < h * 1.2 then y = max(4, position_y - font_size * 1.6) end
+    local badge_panel
+    if curr_page==o.key_page_1 and overview_panels then
+        for _,panel in ipairs(overview_panels) do
+            if not badge_panel or panel.column>badge_panel.column then badge_panel=panel end
+        end
+        if badge_panel then
+            -- Scrolled body rows have no title lane. Do not cover a value
+            -- with branding; it returns with the section heading.
+            if not badge_panel.heading then hide_stats_overlay(release_overlay);return end
+            x,y=badge_panel.x1-max(2,8*288/h),badge_panel.y0
+        end
+    end
     local label = mp.command_native({'escape-ass', tostring(release.name)..'  '..tostring(release.version)})
-    release_overlay.data = text_style():gsub('\\pos%b()', ''):gsub('\\an%d', '\\an9')
-        .. format('{\\an9\\pos(%.2f,%.2f)\\fs%.2f\\b1\\1a&H18&}%s',
-            x, y, font_size * 1.05, label)
-    release_overlay:update()
+    local label_size = font_size * 1.05
+    if curr_page == o.key_page_1 and o.auto_layout then label_size=max(label_size,16*288/h) end
+    local badge_key=badge_panel and table.concat({x,y,label,label_size,border_size,o.font},':')
+    local cached=badge_key and overview_layout and overview_layout.badge
+    if cached and cached.key==badge_key then label,x=cached.label,cached.x end
+    local measured=cached and cached.key==badge_key
+    if badge_panel and not measured then
+        local width=badge_panel.x1-badge_panel.x0
+        stats_measure.res_x,stats_measure.res_y=release_overlay.res_x,288
+        stats_measure.data=text_style():gsub('\\pos%b()','')..format('{\\pos(0,0)\\fs%.3f}',label_size)..label
+        local b=stats_measure:update()
+        if b and b.x1-b.x0 > width*.52 then
+            label=mp.command_native({'escape-ass',tostring(release.version)})
+        end
+    end
+    local badge_style = text_style():gsub('\\pos%b()', ''):gsub('\\an%d', '\\an9')
+    if badge_panel and not measured then
+        stats_measure.data=badge_style..format('{\\an9\\pos(%.2f,%.2f)\\fs%.2f\\b1\\bord%.3f}%s',
+            x,y,label_size,max(border_size,288/h),label)
+        local b=stats_measure:update()
+        if b and b.x1 then x=x-max(0,b.x1-badge_panel.x1+288/h) end
+        if overview_layout then overview_layout.badge={key=badge_key,label=label,x=x} end
+    end
+    release_overlay.data = badge_style
+        .. format('{\\an9\\pos(%.2f,%.2f)\\fs%.2f\\b1%s\\bord%.3f}%s',
+            x, y, label_size, o.accent_colors and '\\1c&HFFF070&\\1a&H00&' or '',
+            max(border_size,288/h), label)
+    if compose then
+        hide_stats_overlay(release_overlay)
+        return release_overlay.data
+    end
+    submit_stats_overlay(release_overlay)
 end
 
-local function balance_stats_content(content, bottom)
-    if not o.auto_layout then return content end
-    -- Final placement uses the display canvas: font rasterization on the tall
-    -- overflow probe can accumulate a small line-height difference.
-    stats_measure.res_y = 288
-    stats_measure.data = convert_osd_ass_controls(content)
-    local bounds = stats_measure:update()
-    if not bounds or not bounds.y0 or not bounds.y1 then return content end
-    local height = bounds.y1 - bounds.y0
-    local target = position_y + max(0, bottom - position_y - height) / 2
-    if mp.get_property_native('user-data/uosc_danmaku/has-danmaku') ~= true then
-        -- With no danmaku, balance the visible free space around the frame's
-        -- centre. Only move upward if a long page would collide with the dock.
-        target = max(position_y, min((288 - height) / 2, bottom - height))
+stats_line_height = function()
+    local w, h = mp.get_osd_size()
+    local key = table.concat({w or 0, h or 0, font_size, border_size, o.font}, ':')
+    if stats_line_cache_key ~= key then
+        stats_measure.res_x, stats_measure.res_y = 288 * (w or 1280) / max(1, h or 720), 288
+        stats_measure.data = text_style() .. i18n.t('统计 Ag')
+        local single = stats_measure:update()
+        stats_measure.data = text_style() .. i18n.t('统计 Ag') .. o.nl .. i18n.t('统计 Ag')
+        local double = stats_measure:update()
+        local advance = single and double and single.y1 and double.y1 and double.y1 - single.y1
+        stats_line_cache_value = advance and advance > 0 and advance or font_size * 1.2
+        stats_line_cache_key = key
     end
-    local shift = target - bounds.y0
-    return content:gsub('\\pos%(([%d%.%-]+),([%d%.%-]+)%)', function(x, y)
-        return format('\\pos(%s,%.3f)', x, tonumber(y) + shift)
-    end)
+    return stats_line_cache_value
 end
+
+-- Share the footer measurement with each page's content-height budget.
+-- Reserve the widest row counter so scrolling cannot move the panels.
+stats_page_footer = function(size, rows)
+    local w, h = mp.get_osd_size()
+    local canvas = 288 * w / h
+    local footer_size = max(font_size*.75, size*.8)
+    local border = max(border_size, 288/h)
+    local style = text_style():gsub('\\pos%b()', ''):gsub('\\an%d', '')
+    local entries = stats_page_entries(true)
+    local navigation = i18n.t('按键切页  ') .. table.concat(entries,' · ')
+    local digits = string.rep('8', #tostring(max(1, rows)))
+    local counter = format('↑/↓  %s–%s / %s', digits, digits, digits)
+    local help_hint=curr_page==o.key_page_6 and convert_osd_ass_controls(no_ASS(
+        format(i18n.t('帮助 %d/4  %s/%s 切页'),overlay_submissions.help_page,o.key_help_prev,o.key_help_next))) or ''
+    if help_hint~='' then counter=help_hint..'    '..counter end
+    local safe_bottom=stats_safe_bottom()
+    local key = table.concat({w,h,position_x,safe_bottom,style,footer_size,border,navigation,help_hint,digits}, ':')
+    local cached = overlay_submissions.page_footer
+    if cached and cached.key == key then return cached end
+    local function measure(text,y,x)
+        y,x=y or 144,x or 0
+        stats_measure.res_x, stats_measure.res_y = canvas, 288
+        -- A bottom anchor at y=0 clips the preceding lines from bounds.
+        stats_measure.data = style .. format('{\\q2\\an1\\pos(%.3f,%.3f)\\fs%.2f\\bord%.3f}',
+            x,y,footer_size,border) .. text
+        local bounds = stats_measure:update()
+        return bounds and bounds.x1 and bounds.x1 - min(0,bounds.x0 or 0) or 0,
+            bounds and bounds.y1 and bounds.y1-y or footer_size*1.3,
+            bounds and bounds.y1 and bounds.y0 and bounds.y1-bounds.y0 or footer_size*1.3,bounds
+    end
+    local width = max(1,canvas-position_x*2-border*2)
+    local help_separator='    '
+    if help_hint~='' and measure(counter)>width then
+        help_separator=o.nl
+        counter=help_hint..help_separator..format('↑/↓  %s–%s / %s',digits,digits,digits)
+    end
+    -- Wrap complete key/name entries, retaining separators within each row.
+    local lines, line = {}, i18n.t('按键切页  ')
+    for _,entry in ipairs(entries) do
+        local separator = line==i18n.t('按键切页  ') and '' or ' · '
+        local candidate = line .. separator .. entry
+        if measure(candidate)>width then
+            lines[#lines+1],line = line,entry
+        else
+            line = candidate
+        end
+    end
+    lines[#lines+1] = line
+    navigation = table.concat(lines,o.nl)
+    local separator = measure(navigation .. '    ' .. counter) > width and o.nl or '    '
+    local function placement(text)
+        local _,offset,height=measure(text)
+        local y=safe_bottom-border-offset
+        local bounds
+        -- Check the actual bottom position as well: near the canvas edge,
+        -- libass's raster bounds can differ from the centred font sample.
+        for _=1,2 do
+            local _,_,actual_height,b=measure(text,y,position_x)
+            height,bounds=actual_height,b
+            if not b or not b.y1 or b.y1<=safe_bottom-border then break end
+            y=y-(b.y1-(safe_bottom-border))
+        end
+        return safe_bottom-border-y,
+            bounds and bounds.y0 and safe_bottom-border-bounds.y0 or height
+    end
+    local scroll_bottom,scroll_height=placement(navigation..separator..counter)
+    local bottom,height=placement(navigation..(help_hint~='' and separator..help_hint or ''))
+    cached = {key=key,style=style,size=footer_size,border=border,navigation=navigation,help_hint=help_hint,
+        separator=separator,help_separator=help_separator,bottom=bottom,scroll_bottom=scroll_bottom,
+        height=max(height,scroll_height)}
+    overlay_submissions.page_footer = cached
+    return cached
+end
+
+-- A readable overview: reflow the data, never squeeze the complete canvas.
+-- Columns and font depend only on the viewport, not changing measurements.
+fit_overview = function(stats, sections)
+    overview_panels = nil
+    if not o.use_ass or not o.auto_layout or (o.custom_header and o.custom_header ~= '') then
+        return finalize_page({}, stats, false)
+    end
+    local w, h = mp.get_osd_size()
+    local canvas = 288 * w / h
+    -- libass's nominal size includes font ascenders: 24 gives roughly 16 px
+    -- of visible CJK text with the bundled Noto face in a small window.
+    -- Viewport units own positioning; DPI only sets a readable minimum and
+    -- physical padding. Do not multiply an already window-scaled font twice.
+    local dpi = max(1, min(4, mp.get_property_number('display-hidpi-scale', 1) or 1))
+    local pixel = 288 / h
+    local logical_pixel = dpi * pixel
+    local size = max(font_size, 24 * pixel, 20 * logical_pixel)
+    local ratio = size / font_size
+    local line_height = max(stats_line_height() * ratio, size * .90) * (h / dpi >= 720 and 1.10 or 1.02)
+    local extra_bottom = (h / dpi >= 576 and 4 or 2) * logical_pixel
+    local panel_bottom = 6 * logical_pixel + extra_bottom
+    local gap = max(size * 1.6, 32 * logical_pixel)
+    local edge = max(position_x, 12 * logical_pixel)
+    local usable = max(size * 2, canvas - edge * 2)
+    local columns = sections and usable >= size * 50 + gap and 2 or 1
+    local width = min((usable - gap * (columns - 1)) / columns, size * 32)
+    -- A capped reading width must be centred as a whole. Anchoring capped
+    -- columns to the left creates a large empty right side on high-res screens.
+    local origin_x = (canvas - columns * width - (columns - 1) * gap) / 2
+    local label_width = min(width * .25, size * 5.6)
+    local key = table.concat({w,h,size,border_size,position_x,position_y,width,dpi,o.font}, ':')
+    if not overview_layout or overview_layout.key ~= key then
+        overview_layout = {key=key, wraps={}, labels={}, cache_count=0}
+    end
+    local layout = overview_layout
+    layout.columns, layout.font_pixels = columns, size * h / 288
+    layout.width, layout.line_height = width, line_height
+    layout.origin_x, layout.dpi = origin_x, dpi
+    local style = text_style():gsub('\\pos%b()', '')
+        .. format('{\\q2\\pos(0,0)\\fs%.4f}', size)
+    local function clean(text)
+        -- Graphs restore the regular style. Scale their font restoration as
+        -- well, and let the row own its position after wrapping.
+        return text:gsub('\\pos%b()', ''):gsub('\\fs([%d%.]+)', function(n)
+            return format('\\fs%.4f', tonumber(n) * ratio)
+        end)
+    end
+    local measured = {}
+    local function measure(text)
+        local cached = measured[text]
+        if cached then return cached.width, cached.bounds end
+        stats_measure.res_x, stats_measure.res_y = canvas, 288
+        stats_measure.data = style .. text
+        local b = stats_measure:update()
+        -- Leading indentation has no ink, but still consumes layout width.
+        local width = b and b.x1 and b.x0 and b.x1 - min(0,b.x0) or 0
+        measured[text] = {width=width, bounds=b}
+        return width, b
+    end
+    if not layout.reference_bottom then
+        local _,b=measure(i18n.t('统计 Ag'))
+        layout.reference_bottom=b and b.y1 or line_height
+    end
+    local function wrap(raw, inset)
+        inset = inset or 0
+        local cache_key = tostring(inset)..':'..raw
+        local cached = layout.wraps[cache_key]
+        if cached then return cached end
+        local row = clean(raw)
+        local result = {}
+        local limit = max(size * 2, width - inset - border_size * 3)
+        if measure(row) <= limit then
+            result[1] = row
+        else
+            -- Treat ASS overrides/escapes and UTF-8 codepoints atomically.
+            -- Drawing runs are indivisible; text around a graph may wrap.
+            local tokens, i = {}, 1
+            while i <= #row do
+                local part = row:sub(i):match('^%b{}')
+                if part and part:match('\\p[1-9]') then
+                    local ending = row:find('{\\p0}', i + #part, true)
+                    if ending then part = row:sub(i, ending + 4) end
+                end
+                part = part or row:sub(i):match('^\\[h{}\\]')
+                    or row:sub(i):match('^[%z\1-\127\194-\244][\128-\191]*')
+                    or row:sub(i,i)
+                tokens[#tokens+1] = part
+                i = i + #part
+            end
+            local from, carry = 1, ''
+            while from <= #tokens do
+                local lo, hi, best = from, #tokens, from
+                local prefix = (#result > 0 and inset == 0 and o.indent or '') .. carry
+                while lo <= hi do
+                    local mid = math.floor((lo+hi)/2)
+                    if measure(prefix .. table.concat(tokens,'',from,mid)) <= limit then
+                        best, lo = mid, mid+1
+                    else hi = mid-1 end
+                end
+                -- Prefer a nearby word/field boundary, retaining every byte.
+                if best < #tokens then
+                    for j=best,max(from, best-16),-1 do
+                        if tokens[j]==' ' or tokens[j]=='\\h' or tokens[j]==',' then
+                            if j > from then best=j; break end
+                        end
+                    end
+                end
+                local segment = table.concat(tokens,'',from,best)
+                result[#result+1] = prefix .. segment
+                for j=from,best do
+                    local tag=tokens[j]
+                    if tag:sub(1,1)=='{' and not tag:match('\\p%d') then carry = carry .. tag end
+                end
+                from = best+1
+            end
+        end
+        for i,text in ipairs(result) do
+            local ink_width,bounds=measure(text)
+            local extra=max(0,(bounds and bounds.y1 or layout.reference_bottom)-layout.reference_bottom)
+            result[i]={text=text,span=1+extra/line_height,width=ink_width}
+        end
+        -- Bound live numeric variants without clearing all cached rows on scroll.
+        if layout.cache_count >= 512 then layout.wraps[next(layout.wraps)] = nil
+        else layout.cache_count = layout.cache_count + 1 end
+        layout.wraps[cache_key] = result
+        return result
+    end
+    if not sections then sections = {{title=i18n.t('播放信息'), unpack(stats)}} end
+    local data = {{}, {}}
+    -- Match uosc menu text; values share one tone, labels use its foreground.
+    local body_color = o.font_color ~= '' and o.font_color or 'F6F0E8'
+    local function field(row)
+        -- Split only the first displayed field. Keep all following ASS tags,
+        -- graphs, inline fields and values intact, with a shared value column.
+        local head, tail = row:match('^(.-:)(.*)$')
+        local zh, ztail = row:match('^(.-：)(.*)$')
+        if zh and (not head or #zh<#head) then head,tail=zh,ztail end
+        if not head then return nil,row end
+        local label=head:gsub('%b{}',''):gsub('\\h',' '):match('^%s*(.-)%s*$')
+        if #label>60 or label:find('[\\/]') then return nil,row end
+        tail=tail:gsub('^({\\b0})',''):gsub('^(\\h)+',''):gsub('^%s+','')
+        -- Lua patterns cannot repeat a capture; consume ASS spacing directly.
+        while tail:sub(1,2)=='\\h' do tail=tail:sub(3) end
+        return label,tail
+    end
+    local function add_section(section, column)
+        local body = convert_osd_ass_controls(table.concat(section))
+        local value_rows = {}
+        for _,row in ipairs(section.overview_value_rows or {}) do
+            value_rows[convert_osd_ass_controls(row)] = true
+        end
+        local rows = split(body,o.nl,true)
+        local target = data[column]
+        local nonempty = false
+        for _,row in ipairs(rows) do
+            if row:gsub('%b{}',''):gsub('\\h',''):match('%S') then nonempty=true; break end
+        end
+        if not nonempty then return end
+        if #target > 0 then
+            target[#target+1] = {text='', spacer=true,
+                span=max((h / dpi >= 720 and 1.15 or .9)+extra_bottom/line_height, (6*logical_pixel+panel_bottom+8*logical_pixel)/line_height)}
+        end
+        target[#target+1] = {text=section.title, heading=true,
+            span=1.18+min(.5,(h / dpi >= 720 and 12 or 8)*logical_pixel/line_height)}
+        for _,row in ipairs(rows) do
+            if row:gsub('%b{}','') ~= '' then
+                local label,value=field(row)
+                local inset=(label or value_rows[row]) and label_width or 0
+                if label and not layout.labels[label] then layout.labels[label]=measure(label) end
+                if label and layout.labels[label]>label_width-size*.3 then
+                    -- Long labels (e.g. Frame Timings) keep their own line.
+                    target[#target+1]={text=label,label=label,value='',inset=0,span=1,width=layout.labels[label]}
+                    label=nil;inset=label_width
+                end
+                for i,part in ipairs(wrap(label and value or (inset>0 and value or row),inset)) do
+                    local visible_label=i==1 and label or nil
+                    target[#target+1] = {text=(visible_label or '')..part.text,
+                        label=visible_label,value=part.text,inset=inset,
+                        span=part.span,width=part.width+inset}
+                end
+            end
+        end
+    end
+    if columns == 2 then
+        -- File and source video on the left, display and audio output on the
+        -- right. Independent stacks use space without four rigid quadrants.
+        add_section(sections[1],1); add_section(sections[3],1)
+        add_section(sections[2],2); add_section(sections[4],2)
+    else
+        for _,section in ipairs(sections) do add_section(section,1) end
+    end
+    local page = pages[curr_page]
+    page.render_scale = 1
+    page.overview_font_size = size
+    local total = max(#data[1],#data[2])
+    local tallest=0
+    for col=1,columns do
+        local extent=0
+        for _,row in ipairs(data[col]) do extent=extent+row.span*line_height end
+        tallest=max(tallest,extent)
+    end
+    local origin_y = position_y
+    local footer = stats_page_footer(size, total)
+    local safe_bottom = stats_safe_bottom() - max(footer.height,footer.size*1.3)
+        - footer.border - max(2,border_size*2)
+    do
+        -- Balance the complete overview inside the usable video area after
+        -- the shared danmaku/dock insets. Cache this opening's anchor so live
+        -- measurements and scrolling cannot move all four sections around.
+        local dims = mp.get_property_native('osd-dimensions') or {}
+        local pad_top = 6 * logical_pixel
+        local region_top = max(position_y-pad_top, max(0,tonumber(dims.mt) or 0)*288/h)
+        local region_bottom = min(safe_bottom,288-max(0,tonumber(dims.mb) or 0)*288/h)
+        local anchor_key = table.concat({region_top,region_bottom,tostring(stats_danmaku_area()),
+            mp.get_property('path','')},':')
+        if not layout.anchor or layout.anchor.key ~= anchor_key then
+            local footprint = tallest + pad_top + panel_bottom
+            local balanced = region_top + (region_bottom-region_top-footprint)/2 + pad_top
+            layout.anchor = {key=anchor_key,balanced=footprint<=region_bottom-region_top,y=footprint<=region_bottom-region_top
+                and max(position_y,balanced) or position_y}
+        end
+        origin_y = layout.anchor.y
+        layout.region = {top=region_top,bottom=region_bottom}
+    end
+    layout.origin_y = origin_y
+    local available = (layout.anchor.balanced and layout.region.bottom or safe_bottom) - origin_y
+        - (layout.anchor.balanced and panel_bottom or max(5,border_size*2,panel_bottom))
+    page.max_offset=1
+    for col=1,columns do
+        local extent,first=0,#data[col]
+        for i=#data[col],1,-1 do
+            local step=data[col][i].span*line_height
+            if extent+step>available and extent>0 then break end
+            first,extent=i,extent+step
+        end
+        page.max_offset=max(page.max_offset,first)
+    end
+    page.offset = max(1,min(page.offset or 1,page.max_offset))
+    page.visible_last, page.total_rows = page.offset,total
+    layout.data, layout.capacity = data,math.floor(available/line_height)
+    local output = {}
+    -- Backgrounds follow section content, while the text grid stays fixed.
+    -- Cache a rounded column envelope so live digits cannot make edges twitch.
+    layout.panel_widths = {}
+    overview_panels = {}
+    for col=1,columns do
+        local x = origin_x+(col-1)*(width+gap)
+        local panel_width=width
+        layout.panel_widths[col]=panel_width
+        local panel
+        local used=0
+        for index=page.offset,#data[col] do
+            local row = data[col][index]
+            local step=row.span*line_height
+            if used+step>available and index>page.offset then break end
+            local y = origin_y+used
+            used=used+step
+            page.visible_last=max(page.visible_last,index)
+            if row.spacer then
+                panel=nil
+            elseif row.text ~= '' then
+                if not panel then
+                    panel={x0=x,y0=y,x1=x+panel_width,y1=y+step,column=col,
+                        pad_y=6*logical_pixel,pad_bottom=panel_bottom,heading=row.heading==true}
+                    overview_panels[#overview_panels+1]=panel
+                else panel.y1=y+step end
+                local pos = format('{\\pos(%.4f,%.4f)}',x,y)
+                -- 旧版外观：关闭主题色后标题与标签不再染色，继承 text_style 的 font_color。
+                local heading_color = o.accent_colors and '\\1c&HFFF070&\\1a&H00&' or ''
+                local label_color = o.accent_colors and '\\1c&HEDE7D8&' or ''
+                local text = row.heading and
+                    (format('{\\b1\\fs%.4f%s}',size*1.18,heading_color) .. mp.command_native({'escape-ass',row.text})) or row.text
+                local base=style:gsub('\\pos%b()','')
+                if row.heading then
+                    output[#output+1]=base..pos..text
+                else
+                    if row.label then
+                        output[#output+1]=base..pos..'{\\b0'..label_color..'}'..mp.command_native({'escape-ass',row.label})
+                    end
+                    if row.value and row.value~='' then
+                        local value_pos=format('{\\pos(%.4f,%.4f)\\1c&H%s&}',x+(row.inset or 0),y,body_color)
+                        output[#output+1]=base..value_pos..row.value
+                    end
+                end
+            end
+        end
+    end
+    return table.concat(output,'\n')
+end
+
 
 local function fit_stats_page(page, after_scroll)
-    local content = pages[page].f(after_scroll)
-    if not o.use_ass or not o.auto_layout or (o.custom_header and o.custom_header ~= '') then return content end
-    local w, h = mp.get_osd_size()
-    if not w or not h or h <= 0 then return content end
-    local saved_font, saved_border, saved_y = font_size, border_size, position_y
-    local bottom = stats_safe_bottom()
-    -- A taller measurement canvas prevents clipping from hiding overflow.
-    stats_measure.res_x, stats_measure.res_y = 288 * w / h, 576
-    for _ = 1, 3 do
-        stats_measure.data = convert_osd_ass_controls(content)
-        local bounds = stats_measure:update()
-        if not bounds or not bounds.y1 or bounds.y1 <= bottom then break end
-        local height = bounds.y1 - position_y
-        if height <= 0 then break end
-        local ratio = min(0.98, max(0.5, (bottom - position_y - 3) / height))
-        font_size, border_size = font_size * ratio, border_size * ratio
-        content = pages[page].f(after_scroll)
-    end
-    content = balance_stats_content(content, bottom)
-    font_size, border_size, position_y = saved_font, saved_border, saved_y
-    return content
+    return pages[page].f(after_scroll)
 end
 
 local function trim_perf_line_prefix(line)
@@ -1626,6 +2381,50 @@ end
 
 -- Render page 0 in vertical columns. Entries fill the first column from top
 -- to bottom before continuing in the next one, preserving their source order.
+local function show_stats_background(overlay, panels, overlay_bounds)
+    if not o.use_ass or not has_vo_window() then hide_stats_overlay(stats_background); return end
+    -- 旧版外观：不画底板。这里只跳过绘制并清掉可能存在的旧底板，
+    -- 统计项、布局居中、右上角版本徽标（独立图层）都不受影响。
+    if not o.panel_background then hide_stats_overlay(stats_background); return end
+    if not panels then
+        -- Reuse libass bounds, including graphs and the performance columns.
+        -- The submitting overlay already measures this content when it carries
+        -- compute_bounds; only measure separately when no bounds are supplied.
+        local b = overlay_bounds
+        if not b or not b.x0 then
+            stats_measure.res_x, stats_measure.res_y = overlay.res_x, overlay.res_y
+            stats_measure.data = overlay.data
+            b = stats_measure:update()
+        end
+        panels = b and b.x0 and b.x1 and {{x0=b.x0,y0=b.y0,x1=b.x1,y1=b.y1}} or {}
+    end
+    local _,h=mp.get_osd_size()
+    local pad=12*overlay.res_y/max(1,h)
+    local radius=8*overlay.res_y/max(1,h)
+    local events={}
+    for _,b in ipairs(panels) do
+        local pad_y=b.pad_y or pad
+        local x0,y0=max(0,b.x0-pad),max(0,b.y0-pad_y)
+        local x1,y1=min(overlay.res_x,b.x1+pad),min(overlay.res_y,b.y1+(b.pad_bottom or pad_y))
+        local r=min(radius,(x1-x0)/2,(y1-y0)/2)
+        local c=r*.55228475
+        if x1>x0 and y1>y0 then
+            events[#events+1]=format('{\\an7\\pos(0,0)\\bord0\\shad0\\1c&H3A2410&\\1a&H33&\\p1}'
+                ..'m %.3f %.3f l %.3f %.3f b %.3f %.3f %.3f %.3f %.3f %.3f '
+                ..'l %.3f %.3f b %.3f %.3f %.3f %.3f %.3f %.3f '
+                ..'l %.3f %.3f b %.3f %.3f %.3f %.3f %.3f %.3f '
+                ..'l %.3f %.3f b %.3f %.3f %.3f %.3f %.3f %.3f{\\p0}',
+                x0+r,y0,x1-r,y0,x1-r+c,y0,x1,y0+r-c,x1,y0+r,
+                x1,y1-r,x1,y1-r+c,x1-r+c,y1,x1-r,y1,
+                x0+r,y1,x0+r-c,y1,x0,y1-r+c,x0,y1-r,
+                x0,y0+r,x0,y0+r-c,x0+r-c,y0,x0+r,y0)
+        end
+    end
+    stats_background.res_x,stats_background.res_y=overlay.res_x,overlay.res_y
+    stats_background.data=table.concat(events,'\n')
+    submit_stats_overlay(stats_background)
+end
+
 local function render_perf_page_overlay()
     eval_ass_formatting()
     if not o.use_ass then
@@ -1640,16 +2439,7 @@ local function render_perf_page_overlay()
     local content = {}
     append_general_perfdata(content)
 
-    -- Page 0 uses a slightly smaller fullscreen size than single-column pages,
-    -- keeping four columns readable without shrinking back to the old 15 size.
-    -- The header and every other page keep their configured fullscreen size.
     local content_font_size = font_size
-    local fullscreen = mp.get_property_native("fullscreen")
-    if fullscreen and o.font_size_fullscreen > 0 and o.font_size > 0 then
-        content_font_size = font_size
-            * min(o.font_size_fullscreen, PERF_PAGE_FULLSCREEN_FONT_SIZE)
-            / o.font_size_fullscreen
-    end
 
     local res_x = math.floor(PERF_PAGE_RES_Y * osd_width / osd_height + 0.5)
     local right_margin = max(position_x, content_font_size * 2.5, 6)
@@ -1660,18 +2450,7 @@ local function render_perf_page_overlay()
 
     local content_y = position_y + max(font_size, content_font_size) * 1.35
     local bottom_margin = max(6, border_size * 2)
-    local row_height = max(1, content_font_size * PERF_PAGE_ROW_HEIGHT)
-    -- Use the actual font's line advance; the nominal font size can
-    -- underestimate Chinese font metrics and put the last row under the dock.
-    stats_measure.res_x, stats_measure.res_y = res_x, 576
-    local sample_style = perf_page_style_at(position_x, content_y, content_font_size, 100)
-    stats_measure.data = sample_style .. '统计 Ag'
-    local single = stats_measure:update()
-    stats_measure.data = sample_style .. '统计 Ag' .. o.nl .. '统计 Ag'
-    local double = stats_measure:update()
-    if single and double and single.y1 and double.y1 then
-        row_height = max(row_height, double.y1 - single.y1)
-    end
+    local row_height = stats_line_height()
     local rows_per_column = max(1,
         math.floor((stats_safe_bottom() - content_y - bottom_margin) / row_height))
     local capacity = max_columns * rows_per_column
@@ -1679,7 +2458,7 @@ local function render_perf_page_overlay()
     local max_offset = max(1, #content - capacity + 1)
     local from = max(1, min((page.offset or 1), max_offset))
     local to = min(#content, from + capacity - 1)
-    page.offset = from
+    page.offset, page.max_offset = from, max_offset
 
     local visible_count = max(0, to - from + 1)
     local columns = max(1, min(max_columns,
@@ -1692,10 +2471,10 @@ local function render_perf_page_overlay()
     add_header(header)
     local range_text
     if #content == 0 then
-        range_text = format("%s：共 0 条", page.desc)
+        range_text = format(i18n.t("%s：共 0 条"), page.desc)
     else
-        local scroll_text = #content > capacity and "（使用 UP/DOWN）" or ""
-        range_text = format("%s：显示 %d–%d / 共 %d 条%s",
+        local scroll_text = #content > capacity and i18n.t("（使用 UP/DOWN）") or ""
+        range_text = format(i18n.t("%s：显示 %d–%d / 共 %d 条%s"),
             page.desc, from, to, #content, scroll_text)
     end
     append(header, "", {prefix=range_text, nl="", indent=""})
@@ -1720,8 +2499,10 @@ local function render_perf_page_overlay()
 
     perf_page_overlay.res_x = res_x
     perf_page_overlay.res_y = PERF_PAGE_RES_Y
-    perf_page_overlay.data = balance_stats_content(table.concat(events, "\n"), stats_safe_bottom())
-    perf_page_overlay:update()
+    perf_page_overlay.data = table.concat(events, "\n")
+    perf_page_overlay.compute_bounds = o.panel_background
+    local perf_bounds = submit_stats_overlay(perf_page_overlay)
+    show_stats_background(perf_page_overlay, nil, perf_bounds)
     perf_page_overlay_visible = true
     return true
 end
@@ -1848,12 +2629,13 @@ cache_recorder_timer:kill()
 -- Current page and <page key>:<page function> mapping
 curr_page = o.key_page_1
 pages = {
-    [o.key_page_1] = { idx = 1, f = default_stats, desc = "Default" },
-    [o.key_page_2] = { idx = 2, f = vo_stats, desc = "Extended Frame Timings", scroll = true },
-    [o.key_page_3] = { idx = 3, f = cache_stats, desc = "Cache Statistics" },
-    [o.key_page_4] = { idx = 4, f = keybinding_info, desc = "Active Key Bindings", scroll = true },
-    [o.key_page_5] = { idx = 5, f = track_info, desc = "Tracks Info", scroll = true },
-    [o.key_page_0] = { idx = 0, f = perf_stats, desc = "Internal Performance Info", scroll = true },
+    [o.key_page_1] = { idx = 1, f = default_stats, desc = i18n.t("播放概览"), scroll = true },
+    [o.key_page_2] = { idx = 2, f = vo_stats, desc = i18n.t("渲染步骤与耗时"), scroll = true },
+    [o.key_page_3] = { idx = 3, f = cache_stats, desc = i18n.t("缓存统计"), scroll = true },
+    [o.key_page_4] = { idx = 4, f = keybinding_info, desc = i18n.t("当前快捷键"), scroll = true },
+    [o.key_page_5] = { idx = 5, f = track_info, desc = i18n.t("媒体轨道"), scroll = true },
+    [o.key_page_6] = { idx = 6, f = troubleshooting_stats, desc = i18n.t("统计说明与排障"), scroll = true },
+    [o.key_page_0] = { idx = 0, f = perf_stats, desc = i18n.t("内部性能信息"), scroll = true },
 }
 
 
@@ -1892,11 +2674,25 @@ end
 
 -- Call the function for `page` and print it to OSD
 local function print_page(page, after_scroll)
+    -- Read the current geometry before the first visible submission. Property
+    -- observers can still be queued when the opening key is handled.
+    update_scale(true)
     -- the page functions assume we start in ass-enabled mode.
     -- that's true for mp.set_osd_ass, but not for mp.osd_message.
     eval_ass_formatting()
-    show_release_badge()
+    if o.use_ass and overlay_submissions.fallback then
+        if overlay_submissions.fallback == 'persistent' then mp.set_osd_ass(0, 0, '')
+        else mp.osd_message('', 0) end
+        overlay_submissions.fallback = nil
+    end
+    -- All pages and text fallbacks share visibility, including the dedicated
+    -- performance overlay which returns before the ordinary ASS submission.
+    publish_stats_visible(has_vo_window())
     if page == o.key_page_0 then
+        overview_panels=nil
+        show_release_badge()
+        hide_stats_overlay(stats_overlay)
+        hide_stats_overlay(stats_scroll_overlay)
         local was_visible = perf_page_overlay_visible
         if render_perf_page_overlay() then
             if not was_visible then
@@ -1911,19 +2707,91 @@ local function print_page(page, after_scroll)
     end
 
     hide_perf_page_overlay()
+    overview_panels = nil
     local ass_content = fit_stats_page(page, after_scroll)
-    if o.persistent_overlay then
+    local scale = pages[page].render_scale or 1
+    local compose = page==o.key_page_1 and overview_panels and scale==1
+    local badge = show_release_badge(compose)
+    if o.use_ass and has_vo_window() then
+        local w, h = mp.get_osd_size()
+        stats_overlay.res_x, stats_overlay.res_y = 288 * w / h / scale, 288 / scale
+        stats_overlay.data = convert_osd_ass_controls(ass_content)
+        stats_overlay.compute_bounds = o.panel_background and not (page==o.key_page_1 and overview_panels)
+        if badge then stats_overlay.data = stats_overlay.data .. '\n' .. badge end
+        local state = pages[page]
+        local navigation_footer = o.auto_layout and state.idx~=0
+            and not (o.custom_header and o.custom_header~='')
+        local scrolling = (state.max_offset or 1) > 1
+        if navigation_footer or (o.auto_layout and scrolling) then
+            local footer_size=page==o.key_page_1 and state.overview_font_size
+                and max(font_size*.75,state.overview_font_size*.8) or font_size*.75
+            stats_scroll_overlay.res_x, stats_scroll_overlay.res_y = stats_overlay.res_x, 288
+            local footer_style = text_style():gsub('\\pos%b()', ''):gsub('\\an%d', '')
+            local footer_border = max(border_size,288/h)
+            local footer_text = format('↑/↓  %d–%d / %d',
+                state.offset or 1, state.visible_last or 1, state.total_rows or 1)
+            local footer_bottom
+            if navigation_footer then
+                local footer = stats_page_footer(page==o.key_page_1 and state.overview_font_size or font_size,state.total_rows)
+                footer_style,footer_size,footer_border = footer.style,footer.size,footer.border
+                if footer.help_hint~='' then
+                    footer_text=footer.help_hint .. (scrolling and footer.help_separator..footer_text or '')
+                end
+                footer_text = footer.navigation .. ((scrolling or footer.help_hint~='') and footer.separator .. footer_text or '')
+                footer_bottom = scrolling and footer.scroll_bottom or footer.bottom
+            else
+                local footer_key = table.concat({w,h,footer_style,footer_size,footer_border}, ':')
+                if overlay_submissions.footer_key ~= footer_key then
+                    stats_measure.res_x, stats_measure.res_y = stats_overlay.res_x, 288
+                    stats_measure.data = footer_style
+                        .. format('{\\an1\\pos(0,0)\\fs%.2f\\bord%.3f}↑/↓  0123456789–0123456789 / 0123456789',
+                            footer_size, footer_border)
+                    local b = stats_measure:update()
+                    overlay_submissions.footer_bottom = b and b.y1 or footer_size
+                    overlay_submissions.footer_key = footer_key
+                end
+                footer_bottom = overlay_submissions.footer_bottom
+            end
+            stats_scroll_overlay.data = footer_style
+                .. format('{%s\\an1\\pos(%.2f,%.2f)\\fs%.2f%s\\bord%.3f}%s',
+                    navigation_footer and '\\q2' or '', position_x, stats_safe_bottom() - footer_border - footer_bottom,
+                    footer_size, not navigation_footer and o.accent_colors and '\\1c&HFFF070&\\1a&H00&' or '',
+                    footer_border, footer_text)
+            if compose then
+                hide_stats_overlay(stats_scroll_overlay)
+                stats_overlay.data = stats_overlay.data .. '\n' .. stats_scroll_overlay.data
+            else
+                submit_stats_overlay(stats_scroll_overlay)
+            end
+        else
+            hide_stats_overlay(stats_scroll_overlay)
+        end
+        local stats_bounds = submit_stats_overlay(stats_overlay)
+        show_stats_background(stats_overlay, page==o.key_page_1 and overview_panels or nil,
+            stats_bounds)
+    elseif o.persistent_overlay then
+        hide_stats_overlay(stats_overlay)
+        hide_stats_overlay(stats_scroll_overlay)
+        hide_stats_overlay(stats_background)
+        overlay_submissions.fallback = 'persistent'
         mp.set_osd_ass(0, 0, ass_content)
     else
+        hide_stats_overlay(stats_overlay)
+        hide_stats_overlay(stats_scroll_overlay)
+        hide_stats_overlay(stats_background)
+        overlay_submissions.fallback = 'message'
         mp.osd_message((o.use_ass and ass_start or "") .. ass_content,
                        display_timer.oneshot and o.duration or o.redraw_delay + 1)
     end
 end
 
-update_scale = function ()
+update_scale = function (suppress_redraw)
     local scale_with_video
     if o.vidscale == "auto" then
-        scale_with_video = mp.get_property_native("osd-scale-by-window")
+        -- Automatic stats layout follows the viewport, independently of the
+        -- user's generic OSD scaling option. Explicit vidscale=yes/no remains
+        -- available for custom/manual layouts.
+        scale_with_video = o.auto_layout or mp.get_property_native("osd-scale-by-window")
     else
         scale_with_video = o.vidscale == "yes"
     end
@@ -1953,29 +2821,64 @@ update_scale = function ()
     position_y = raw_position_y * scale
     if o.auto_layout then
         local margins = mp.get_property_native('user-data/osc/margins') or {}
-        local has_uosc = mp.get_property('user-data/uosc/dock-animation-mode') ~= nil
+        local has_uosc = mp.get_property_native('user-data/uosc/dock-animation-mode') ~= nil
         position_y = max(4, 288 * max(tonumber(margins.t) or 0, has_uosc and 0.055 or 0) + 3)
-        if mp.get_property_native('user-data/uosc_danmaku/has-danmaku') == true then
-            local layout = mp.get_property_native('user-data/uosc_danmaku/layout')
-            local top = type(layout) == 'table' and layout.visible and tonumber(layout.top)
+        local top = stats_danmaku_area()
+        if top ~= nil and top > 0 then
             -- Large/fullscreen danmaku areas cannot consume the entire stats
             -- viewport. Keep a useful foreground view in that configuration.
-            position_y = max(position_y, top and min(0.35, top) * 288 + 3 or raw_position_y * scale)
+            position_y = max(position_y, min(0.35, top) * 288 + 3)
         end
         if mp.get_property_number('osd-width', 0) < mp.get_property_number('osd-height', 0) * 1.2 then
             position_y = max(position_y, font_size * 2.2 + 4)
         end
     end
     plot_bg_border_width = o.plot_bg_border_width * scale
-    if display_timer:is_enabled() then
+    local dims = mp.get_property_native('osd-dimensions') or {}
+    local geometry_key = table.concat({dims.w or 0, dims.h or 0, dims.mt or 0,
+        dims.mb or 0, dims.ml or 0, dims.mr or 0, font_size, border_size,
+        shadow_x_offset, shadow_y_offset, position_x, position_y, plot_bg_border_width,
+        mp.get_property_number('display-hidpi-scale', 1), stats_safe_bottom(),
+        tostring(stats_danmaku_area())}, ':')
+    local changed = overlay_submissions.geometry_key ~= geometry_key
+    overlay_submissions.geometry_key = geometry_key
+    if changed and suppress_redraw ~= true and display_timer:is_enabled() then
         print_page(curr_page)
     end
 end
 
+-- 底栏动画和鼠标移动会让 margins 与停靠模式连续变化，每次都同步重排会引发
+-- 一串完整重绘和阻塞式测量。首次变化立即应用，随后的变化在短窗口内合并。
+local scale_refresh_timer, scale_refresh_queued = nil, false
+local function schedule_scale_refresh()
+    if scale_refresh_timer then
+        scale_refresh_queued = true
+        return
+    end
+    update_scale()
+    scale_refresh_timer = mp.add_timeout(0.15, function()
+        scale_refresh_timer = nil
+        if scale_refresh_queued then
+            scale_refresh_queued = false
+            schedule_scale_refresh()
+        end
+    end)
+end
+
 local function clear_screen()
+    if overview_layout then overview_layout.anchor = nil end
+    overview_panels = nil
+    publish_stats_visible(false)
+    publish_stats_toggled(false)
+    hide_stats_overlay(stats_background)
+    hide_stats_overlay(stats_overlay)
+    hide_stats_overlay(stats_scroll_overlay)
     hide_perf_page_overlay()
-    release_overlay:remove()
-    stats_measure:remove()
+    hide_stats_overlay(release_overlay)
+    -- stats_measure is permanently hidden; retain its font and row caches.
+    if overlay_submissions.fallback == 'persistent' then mp.set_osd_ass(0, 0, '')
+    elseif overlay_submissions.fallback == 'message' then mp.osd_message('', 0) end
+    overlay_submissions.fallback = nil
     if o.persistent_overlay then mp.set_osd_ass(0, 0, "") else mp.osd_message("", 0) end
     -- 通知外部（uosc 底栏「统计信息」按钮的高亮状态）面板已关闭。
     -- 这里是唯一的关闭出口（toggle 关闭 / oneshot 到期），所以放在这里不会漏。
@@ -1984,13 +2887,15 @@ end
 
 local function scroll_delta(d)
     if display_timer.oneshot then display_timer:kill() ; display_timer:resume() end
-    pages[curr_page].offset = (pages[curr_page].offset or 1) + d
+    local page = pages[curr_page]
+    page.offset = max(1, min(page.max_offset or math.huge, (page.offset or 1) + d))
     print_page(curr_page, true)
 end
 local function scroll_up() scroll_delta(-o.scroll_lines) end
 local function scroll_down() scroll_delta(o.scroll_lines) end
 
 local function reset_scroll_offsets()
+    overlay_submissions.help_page=1
     for _, page in pairs(pages) do
         page.offset = nil
     end
@@ -2073,7 +2978,24 @@ local function unbind_exit()
     mp.remove_key_binding("__forced_" .. o.key_exit)
 end
 
+local function bind_help_pages(k)
+    mp.remove_key_binding('__stats_help_prev')
+    mp.remove_key_binding('__stats_help_next')
+    if k~=o.key_page_6 then return end
+    local function change(delta)
+        local next_page=max(1,min(4,overlay_submissions.help_page+delta))
+        if next_page==overlay_submissions.help_page then return end
+        overlay_submissions.help_page=next_page
+        pages[o.key_page_6].offset=1
+        print_page(o.key_page_6)
+        if display_timer.oneshot then display_timer:kill();display_timer:resume() end
+    end
+    mp.add_forced_key_binding(o.key_help_prev,'__stats_help_prev',function()change(-1)end)
+    mp.add_forced_key_binding(o.key_help_next,'__stats_help_next',function()change(1)end)
+end
+
 local function update_scroll_bindings(k)
+    bind_help_pages(k)
     if pages[k].scroll then
         bind_scroll()
     else
@@ -2112,6 +3034,7 @@ remove_page_bindings = function()
         mp.remove_key_binding("__forced_"..k)
     end
     unbind_scroll()
+    bind_help_pages(nil)
     unbind_search()
     unbind_exit()
 end
@@ -2121,6 +3044,9 @@ process_key_binding = function(oneshot)
     reset_scroll_offsets()
     -- Stats are already being displayed
     if display_timer:is_enabled() then
+        -- Public display-page-* bindings can change the current page while
+        -- an existing display remains active. Keep page-specific keys in sync.
+        if display_timer.oneshot or oneshot then update_scroll_bindings(curr_page) end
         -- Previous and current keys were oneshot -> restart timer
         if display_timer.oneshot and oneshot then
             display_timer:kill()
@@ -2187,6 +3113,7 @@ process_key_binding = function(oneshot)
         -- 面板已经画在屏幕上，通知外部按钮进入高亮态。
         mp.set_property_bool('user-data/mpv-emo/stats-visible', true)
     end
+    publish_stats_toggled(display_timer:is_enabled() and not display_timer.oneshot)
 end
 
 
@@ -2263,12 +3190,15 @@ if o.bindlist ~= "no" then
 end
 
 mp.observe_property("osd-height", "native", update_scale)
+mp.observe_property("osd-width", "native", update_scale)
+mp.observe_property("display-hidpi-scale", "native", update_scale)
+mp.observe_property('osd-dimensions', 'native', update_scale)
 mp.observe_property("osd-scale-by-window", "native", update_scale)
 mp.observe_property("fullscreen", "native", update_scale)
 mp.observe_property('user-data/uosc_danmaku/has-danmaku', 'native', update_scale)
 mp.observe_property('user-data/uosc_danmaku/layout', 'native', update_scale)
-mp.observe_property('user-data/osc/margins', 'native', update_scale)
-mp.observe_property('user-data/uosc/dock-animation-mode', 'native', update_scale)
+mp.observe_property('user-data/osc/margins', 'native', schedule_scale_refresh)
+mp.observe_property('user-data/uosc/dock-animation-mode', 'native', schedule_scale_refresh)
 mp.observe_property('user-data/startup-format-logos/visible', 'native', update_scale)
 
 local function update_property_cache(name, value)
@@ -2289,17 +3219,18 @@ mp.observe_property('hwdec-current', 'string', update_property_cache)
 
 -- 通用词汇翻译表
 local function auto_translate_text(text)
+    if i18n.is_english() then return text end
     if not text or type(text) ~= "string" then
         return text
     end
     
     local translations = {
         -- ==================== 页面标题 ====================
-        ["Default"] = "默认信息",
-        ["Extended Frame Timings"] = "扩展帧耗时",
+        ["Default"] = "播放概览",
+        ["Extended Frame Timings"] = "渲染步骤与耗时",
         ["Cache Statistics"] = "缓存统计",
-        ["Active Key Bindings"] = "活动按键绑定",
-        ["Tracks Info"] = "轨道信息",
+        ["Active Key Bindings"] = "当前快捷键",
+        ["Tracks Info"] = "媒体轨道",
         ["Internal Performance Info"] = "内部性能信息",
         
         -- ==================== 文件/媒体信息 ====================
@@ -2335,6 +3266,7 @@ local function auto_translate_text(text)
         ["Deinterlacing:"] = "去隔行：",
         ["Resolution:"] = "分辨率：",
         ["Output Resolution:"] = "输出分辨率：",
+        ["AI Inference:"] = "补帧推理：",
         ["Super Resolution:"] = "超分：",
         ["Format:"] = "格式：",
         ["Levels:"] = "色彩范围：",
@@ -2500,9 +3432,9 @@ local original_append_general_perfdata = append_general_perfdata
 append_general_perfdata = function(s)
     local perfdata = mp.get_property_native("perf-info") or {}
     for i, data in ipairs(perfdata) do
-        local display_name = perf_translations[data.name]
+        local display_name = not i18n.is_english() and perf_translations[data.name] or nil
         if not display_name and data.name:match("^script/") then
-            display_name = data.name:gsub("^script/", "脚本/")
+            display_name = data.name:gsub("^script/", i18n.t("脚本/"))
         elseif not display_name then
             display_name = data.name
         end
@@ -2598,10 +3530,41 @@ local sys_lang = nil
 local nvidia_smi_usage = nil  -- nvidia-smi 最新返回的数值，用于 LUID 归属识别
 local cpu_update_pending = false
 local gpu_update_pending = false
+local native_system
+if mp.get_property('platform') == 'windows' then
+    local ok, provider = pcall(dofile, mp.find_config_file('script-modules/stats-system.lua') or '')
+    if ok and type(provider)=='table' then native_system = provider end
+end
+local system_samples = {generation=0, requests={}}
+local function native_sample(method)
+    if not native_system or not native_system[method] then return nil, 'unavailable' end
+    local ok, value, status = pcall(native_system[method])
+    if ok then return value, status end
+    -- A missing DLL symbol or driver failure must not kill the entire stats UI.
+    mp.msg.warn('Native stats provider failed (' .. method .. '); using fallback')
+    native_system[method] = nil
+    return nil, 'unavailable'
+end
+local function reset_system_samples()
+    system_samples.generation = system_samples.generation + 1
+    local requests = system_samples.requests
+    system_samples.requests = {}
+    for request in pairs(requests) do mp.abort_async_command(request) end
+    cpu_update_pending, gpu_update_pending = false, false
+    if system_samples.start_timer then
+        system_samples.start_timer:kill()
+        system_samples.start_timer = nil
+    end
+    native_sample('reset')
+end
+mp.register_event('shutdown', function()
+    reset_system_samples()
+    native_sample('close')
+end)
 
 -- 异步执行系统命令
 local function run_async(cmd_args, callback)
-    mp.command_native_async({
+    return mp.command_native_async({
         name = "subprocess",
         args = cmd_args,
         capture_stdout = true,
@@ -2609,16 +3572,45 @@ local function run_async(cmd_args, callback)
         playback_only = false,
     }, function(success, res)
         if callback then
-            callback(success, res and (res.stdout or "") or "", res and (res.stderr or "") or "")
+            callback(success and res and res.status == 0,
+                res and (res.stdout or "") or "", res and (res.stderr or "") or "")
         end
     end)
 end
 
--- 强制刷新页面
+-- Each visible session owns its fallback chain. Aborted or late completions
+-- cannot start another process or overwrite a newer session's samples.
+local function run_sample_async(cmd_args, callback)
+    if not display_timer:is_enabled() then return end
+    local generation = system_samples.generation
+    local request, completed
+    request = run_async(cmd_args, function(...)
+        completed = true
+        if request then system_samples.requests[request] = nil end
+        if generation == system_samples.generation and display_timer:is_enabled() then
+            callback(...)
+        end
+    end)
+    if request and not completed then system_samples.requests[request] = true end
+    return request
+end
+
+-- Persistent statistics already redraw on display_timer. Hardware providers
+-- finish independently (CPU, NVIDIA and integrated GPU); forcing a complete
+-- layout for every callback caused multiple blocking ASS measurements per tick.
+-- Only the short-lived one-shot page needs a coalesced asynchronous refresh.
+local hardware_redraw_timer
 local function refresh_display()
-    if display_timer and display_timer:is_enabled() and curr_page then
-        print_page(curr_page, false)
+    if not display_timer or not display_timer:is_enabled() or not curr_page
+        or not display_timer.oneshot then return end
+    if not hardware_redraw_timer then
+        hardware_redraw_timer = mp.add_timeout(.1, function()
+            if display_timer:is_enabled() and display_timer.oneshot and curr_page then
+                print_page(curr_page, false)
+            end
+        end, true)
     end
+    if not hardware_redraw_timer:is_enabled() then hardware_redraw_timer:resume() end
 end
 
 -- 检测系统语言（缓存结果）
@@ -2627,13 +3619,13 @@ local function detect_sys_lang(callback)
         callback(sys_lang)
         return
     end
-    run_async({"typeperf", "-q", "Processor"}, function(success, stdout)
+    run_sample_async({"typeperf", "-q", "Processor"}, function(success, stdout)
         if success and stdout:match("Processor") then
             sys_lang = "en"
             callback("en")
             return
         end
-        run_async({"typeperf", "-q", "处理器"}, function(success2, stdout2)
+        run_sample_async({"typeperf", "-q", "处理器"}, function(success2, stdout2)
             if success2 and stdout2:match("处理器") then
                 sys_lang = "zh"
                 callback("zh")
@@ -2803,7 +3795,12 @@ end
 
 -- 方案1：CIM（兼容 Windows 10+，wmic 在 Win11 中已移除）
 local function update_cpu_cim(callback)
-    run_async({"powershell", "-NoProfile", "-Command",
+    if native_system then
+        local load, status = native_sample('cpu')
+        if load then callback(string.format('%.0f', load)); return end
+        if status == 'warming' then callback(nil, true); return end
+    end
+    run_sample_async({"powershell", "-NoProfile", "-Command",
                "(Get-CimInstance Win32_Processor).LoadPercentage"}, function(success, stdout)
         if success then
             local load = stdout:match("(%d+)")
@@ -2822,7 +3819,7 @@ local function update_cpu_typeperf(callback)
         local counter = lang == "zh"
             and "\\处理器(_Total)\\%% 处理器时间"
             or "\\Processor(_Total)\\%% Processor Time"
-        run_async({"typeperf", counter, "-sc", "1"}, function(success, stdout)
+        run_sample_async({"typeperf", counter, "-sc", "1"}, function(success, stdout)
             if success then
                 local load = stdout:match(",\"(%d+%.?%d*)\"")
                 if load and tonumber(load) and tonumber(load) <= 100 then
@@ -2834,7 +3831,7 @@ local function update_cpu_typeperf(callback)
             local counter2 = lang == "zh"
                 and "\\Processor(_Total)\\%% Processor Time"
                 or "\\处理器(_Total)\\%% 处理器时间"
-            run_async({"typeperf", counter2, "-sc", "1"}, function(success2, stdout2)
+            run_sample_async({"typeperf", counter2, "-sc", "1"}, function(success2, stdout2)
                 if success2 then
                     local load2 = stdout2:match(",\"(%d+%.?%d*)\"")
                     if load2 and tonumber(load2) and tonumber(load2) <= 100 then
@@ -2854,7 +3851,7 @@ local function update_cpu_powershell(callback)
         local counter = lang == "zh"
             and "\\处理器(_Total)\\% 处理器时间"
             or "\\Processor(_Total)\\% Processor Time"
-        run_async({"powershell", "-NoProfile", "-Command",
+        run_sample_async({"powershell", "-NoProfile", "-Command",
             "Get-Counter '" .. counter .. "' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CounterSamples | Select-Object -ExpandProperty CookedValue"
         }, function(success, stdout)
             if success then
@@ -2875,7 +3872,11 @@ end
 
 -- 方案1：nvidia-smi（只支持 NVIDIA 显卡，最准确）
 local function update_gpu_nvidia(callback)
-    run_async({"nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"}, function(success, stdout)
+    if native_system then
+        local load = native_sample('nvidia')
+        if load then callback(tostring(load)); return end
+    end
+    run_sample_async({"nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"}, function(success, stdout)
         if success then
             local load = stdout:match("(%d+)")
             if load and tonumber(load) and tonumber(load) <= 100 then
@@ -2890,7 +3891,12 @@ end
 -- 方案2：CIM GPU 性能计数器（兼容性最好，与系统语言无关，支持多 GPU 分组）
 -- wmic 在 Win11 中已移除，改用 PowerShell Get-CimInstance
 local function update_gpu_cim(callback)
-    run_async({"powershell", "-NoProfile", "-Command",
+    if native_system then
+        local engines, status = native_sample('gpu_engines')
+        if engines then callback(engines); return end
+        if status == 'warming' then callback(nil, true); return end
+    end
+    run_sample_async({"powershell", "-NoProfile", "-Command",
                "Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine | ForEach-Object { Write-Output ($_.Name + '|' + $_.UtilizationPercentage) }"},
               function(success, stdout)
         if success then
@@ -2962,7 +3968,7 @@ local function update_gpu_typeperf(callback)
         local counter = lang == "zh"
             and "\\GPU 引擎(*)\\利用率百分比"
             or "\\GPU Engine(*)\\Utilization Percentage"
-        run_async({"typeperf", counter, "-sc", "1"}, function(success, stdout)
+        run_sample_async({"typeperf", counter, "-sc", "1"}, function(success, stdout)
             if success then
                 local engines = parse_typeperf_engines(stdout)
                 if engines then
@@ -2974,7 +3980,7 @@ local function update_gpu_typeperf(callback)
             local counter2 = lang == "zh"
                 and "\\GPU Engine(*)\\Utilization Percentage"
                 or "\\GPU 引擎(*)\\利用率百分比"
-            run_async({"typeperf", counter2, "-sc", "1"}, function(success2, stdout2)
+            run_sample_async({"typeperf", counter2, "-sc", "1"}, function(success2, stdout2)
                 if success2 then
                     local engines = parse_typeperf_engines(stdout2)
                     if engines then
@@ -2995,7 +4001,7 @@ local function update_gpu_powershell(callback)
             and "\\GPU 引擎(*)\\利用率百分比"
             or "\\GPU Engine(*)\\Utilization Percentage"
         local ps_cmd = "Get-Counter '" .. counter .. "' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CounterSamples | ForEach-Object { $_.CookedValue } | Sort-Object -Descending | Select-Object -First 1"
-        run_async({"powershell", "-NoProfile", "-Command", ps_cmd}, function(success, stdout)
+        run_sample_async({"powershell", "-NoProfile", "-Command", ps_cmd}, function(success, stdout)
             if success then
                 local load = stdout:match("(%d+%.?%d*)")
                 if load and tonumber(load) and tonumber(load) <= 100 then
@@ -3086,7 +4092,7 @@ local function apply_gpu_usage_map(gpu_map, fmt)
     -- 参考值：优先使用本轮 nvidia-smi 值，其次使用上一轮残留的 N 卡利用率
     local nv_ref = nvidia_smi_usage
     if not nv_ref then
-        for _, gname in ipairs(gpu_names) do
+        for gpu_index, gname in ipairs(gpu_names) do
             if is_nvidia_gpu(gname) and gpu_usages[gname] then
                 local prev = tonumber(gpu_usages[gname]:match("(%d+)"))
                 if prev then
@@ -3114,7 +4120,7 @@ local function apply_gpu_usage_map(gpu_map, fmt)
     end
     -- 单 N 卡系统兜底：只有 1 个 LUID 且有 NVIDIA 显卡时，直接将该 LUID 分配给 N 卡
     if not nvidia_luid_idx and #luid_utils == 1 then
-        for _, gname in ipairs(gpu_names) do
+        for gpu_index, gname in ipairs(gpu_names) do
             if is_nvidia_gpu(gname) then
                 nvidia_luid_idx = 1
                 break
@@ -3125,7 +4131,7 @@ local function apply_gpu_usage_map(gpu_map, fmt)
     -- （mpv 硬解通常在 N 卡上，负载高于集显）
     if not nvidia_luid_idx and #luid_utils > 1 then
         local has_nv = false
-        for _, gname in ipairs(gpu_names) do
+        for gpu_index, gname in ipairs(gpu_names) do
             if is_nvidia_gpu(gname) then has_nv = true; break end
         end
         if has_nv then
@@ -3141,7 +4147,7 @@ local function apply_gpu_usage_map(gpu_map, fmt)
 
     -- 收集非 NVIDIA 显卡名称（按检测顺序）
     local non_nv_names = {}
-    for _, gname in ipairs(gpu_names) do
+    for gpu_index, gname in ipairs(gpu_names) do
         if not is_nvidia_gpu(gname) then
             non_nv_names[#non_nv_names + 1] = gname
         end
@@ -3181,7 +4187,8 @@ local function update_cpu(done)
 
     if os_name == "windows" then
         -- 优先级：CIM → typeperf → powershell
-        update_cpu_cim(function(load)
+        update_cpu_cim(function(load, warming)
+            if warming then finish(); return end
             if load then
                 cpu_usage = load .. "%"
                 finish()
@@ -3204,7 +4211,7 @@ local function update_cpu(done)
             end
         end)
     elseif os_name == "linux" then
-        run_async({"sh", "-c", "top -bn1 | grep 'Cpu(s)' | awk '{print $2}'"}, function(success, stdout)
+        run_sample_async({"sh", "-c", "top -bn1 | grep 'Cpu(s)' | awk '{print $2}'"}, function(success, stdout)
             if success then
                 local load = stdout:match("(%d+%.?%d*)")
                 if load then
@@ -3218,7 +4225,7 @@ local function update_cpu(done)
             finish()
         end)
     elseif os_name == "darwin" then
-        run_async({"ps", "-A", "-o", "%cpu"}, function(success, stdout)
+        run_sample_async({"ps", "-A", "-o", "%cpu"}, function(success, stdout)
             if success then
                 local total = 0
                 for line in stdout:gmatch("[^\r\n]+") do
@@ -3242,7 +4249,11 @@ end
 
 -- 获取 GPU 占用率（CIM → typeperf → powershell 完整回退链）
 local function update_gpu_full_fallback(done)
-    update_gpu_cim(function(result)
+    update_gpu_cim(function(result, warming)
+        if warming then
+            if done then done() end
+            return
+        end
         if result and type(result) == "table" then
             apply_gpu_usage_map(result, "%.0f%%")
             refresh_display()
@@ -3257,7 +4268,7 @@ local function update_gpu_full_fallback(done)
                     update_gpu_powershell(function(load4)
                         if load4 then
                             -- 单值兜底：只给还没有有效数据的 GPU 设置值，不覆盖已有数据
-                            for _, gname in ipairs(gpu_names) do
+                            for gpu_index, gname in ipairs(gpu_names) do
                                 if not gpu_usages[gname] or gpu_usages[gname] == "N/A" then
                                     gpu_usages[gname] = string.format("%.0f%%", tonumber(load4))
                                 end
@@ -3267,7 +4278,7 @@ local function update_gpu_full_fallback(done)
                             end
                         else
                             -- 失败时也只清空那些本来就是 N/A 的，不覆盖已有数据
-                            for _, gname in ipairs(gpu_names) do
+                            for gpu_index, gname in ipairs(gpu_names) do
                                 if not gpu_usages[gname] or gpu_usages[gname] == "N/A" then
                                     gpu_usages[gname] = "N/A"
                                 end
@@ -3297,7 +4308,7 @@ local function update_gpu(done)
                 nvidia_smi_usage = tonumber(load) or nil
                 -- nvidia-smi 返回单值，找 NVIDIA 显卡分配
                 local found_nv = false
-                for _, gname in ipairs(gpu_names) do
+                for gpu_index, gname in ipairs(gpu_names) do
                     if is_nvidia_gpu(gname) then
                         gpu_usages[gname] = load .. "%"
                         found_nv = true
@@ -3315,7 +4326,7 @@ local function update_gpu(done)
             update_gpu_full_fallback(done)
         end)
     elseif os_name == "linux" then
-        run_async({"nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"}, function(success, stdout)
+        run_sample_async({"nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"}, function(success, stdout)
             if success then
                 local load = stdout:match("(%d+)")
                 if load then
@@ -3325,7 +4336,7 @@ local function update_gpu(done)
                     return
                 end
             end
-            run_async({"sh", "-c", "radeontop --dump - | grep 'gpu' | awk '{print $2}' | head -1"}, function(success2, stdout2)
+            run_sample_async({"sh", "-c", "radeontop --dump - | grep 'gpu' | awk '{print $2}' | head -1"}, function(success2, stdout2)
                 if success2 then
                     local load2 = stdout2:match("(%d+%.?%d*)")
                     if load2 then
@@ -3335,7 +4346,7 @@ local function update_gpu(done)
                         return
                     end
                 end
-                run_async({"sh", "-c", "intel_gpu_top -J | grep 'render' | head -1 | awk '{print $2}'"}, function(success3, stdout3)
+                run_sample_async({"sh", "-c", "intel_gpu_top -J | grep 'render' | head -1 | awk '{print $2}'"}, function(success3, stdout3)
                     if success3 then
                         local load3 = stdout3:match("(%d+%.?%d*)")
                         if load3 then
@@ -3352,7 +4363,7 @@ local function update_gpu(done)
             end)
         end)
     elseif os_name == "darwin" then
-        run_async({"sh", "-c", "ioreg -l | grep PerformanceStatistics | grep GPU | head -1"}, function(success, stdout)
+        run_sample_async({"sh", "-c", "ioreg -l | grep PerformanceStatistics | grep GPU | head -1"}, function(success, stdout)
             if success then
                 local load = stdout:match("GPU Activity Factor = (%d+)")
                 if load then
@@ -3372,9 +4383,14 @@ local function update_gpu(done)
 end
 
 -- 刷新统计数据
+local last_stats_sample = -math.huge
 local function refresh_stats()
+    if not display_timer:is_enabled() then return end
+    local now = mp.get_time()
+    if now - last_stats_sample < .9 then return end
+    last_stats_sample = now
     update_counter = update_counter + 1
-    if update_counter % 3 == 0 and not gpu_update_pending then
+    if (update_counter == 1 or update_counter % 3 == 0) and not gpu_update_pending then
         gpu_update_pending = true
         update_gpu(function()
             gpu_update_pending = false
@@ -3397,24 +4413,25 @@ add_file = function(s, print_cache, print_tags)
         detect_hardware()
     end
 
-    if cpu_usage == "N/A" then
-        refresh_stats()
+    local function device_label(name)
+        return tostring(name or ''):gsub('%([Rr]%)',''):gsub('%([Tt][Mm]%)','')
+            :gsub('^%s*[Cc][Pp][Uu]:%s*',''):gsub('^%s*[Gg][Pp][Uu]:%s*','')
+            :gsub('%s+',' '):gsub('^%s+',''):gsub('%s+$','')
     end
-
     -- 显示 CPU（占用率 + 型号，百分比右对齐到 4 字符以对齐后续标签，兼容 100%）
     local cpu_display = cpu_usage ~= "N/A" and cpu_usage or "--%"
     local cpu_line = "CPU: " .. string.format("%4s", cpu_display)
     if cpu_name then
-        cpu_line = cpu_line .. "  CPU:" .. cpu_name
+        cpu_line = cpu_line .. "  " .. device_label(cpu_name)
     end
     append(s, cpu_line, {nl=o.nl, prefix="", prefix_sep=""})
 
     -- 显示 GPU（每个 GPU 一行）
     if #gpu_names > 0 then
-        for _, gname in ipairs(gpu_names) do
+        for gpu_index, gname in ipairs(gpu_names) do
             local gutil = gpu_usages[gname] or "N/A"
             local gpu_display = gutil ~= "N/A" and gutil or "--%"
-            local gpu_line = "GPU: " .. string.format("%4s", gpu_display) .. "  GPU:" .. gname
+            local gpu_line = "GPU" .. (#gpu_names>1 and " "..gpu_index or "") .. ": " .. string.format("%4s", gpu_display) .. "  " .. device_label(gname)
             append(s, gpu_line, {nl=o.nl, prefix="", prefix_sep=""})
         end
     elseif gpu_usages["__total__"] then
@@ -3434,7 +4451,11 @@ process_key_binding = function(oneshot)
     if display_timer and display_timer:is_enabled() then
         if not stats_refresh_timer then
             stats_refresh_timer = mp.add_periodic_timer(1.0, refresh_stats)
-            mp.add_timeout(0.1, refresh_stats)
+            local generation = system_samples.generation
+            system_samples.start_timer = mp.add_timeout(0.1, function()
+                system_samples.start_timer = nil
+                if generation == system_samples.generation then refresh_stats() end
+            end)
         end
     else
         if stats_refresh_timer then
@@ -3449,6 +4470,9 @@ end
 local original_remove_page_bindings = remove_page_bindings
 remove_page_bindings = function()
     original_remove_page_bindings()
+    reset_system_samples()
+    if hardware_redraw_timer then hardware_redraw_timer:kill() end
+    last_stats_sample = -math.huge
     if stats_refresh_timer then
         stats_refresh_timer:stop()
         stats_refresh_timer = nil
@@ -3457,7 +4481,10 @@ remove_page_bindings = function()
 end
 
 -- 文件切换时重置
+mp.register_event('start-file', reset_system_samples)
 mp.register_event("file-loaded", function()
+    reset_system_samples()
+    last_stats_sample = -math.huge
     cpu_usage = "N/A"
     for k, _ in pairs(gpu_usages) do
         gpu_usages[k] = "N/A"

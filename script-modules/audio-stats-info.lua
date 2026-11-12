@@ -1,4 +1,13 @@
 local M = {}
+local function ui_translator(mp)
+    local ok, module = pcall(function()
+        return dofile(mp.command_native({'expand-path', '~~/script-modules/yaozhi-i18n.lua'}))
+    end)
+    return ok and module or {text=function(value) return value end, t=function(value, ...) return string.format(value, ...) end}
+end
+local has_mp, mp = pcall(require, 'mp')
+local i18n = ui_translator(has_mp and mp or {})
+
 
 local function lower(value)
     return tostring(value or ''):lower()
@@ -110,7 +119,7 @@ function M.passthrough_format_label(format, track)
         if codec == 'truehd' or codec == 'mlp' then name = 'TrueHD' end
     end
     if not name then return raw end
-    return name .. ' 直通 [' .. raw .. ']'
+    return i18n.t('%s 直通 [%s]', name, raw)
 end
 
 return M

@@ -1,14 +1,38 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 -- modified from https://github.com/rkscv/danmaku/blob/main/danmaku.lua
 local msg = require('mp.msg')
 local utils = require("mp.utils")
-local Color = require("modules/color")
 local unpack = unpack or table.unpack
+local Color = require("modules/color")
+local Blackbar = require("modules/blackbar")
+local embedded_blackbar
+local color_revision = 0
 
 local osd_width, osd_height, pause = 0, 0, true
 local overlay_low = mp.create_osd_overlay('ass-events')
 local overlay_high = mp.create_osd_overlay('ass-events')
 local ass_track_path, ass_track_id = nil, nil
+local ass_track_slot = 0
 local previous_secondary_sid, previous_secondary_visibility, previous_secondary_ass_override = nil, nil, nil
+local FULL_VIEWPORT_OPTION = "secondary-sub-ass-full-viewport"
+local native_full_viewport_available = mp.get_property_native(FULL_VIEWPORT_OPTION) ~= nil
+local previous_secondary_full_viewport = nil
+local REFRESH_OPTION = 'secondary-sub-ass-refresh-rate'
+local native_refresh_available = mp.get_property_native(REFRESH_OPTION) ~= nil
+local native_refresh_ceiling = 240
+if native_refresh_available then
+    local info = mp.get_property_native('option-info/' .. REFRESH_OPTION)
+    local ceiling = type(info) == 'table' and tonumber(info.max)
+    if ceiling and ceiling > 0 and ceiling < math.huge then
+        native_refresh_ceiling = ceiling
+    end
+end
+local previous_secondary_refresh, sync_native_refresh
+local native_replace_available = false
+for _, command in ipairs(mp.get_property_native('command-list') or {}) do
+    if command.name == 'secondary-ass-replace' then native_replace_available = true end
+end
+local native_full_viewport_active = false
 local ass_track_dirty = true
 local ass_track_failed = false
 local fallback_notified = false
@@ -16,6 +40,16 @@ local changing_secondary = false
 local active_render_mode = "overlay"
 local overlay_render_timer = nil
 local overlay_render_interval, overlay_render_deadline = nil, nil
+local overlay_sleeping = false
+local overlay_low_cache_data, overlay_low_cache_width, overlay_low_cache_height
+local overlay_health_timer = nil
+local overlay_health_last_drops, overlay_health_bad_samples = 0, 0
+local overlay_health_good_seconds, overlay_health_ready_at = 0, 0
+local overlay_health_drop_windows = 0
+local overlay_adaptive_level, overlay_health_reason = 0, "native"
+local overlay_health_publish_key = nil
+local overlay_health_report_at, overlay_health_report_drops = 0, 0
+local start_overlay_health_timer, stop_overlay_health_timer
 local overlay_sync_profile_active, overlay_sync_external_override = false, false
 local overlay_sync_profile_failed = false
 local OVERLAY_SYNC_PROFILE = "danmaku-overlay-sync"
@@ -26,6 +60,24 @@ local overlay_high_cache_prefix, overlay_high_cache_width, overlay_high_cache_he
 local ass_prefix_cache_key, ass_prefix_cache_value = nil, nil
 local overlay_clock_media, overlay_clock_wall, overlay_clock_speed = nil, nil, 1
 local overlay_clock_seeking, overlay_clock_cache_paused = false, false
+local overlay_clock_last, overlay_clock_seek_pending = nil, false
+local hybrid_ass_parked = false
+local overlay_timing_samples, overlay_timing_late_sum = 0, 0
+local overlay_timing_late_max, overlay_timing_skipped = 0, 0
+local overlay_timing_report_at = 0
+local OVERLAY_TIMER_MIN_DELAY = 0.00025
+local OVERLAY_WARM_PAYLOAD = "{\\alpha&HFF&\\bord0\\shad0\\pos(-200,-200)}."
+
+-- Future comments are updated when they enter the visible window; a colour
+-- change never walks a whole film's backlog on the overlay rendering thread.
+local function update_event_color(event)
+    if event._color_revision == color_revision then return end
+    if Color.apply(event, options.smart_color, options.smart_color_percent,
+        options.force_white) then
+        overlay_high_cache_valid = false
+    end
+    event._color_revision = color_revision
+end
 
 local function is_ass_track_mode()
     return active_render_mode == "ass-track"
@@ -38,8 +90,24 @@ local function get_video_hdr_state()
     return gamma == "pq" or gamma == "hlg"
 end
 
-local function needs_hdr_overlay()
-    return options.vf_fps == true and get_video_hdr_state() == true
+local published_render_mode_key = nil
+local function publish_render_mode(mode, reason)
+    mode = mode or active_render_mode or "overlay"
+    reason = reason or "unknown"
+    local hdr = get_video_hdr_state() == true
+    local viewport = mode == "ass-track" and native_full_viewport_active and "full-output" or "video"
+    local key = table.concat({mode, reason, hdr and "hdr" or "sdr", viewport}, ":")
+    if key == published_render_mode_key then return end
+    published_render_mode_key = key
+    mp.set_property_native('user-data/uosc_danmaku/renderer', {
+        mode = mode,
+        reason = reason,
+        hdr = hdr,
+        viewport = viewport,
+        native_full_viewport = mode == "ass-track" and native_full_viewport_active,
+        fallback = mode == "overlay",
+    })
+    msg.info(string.format('danmaku renderer: %s (%s)', mode, reason))
 end
 
 local function is_disabled_sid(value)
@@ -68,6 +136,25 @@ local function get_osd_vertical_geometry()
     return width, height, top, bottom
 end
 
+local function get_blackbar_geometry()
+    local width, height, top, bottom = get_osd_vertical_geometry()
+    if not width then return nil end
+    local bar = embedded_blackbar and embedded_blackbar.value
+    local p = mp.get_property_native('video-out-params', {})
+    local source = mp.get_property_native('video-params', {})
+    -- An encoded border belongs to the source image. Do not reuse it after
+    -- crop, rotation or zoom; the normal VO margins remain authoritative.
+    if bar and p.w == source.w and p.h == source.h and (p.rotate or 0) == 0
+        and (p['crop-h'] or p.h) == p.h and (p['crop-w'] or p.w) == p.w
+        and mp.get_property_number('video-zoom', 0) == 0
+        and mp.get_property_number('video-pan-y', 0) == 0
+        and mp.get_property('video-crop', '') == '' then
+        local picture_height = bottom - top
+        top, bottom = top + bar.top * picture_height, bottom - bar.bottom * picture_height
+    end
+    return width, height, top, bottom
+end
+
 local function get_overlay_font_height(width, height)
     local ratio = width / height
     local render_height = 1080
@@ -79,28 +166,246 @@ local function get_overlay_font_height(width, height)
     return math.max(1, font_size * height / render_height)
 end
 
-local function should_use_fullscreen_blackbar_overlay()
-    if options.fullscreen_blackbar == false then return false end
-    if mp.get_property_native('fullscreen') ~= true then return false end
+-- Old cores retain the V19.5.8 hybrid fallback. Patched cores map only our
+-- secondary ASS track into the output viewport; libass still owns its clock.
 
-    local width, _, picture_top = get_osd_vertical_geometry()
+local get_canvas_typography
+local function should_use_fullscreen_blackbar_overlay(mode)
+    if options.fullscreen_blackbar == false then return false end
+
+    -- The option name is retained for existing configurations. Any top bar
+    -- uses the output viewport; even a thin bar can share a lane with the
+    -- picture instead of forcing the text below it.
+    local width, height, picture_top = get_blackbar_geometry()
     if not width then return false end
-    return picture_top >= 1
+    return picture_top > 0
 end
 
 local function desired_render_mode()
     local requested = tostring(options.render_mode or "auto"):lower()
-    if requested == "overlay" then return "overlay" end
-    if requested ~= "auto" and requested ~= "ass-track" then return "overlay" end
-    if needs_hdr_overlay() then return "overlay" end
-    if ass_track_failed or has_external_secondary_subtitle() then return "overlay" end
-    if requested == "auto" and should_use_fullscreen_blackbar_overlay() then return "overlay" end
-    return "ass-track"
+
+    if requested == "overlay" then return "overlay", "explicit-overlay" end
+
+    if requested ~= "auto" and requested ~= "ass-track" then
+        return "overlay", "invalid-render-mode"
+    end
+    if ass_track_failed then return "overlay", "ass-track-failed" end
+    if has_external_secondary_subtitle() then return "overlay", "secondary-subtitle" end
+    if native_full_viewport_available and should_use_fullscreen_blackbar_overlay('ass-track') then
+        return "ass-track", "native-ass-full-viewport"
+    end
+    if requested == "auto" and not native_full_viewport_available
+        and should_use_fullscreen_blackbar_overlay('overlay') then
+        return "overlay", "fullscreen-blackbar"
+    end
+
+    -- V19.5: HDR/Dolby Vision is no longer a reason to force Lua/OSD overlay.
+    -- A real ASS subtitle track lets mpv/libass own the animation timeline,
+    -- avoiding the regular micro-jitter caused by a Windows/Lua software timer
+    -- racing the display VBlank. HDR safety is preserved below: the legacy
+    -- @danmaku fps video filter is never inserted while PQ/HLG (or unknown
+    -- transfer metadata during startup) is active.
+    local hdr_state = get_video_hdr_state()
+    if hdr_state == true then return "ass-track", "native-ass-hdr" end
+    if hdr_state == false then return "ass-track", "native-ass-sdr" end
+    return "ass-track", "native-ass-pending"
+end
+
+-- libass scales glyphs from PlayResY, while positioned X coordinates follow
+-- PlayResX. A fixed 1920-wide script on a portrait picture therefore compresses
+-- lane clearance without shrinking the letters. Layout and rendering must use
+-- the same viewport, including the optional full-output black-bar viewport.
+local font_measure_overlay
+local font_measure_cache, font_measure_cache_count = {}, 0
+local function measure_canvas_line_height(res_y, font_size, picture_height)
+    local width, height = mp.get_osd_size()
+    if not width or width <= 0 or not height or height <= 0 then return nil end
+    local key = table.concat({options.fontname, string.format('%.3f', font_size),
+        tostring(options.bold), tostring(options.outline), tostring(options.shadow),
+        width, height, res_y, math.floor(picture_height + 0.5)}, ':')
+    if font_measure_cache[key] ~= nil then
+        return font_measure_cache[key] or nil
+    end
+    if not font_measure_overlay then
+        font_measure_overlay = mp.create_osd_overlay('ass-events')
+        font_measure_overlay.hidden, font_measure_overlay.compute_bounds = true, true
+    end
+    -- Match the native viewport's glyph scale in the full-output overlay.
+    -- compute_bounds returns PlayRes coordinates, including bitmap padding.
+    -- Subtract one identical line from two lines to measure font advance;
+    -- the fixed raster padding must not become extra spacing in small windows.
+    local measure_y = res_y * height / math.max(1, picture_height)
+    font_measure_overlay.res_x, font_measure_overlay.res_y = measure_y * width / height, measure_y
+    local anchor = math.max(50, font_size * 3)
+    local sample = string.format(
+        '{\\rDefault\\fn%s\\fs%d\\b%d\\bord0\\shad0\\q2\\an7\\pos(%d,%d)}国田',
+        options.fontname, font_size, options.bold and 1 or 0, anchor, anchor)
+    font_measure_overlay.data = sample
+    local ok, bounds = pcall(font_measure_overlay.update, font_measure_overlay)
+    local font_measure_height
+    if ok and type(bounds) == 'table' and bounds.y1 and bounds.y0 then
+        font_measure_overlay.data = sample .. '\\N国田'
+        local two_ok, two_bounds = pcall(font_measure_overlay.update, font_measure_overlay)
+        if two_ok and type(two_bounds) == 'table' and two_bounds.y1 and two_bounds.y0 then
+            local advance = (two_bounds.y1 - two_bounds.y0) - (bounds.y1 - bounds.y0)
+            if advance > 0 then
+                font_measure_height = {advance = advance}
+                -- Bitmap allocations have asymmetric trailing padding. Their
+                -- y1 is not the visible glyph bottom. Rotate the same stable
+                -- reference around its anchor and use its leading edge instead.
+                -- Measure fill only; outline/shadow remain lane safety margins.
+                font_measure_overlay.data = sample:gsub('}国田$',
+                    string.format('\\org(%d,%d)\\frz180}国田', anchor, anchor))
+                local flip_ok, flip = pcall(font_measure_overlay.update, font_measure_overlay)
+                if flip_ok and type(flip) == 'table' and flip.y0 then
+                    local top, bottom = bounds.y0 - anchor, anchor - flip.y0
+                    if bottom > top and bottom - top <= advance * 2 then
+                        font_measure_height.top, font_measure_height.bottom = top, bottom
+                    end
+                end
+            end
+        end
+    end
+    if font_measure_cache_count >= 8 then
+        font_measure_cache, font_measure_cache_count = {}, 0
+    end
+    font_measure_cache[key] = font_measure_height or false
+    font_measure_cache_count = font_measure_cache_count + 1
+    return font_measure_height
+end
+
+get_canvas_typography = function(width, height, mode)
+    local ratio = width / height
+    local res_x, res_y = 1920, 1080
+    local font_size = math.max(1, tonumber(options.fontsize) or 50)
+    if ratio < 1920 / 1080 then
+        res_x = math.max(1, math.floor(1080 * ratio + 0.5))
+    elseif mode == 'overlay' then
+        -- Preserve the established ultrawide overlay scale.
+        res_y = 1920 / ratio
+        font_size = math.max(1, font_size - ratio * 2)
+    end
+    local line_height = math.ceil(font_size * 1.2
+        + 2 * math.max(0, tonumber(options.outline) or 0)
+        + math.max(0, tonumber(options.shadow) or 0) + 1)
+    local measured = measure_canvas_line_height(res_y, font_size, height)
+    if measured then line_height = math.max(line_height, math.ceil(measured.advance + 2)) end
+    -- Keep stroke/shadow clearance in the lane pitch, not in the text's
+    -- visual line box used to centre a fixed group of black-bar lanes.
+    local text_line_height = math.ceil(font_size * 1.2 + 1)
+    if measured then
+        -- Balance the font advance with the conservative line box: bitmap
+        -- bounds contain raster padding, and descenders vary between comments.
+        -- Keep one stable box for the configured lanes instead of recentering
+        -- whenever the visible text changes.
+        local measured_text_height = math.ceil(measured.advance + 2)
+        text_line_height = math.max(measured_text_height,
+            math.ceil((text_line_height + measured_text_height) / 2))
+    end
+    local width_padding = math.max(0, line_height - math.ceil(font_size * 1.2 + 2))
+    return {width=res_x, height=res_y, font_size=font_size, line_height=line_height,
+        text_line_height=text_line_height,
+        text_top=measured and measured.top, text_bottom=measured and measured.bottom,
+        width_padding=width_padding,
+        key=string.format('%d:%.2f:%.2f:%d', res_x, res_y, font_size, line_height)
+            .. ':' .. table.concat({tostring(options.fontname), tostring(options.bold),
+                tostring(options.outline), tostring(options.shadow)}, ':')}
+end
+
+function get_danmaku_canvas(mode)
+    mode = mode or desired_render_mode()
+    local width, height = mp.get_osd_size()
+    width, height = tonumber(width) or 0, tonumber(height) or 0
+    if width <= 0 or height <= 0 then width, height = 1920, 1080 end
+    local output_width, output_height = width, height
+    local picture_left, picture_top = 0, 0
+    local full_output = (mode == 'overlay' or native_full_viewport_available)
+        and should_use_fullscreen_blackbar_overlay(mode)
+    if mode == 'ass-track' and not full_output then
+        local d = mp.get_property_native('osd-dimensions', {})
+        if type(d) == 'table' then
+            local dw, dh = tonumber(d.w) or width, tonumber(d.h) or height
+            local picture_width = dw - (tonumber(d.ml) or 0) - (tonumber(d.mr) or 0)
+            local picture_height = dh - (tonumber(d.mt) or 0) - (tonumber(d.mb) or 0)
+            if dw > 0 and dh > 0 and picture_width > 0 and picture_height > 0 then
+                picture_left = (tonumber(d.ml) or 0) * width / dw
+                picture_top = (tonumber(d.mt) or 0) * height / dh
+                width, height = picture_width * width / dw, picture_height * height / dh
+            end
+        end
+    end
+    local canvas = get_canvas_typography(width, height, mode)
+    canvas.key = canvas.key .. ':area:' .. tostring(options.displayarea)
+    if mode == 'ass-track' and native_full_viewport_available and not full_output then
+        -- Keep the native renderer in one output viewport throughout resize.
+        -- Express the ordinary picture-relative layout in that viewport in the
+        -- same ASS replacement, rather than switching a separate core option
+        -- before/after replacing the positions (two visible layout steps).
+        canvas.native_width = math.floor(canvas.width * output_width / width + 0.5)
+        canvas.native_height = math.floor(canvas.height * output_height / height + 0.5)
+        canvas.native_x = picture_left * canvas.width / width
+        canvas.native_y = picture_top * canvas.height / height
+        canvas.key = canvas.key .. string.format(':picture:%d:%d:%.3f:%.3f',
+            canvas.native_width, canvas.native_height, canvas.native_x, canvas.native_y)
+    end
+    if full_output then
+        local _, output_height, picture_top = get_blackbar_geometry()
+        local blackbar_height = picture_top * canvas.height / output_height
+        local clearance = 2 * canvas.height / output_height
+        local outline = math.max(0, tonumber(options.outline) or 0)
+        local shadow = math.max(0, tonumber(options.shadow) or 0)
+        local first = math.max(0, math.ceil(clearance - (canvas.text_top or 0) + outline - 1))
+        local tail = math.max(0, (canvas.text_bottom or canvas.text_line_height)
+            + outline + shadow - canvas.line_height)
+        -- Keep the existing displayarea lane-count convention, but bound it
+        -- by the output, not by the preferred black bar. Reserve a complete
+        -- final lane and the font's edge clearance even at displayarea=1.
+        local area = math.max(0.01, math.min(1, tonumber(options.displayarea) or 1))
+        local output_limit = math.max(0, canvas.height - clearance - first - tail - 1)
+        local limit = math.min(output_limit, math.max(canvas.line_height,
+            math.floor(canvas.height * area + canvas.line_height + 0.5)))
+        local rows = math.floor(limit / canvas.line_height)
+        canvas.full_output = true
+        canvas.blackbar_height = blackbar_height
+        canvas.max_layout_height = rows * canvas.line_height
+        canvas.layout_origin = first
+        local blackbar_limit = math.max(0, blackbar_height - clearance - tail - 1)
+        if rows > 0 and canvas.max_layout_height <= blackbar_limit then
+            -- Centre the configured group, never the momentary active count.
+            -- Overflow keeps a stable top origin and continues into the image.
+            local text_height = (rows - 1) * canvas.line_height + canvas.text_line_height
+            canvas.layout_origin = math.max(first, math.min(math.floor(blackbar_limit - text_height),
+                math.floor((blackbar_height - text_height) / 2 + 0.5) - 1))
+            if canvas.text_top and canvas.text_bottom then
+                local last_lane = (rows - 1) * canvas.line_height
+                local last = math.floor(blackbar_height - clearance - last_lane
+                    - canvas.text_bottom - outline - shadow - 1)
+                if last >= first then
+                    local centered = (blackbar_height - last_lane
+                        - canvas.text_top - canvas.text_bottom) / 2 - 1
+                    canvas.layout_origin = math.max(first, math.min(last, math.floor(centered + 0.5)))
+                end
+            end
+        end
+        -- Parsing reserves whole rows. Render that same set instead of
+        -- independently rejecting its last anchor after percentage rounding.
+        canvas.layout_y_limit = canvas.layout_origin + math.max(0, (rows - 1) * canvas.line_height + 1)
+        canvas.layout_bottom = rows > 0 and math.max(canvas.layout_origin + canvas.max_layout_height,
+            canvas.layout_y_limit + (canvas.text_bottom or canvas.text_line_height) + outline + shadow) or 0
+        -- Raster/window margins can settle by a pixel without changing any
+        -- lane. Only an effective placement/capacity change requires a new ASS
+        -- track; fingerprinting the raw cap rebuilt identical tracks twice.
+        canvas.key = canvas.key .. string.format(':blackbar:%d', rows)
+            .. string.format(':origin:%d', canvas.layout_origin)
+    end
+    return canvas
 end
 
 local function resolve_render_mode()
     local requested = tostring(options.render_mode or "auto"):lower()
-    active_render_mode = desired_render_mode()
+    local mode, reason = desired_render_mode()
+    active_render_mode = mode
+    publish_render_mode(mode, reason)
     if requested ~= "overlay" and requested ~= "auto" and requested ~= "ass-track" then
         msg.warn("未知的 render_mode=" .. requested .. "，已使用 overlay")
     end
@@ -116,10 +421,20 @@ local function publish_danmaku_layout()
     if visible then
         local area = math.max(0, math.min(1, tonumber(options.displayarea) or 0))
         if is_ass_track_mode() then
-            occupied = top + (bottom - top) * area
-                + (tonumber(options.fontsize) or 50) * (bottom - top) / 1080
+            -- The black-bar track starts at the output's top, not the
+            -- picture's top. Publish the same viewport used to draw it.
+            local in_blackbar = COMMENTS and COMMENTS.canvas and COMMENTS.canvas.full_output
+            local canvas_top = in_blackbar and 0 or top
+            local canvas_height = in_blackbar and height or (bottom - top)
+            occupied = canvas_top + canvas_height * area
+                + (tonumber(options.fontsize) or 50) * canvas_height / 1080
         else
             occupied = height * area + get_overlay_font_height(width, height)
+        end
+        local canvas = COMMENTS and COMMENTS.canvas
+        if canvas and canvas.full_output and canvas.layout_height then
+            occupied = (canvas.layout_bottom or (canvas.layout_origin or 0) + canvas.layout_height)
+                * height / canvas.height
         end
     end
     local fraction = math.max(0, math.min(1, occupied / height))
@@ -147,19 +462,135 @@ local function remove_overlay_high()
     invalidate_overlay_high_cache()
 end
 
-local function get_overlay_fps()
-    local fps = math.max(20, math.min(60, tonumber(options.overlay_fps) or 60))
-    local display_fps = mp.get_property_number("display-fps")
-    if display_fps and display_fps > 0 then
-        fps = math.min(fps, display_fps)
+local function get_danmaku_display_fps()
+    local value = tonumber(mp.get_property_number('display-fps'))
+    if value and value > 0 and value < math.huge then return value end
+end
+
+local function get_automatic_overlay_divisor(display_fps, ceiling)
+    -- Automatic rates follow an exact monitor divisor with a 120 Hz budget.
+    -- Avoid making compatibility Overlay more expensive than Native ASS.
+    -- A half-Hz tolerance covers normal 120 Hz mode-reporting drift.
+    if not display_fps or display_fps <= 0 then return 1 end
+    return math.max(1, math.ceil(display_fps / (ceiling or 120.5)))
+end
+
+local function get_base_overlay_fps()
+    local display_fps = get_danmaku_display_fps()
+    local native = is_ass_track_mode() and native_refresh_available
+    local configured_fps = tonumber(options.overlay_fps)
+    local automatic = not configured_fps or configured_fps <= 0
+    local fps
+
+    if automatic then
+        if display_fps then
+            -- Core range matters for native refresh properties. Both paths
+            -- retain the automatic budget; an explicit user ceiling below can
+            -- opt into faster redraws without changing the video/audio clock.
+            local ceiling = native and math.min(120.5, native_refresh_ceiling) or 120.5
+            fps = display_fps / get_automatic_overlay_divisor(display_fps, ceiling)
+        else
+            fps = 60
+        end
+    else
+        fps = math.max(20, math.min(native and native_refresh_ceiling or 240, configured_fps))
+        if display_fps and display_fps > 0 then
+            fps = math.min(fps, display_fps)
+            if options.overlay_display_sync then
+                -- Manual values are ceilings, not arbitrary asynchronous
+                -- clocks. Snap down to an exact display divisor.
+                local divisor = math.max(1, math.ceil(display_fps / fps - 0.001))
+                fps = display_fps / divisor
+            end
+        end
     end
+
     return math.max(1, fps)
+end
+
+local function remove_overlay_low()
+    overlay_low:remove()
+    overlay_low_cache_data, overlay_low_cache_width, overlay_low_cache_height = nil, nil, nil
+end
+
+-- V19.5.8: keep both OSD/libass overlay contexts warm while Native ASS is
+-- visible. This removes the one-time font/libass construction stall from the
+-- fullscreen handoff without drawing anything on screen. Full hide/unload still
+-- uses remove_overlay_* and releases the overlays normally.
+local function park_overlay_renderers()
+    -- Patched cores keep fullscreen danmaku on the same native ASS track.
+    -- They never hand off to these two libass contexts on a resize, so warming
+    -- both contexts at first appearance only adds font work to that frame.
+    if native_full_viewport_available then
+        remove_overlay_low()
+        remove_overlay_high()
+        return
+    end
+    overlay_low.res_x, overlay_low.res_y, overlay_low.z = 1920, 1080, 0
+    overlay_low.data = OVERLAY_WARM_PAYLOAD
+    overlay_low:update()
+    overlay_low_cache_data = OVERLAY_WARM_PAYLOAD
+    overlay_low_cache_width, overlay_low_cache_height = 1920, 1080
+
+    overlay_high.res_x, overlay_high.res_y, overlay_high.z = 1920, 1080, 1
+    overlay_high.data = OVERLAY_WARM_PAYLOAD
+    overlay_high:update()
+    overlay_high_cache_valid = false
+    overlay_high_cache_prefix = nil
+    overlay_high_cache_width, overlay_high_cache_height = 1920, 1080
+    clear_array(overlay_high_active)
+    clear_array(overlay_high_previous)
+end
+
+local function get_pressure_overlay_fps(base_fps)
+    local display_fps = get_danmaku_display_fps()
+    if not display_fps or display_fps <= 0 then return math.min(base_fps, 60) end
+
+    -- Pressure mode moves exactly one display divisor lower than normal.
+    -- Below the automatic budget this means, for example:
+    -- 120->60, 144:72->48, 165:82.5->55, 240:120->80, 360:120->90.
+    -- This is temporary protection; low-refresh displays retain a useful floor.
+    local base_divisor = math.max(1, math.floor(display_fps / base_fps + 0.5))
+    local fps = display_fps / (base_divisor + 1)
+    if fps < 47.5 or fps >= base_fps - 0.5 then return base_fps end
+    return fps
+end
+
+local function overlay_adaptive_enabled()
+    local configured_fps = tonumber(options.overlay_fps)
+    return options.overlay_adaptive_fps == true
+        and (not configured_fps or configured_fps <= 0)
+end
+
+local function get_overlay_fps()
+    local base_fps = get_base_overlay_fps()
+    if overlay_adaptive_level > 0 and overlay_adaptive_enabled() then
+        return get_pressure_overlay_fps(base_fps)
+    end
+    return base_fps
+end
+
+local function publish_overlay_health(state)
+    local base_fps = get_base_overlay_fps()
+    local effective_fps = get_overlay_fps()
+    local current_state = state or (overlay_adaptive_level > 0 and "protected" or "native")
+    local key = table.concat({current_state, string.format("%.3f", base_fps),
+        string.format("%.3f", effective_fps), overlay_health_reason}, ":")
+    if key == overlay_health_publish_key then return end
+    overlay_health_publish_key = key
+    mp.set_property_native('user-data/uosc_danmaku/overlay-cadence', {
+        state = current_state,
+        base_fps = base_fps,
+        effective_fps = effective_fps,
+        reason = overlay_health_reason,
+    })
 end
 
 local function clear_overlay_clock()
     overlay_clock_media = nil
     overlay_clock_wall = nil
     overlay_clock_speed = 1
+    overlay_clock_last = nil
 end
 
 local function get_overlay_clock_speed()
@@ -173,7 +604,32 @@ local function reset_overlay_clock(media_time)
     overlay_clock_media = media_time or mp.get_property_number('time-pos')
     overlay_clock_wall = mp.get_time()
     overlay_clock_speed = get_overlay_clock_speed()
+    overlay_clock_last = overlay_clock_media
     return overlay_clock_media
+end
+
+local function hold_overlay_clock()
+    local now = mp.get_time()
+    if overlay_clock_media ~= nil and overlay_clock_wall ~= nil
+        and not pause and not overlay_clock_cache_paused and not overlay_clock_seeking then
+        -- Preserve playback up to the hold, including the tail since the last
+        -- submitted position. Repeated pause/cache holds must keep this anchor.
+        overlay_clock_media = overlay_clock_media
+            + (now - overlay_clock_wall) * overlay_clock_speed
+        if overlay_sleeping then overlay_clock_last = overlay_clock_media end
+    elseif overlay_clock_media == nil then
+        overlay_clock_media = overlay_clock_last or mp.get_property_number('time-pos')
+    end
+    -- Keep the submitted pose separate: quantized time-pos can be behind it,
+    -- and advancing the pose during a pause would make visible comments move.
+    overlay_clock_wall = now
+    overlay_clock_speed = get_overlay_clock_speed()
+end
+
+local function resume_overlay_clock()
+    if overlay_clock_media == nil then return reset_overlay_clock() end
+    overlay_clock_wall = mp.get_time()
+    overlay_clock_speed = get_overlay_clock_speed()
 end
 
 local function rebase_overlay_clock(speed)
@@ -182,14 +638,14 @@ local function rebase_overlay_clock(speed)
     and not pause and not overlay_clock_seeking and not overlay_clock_cache_paused then
         overlay_clock_media = overlay_clock_media
             + (now - overlay_clock_wall) * overlay_clock_speed
-    else
+    elseif overlay_clock_media == nil then
         overlay_clock_media = mp.get_property_number('time-pos')
     end
     overlay_clock_wall = now
     overlay_clock_speed = tonumber(speed) or get_overlay_clock_speed()
 end
 
-local function get_overlay_media_time()
+local function get_overlay_media_time(sample_wall)
     local media_time = mp.get_property_number('time-pos')
     if media_time == nil then
         clear_overlay_clock()
@@ -205,22 +661,27 @@ local function get_overlay_media_time()
         rebase_overlay_clock(speed)
     end
 
-    if pause or overlay_clock_seeking or overlay_clock_cache_paused then
+    if overlay_clock_seeking then
         return reset_overlay_clock(media_time)
     end
+    if pause or overlay_clock_cache_paused then return overlay_clock_last or overlay_clock_media end
 
     -- time-pos is quantized to decoded video frames.  Extrapolate from a
     -- monotonic playback anchor so a 60 Hz OSD overlay does not repeat the
     -- same coordinate two or three times on 24/30 fps sources.  Seeking,
     -- pausing, cache stalls and speed changes explicitly rebase this clock.
-    return overlay_clock_media + (mp.get_time() - overlay_clock_wall) * overlay_clock_speed
+    local position = overlay_clock_media + ((sample_wall or mp.get_time()) - overlay_clock_wall) * overlay_clock_speed
+    overlay_clock_last = position
+    return position
 end
 
-local function stop_overlay_timer()
+local function stop_overlay_timer(keep_native_health)
     if overlay_render_timer then
         overlay_render_timer:kill()
     end
     overlay_render_interval, overlay_render_deadline = nil, nil
+    overlay_sleeping = false
+    if not keep_native_health and stop_overlay_health_timer then stop_overlay_health_timer() end
 end
 
 local function run_overlay_timer()
@@ -229,7 +690,41 @@ local function run_overlay_timer()
         return
     end
 
-    render()
+    -- V19.5.8: keep the absolute cadence, but never discard an upcoming slot
+    -- merely because it is less than 1 ms away. At 144 Hz that old 1 ms guard
+    -- was ~14% of a refresh interval and could create a regular hold/catch-up
+    -- pulse. Only deadlines that are already expired are skipped. Position
+    -- sampling remains deadline-based so callback jitter is not copied directly
+    -- into the danmaku's spatial step.
+    local started = mp.get_time()
+    local raw_lateness = math.max(0, started - overlay_render_deadline)
+    local skipped = 0
+    if raw_lateness >= overlay_render_interval then
+        skipped = math.floor(raw_lateness / overlay_render_interval)
+        overlay_render_deadline = overlay_render_deadline + skipped * overlay_render_interval
+    end
+    local residual_lateness = math.max(0, started - overlay_render_deadline)
+    overlay_timing_samples = overlay_timing_samples + 1
+    overlay_timing_late_sum = overlay_timing_late_sum + residual_lateness
+    overlay_timing_late_max = math.max(overlay_timing_late_max, residual_lateness)
+    overlay_timing_skipped = overlay_timing_skipped + skipped
+
+    local was_sleeping = overlay_sleeping
+    local position = get_overlay_media_time(overlay_render_deadline)
+    local idle_until = render(position)
+    overlay_sleeping = idle_until ~= nil
+    if overlay_sleeping then
+        -- No live events: wake at the next event boundary, with a bounded
+        -- one-second fallback for external updates. Keep the media anchor.
+        local delay = math.min(1, math.max(overlay_render_interval,
+            (idle_until - position) / math.max(get_overlay_clock_speed(), 0.01)))
+        overlay_render_deadline = started + delay
+        overlay_render_timer.timeout = math.max(OVERLAY_TIMER_MIN_DELAY, overlay_render_deadline - mp.get_time())
+        overlay_render_timer:resume()
+        if stop_overlay_health_timer then stop_overlay_health_timer() end
+        return
+    end
+    if was_sleeping and start_overlay_health_timer then start_overlay_health_timer() end
 
     -- Anchor updates to an absolute cadence. mpv's periodic timers schedule
     -- from the actual (possibly late) callback time, so occasional delays can
@@ -238,15 +733,50 @@ local function run_overlay_timer()
     local now = mp.get_time()
     repeat
         overlay_render_deadline = overlay_render_deadline + overlay_render_interval
-    until overlay_render_deadline > now + 0.001
-    overlay_render_timer.timeout = math.max(0.001, overlay_render_deadline - now)
+    until overlay_render_deadline > now
+    overlay_render_timer.timeout = math.max(OVERLAY_TIMER_MIN_DELAY, overlay_render_deadline - now)
     overlay_render_timer:resume()
+
+    if overlay_timing_report_at == 0 then overlay_timing_report_at = now end
+    if now - overlay_timing_report_at >= 30 and overlay_timing_samples > 0 then
+        local avg_ms = overlay_timing_late_sum / overlay_timing_samples * 1000
+        local max_ms = overlay_timing_late_max * 1000
+        mp.set_property_native('user-data/uosc_danmaku/overlay-timing', {
+            avg_late_ms = avg_ms,
+            max_late_ms = max_ms,
+            skipped_slots = overlay_timing_skipped,
+            cadence = get_overlay_fps(),
+        })
+        msg.verbose(string.format('overlay timing: avg-late=%.3fms max-late=%.3fms skipped=%d cadence=%.3f',
+            avg_ms, max_ms, overlay_timing_skipped, get_overlay_fps()))
+        overlay_timing_samples, overlay_timing_late_sum = 0, 0
+        overlay_timing_late_max, overlay_timing_skipped = 0, 0
+        overlay_timing_report_at = now
+    end
 end
 
 local function start_overlay_timer()
-    if pause or not ENABLED or COMMENTS == nil or is_ass_track_mode() then return end
-    reset_overlay_clock()
-    overlay_render_interval = 1 / get_overlay_fps()
+    if pause or overlay_clock_cache_paused or overlay_clock_seeking
+        or not ENABLED or COMMENTS == nil then return end
+    if is_ass_track_mode() then
+        if native_refresh_available and start_overlay_health_timer then start_overlay_health_timer() end
+        return
+    end
+    local interval = 1 / get_overlay_fps()
+    -- A style change or incoming live batch must not rewind the media clock
+    -- or shift an already running cadence. Re-arm only when it really stopped.
+    if overlay_render_timer and overlay_render_timer:is_enabled() and not overlay_sleeping
+        -- Drivers can report the same refresh rate with tiny decimal drift
+        -- (for example 143.999 -> 144.001). Treat that as the same cadence so
+        -- property notifications cannot repeatedly move the timer phase.
+        and math.abs(overlay_render_interval - interval)
+            <= math.max(0.000001, overlay_render_interval * 0.005) then
+        if start_overlay_health_timer then start_overlay_health_timer() end
+        return
+    end
+    if overlay_clock_media == nil then reset_overlay_clock() end
+    overlay_sleeping = false
+    overlay_render_interval = interval
     overlay_render_deadline = mp.get_time() + overlay_render_interval
     if not overlay_render_timer then
         overlay_render_timer = mp.add_timeout(overlay_render_interval, run_overlay_timer, true)
@@ -254,6 +784,177 @@ local function start_overlay_timer()
     overlay_render_timer:kill()
     overlay_render_timer.timeout = overlay_render_interval
     overlay_render_timer:resume()
+    if start_overlay_health_timer then start_overlay_health_timer() end
+end
+
+local function overlay_render_ratio(target_fps)
+    local fps = mp.get_property_number('estimated-vf-fps', 0) or 0
+    if fps <= 0 then fps = mp.get_property_number('container-fps', 0) or 0 end
+    fps = fps * math.max(mp.get_property_number('speed', 1) or 1, 0.01)
+    if fps <= 0 then return nil end
+
+    local passes = mp.get_property_native('vo-passes')
+    local fresh = type(passes) == 'table' and passes.fresh or nil
+    if type(fresh) ~= 'table' or #fresh == 0 then return nil end
+    local total = 0
+    for _, pass in ipairs(fresh) do
+        total = total + (tonumber(pass.avg) or tonumber(pass.last) or 0)
+    end
+    if total <= 0 then return nil end
+    local budget = total * fps
+    if is_ass_track_mode() and native_refresh_available then
+        local redraw = type(passes.redraw) == 'table' and passes.redraw or {}
+        local extra = 0
+        for _, pass in ipairs(redraw) do
+            extra = extra + (tonumber(pass.avg) or tonumber(pass.last) or 0)
+        end
+        budget = budget + extra * math.max(0, (target_fps or get_overlay_fps()) - fps)
+    end
+    return budget / 1000000000
+end
+
+local function reset_overlay_health_window(delay, keep_recovery)
+    overlay_health_last_drops = mp.get_property_number('frame-drop-count', 0) or 0
+    overlay_health_bad_samples = 0
+    overlay_health_drop_windows = 0
+    if not keep_recovery then
+        overlay_health_good_seconds = 0
+    end
+    overlay_health_ready_at = mp.get_time() + math.max(0, delay or 0)
+    overlay_health_report_at, overlay_health_report_drops = mp.get_time(), 0
+end
+
+local function change_overlay_adaptive_level(level, reason)
+    level = math.max(0, math.min(1, tonumber(level) or 0))
+    if level > 0 and get_pressure_overlay_fps(get_base_overlay_fps()) >= get_base_overlay_fps() - 0.5 then
+        return false
+    end
+    local old_fps = get_overlay_fps()
+    overlay_adaptive_level = level
+    overlay_health_reason = reason or (level > 0 and 'render-pressure' or 'recovered')
+    local new_fps = get_overlay_fps()
+    publish_overlay_health()
+    -- Protected cadence is visibly softer on high-refresh panels, so keep a
+    -- short anti-flap hold instead of V19.3's long recovery delay.
+    reset_overlay_health_window(level > 0 and 12 or 20)
+    if math.abs(old_fps - new_fps) < 0.5 then return false end
+
+    msg.info(string.format('overlay cadence %s: %.3f -> %.3f Hz (%s)',
+        level > 0 and 'protected' or 'recovered', old_fps, new_fps,
+        overlay_health_reason))
+    -- Re-arm only the cadence. The monotonic media clock remains untouched, so
+    -- the first protected frame cannot jump backwards or restart a comment.
+    if is_ass_track_mode() and sync_native_refresh then
+        sync_native_refresh()
+    else
+        start_overlay_timer()
+    end
+    return true
+end
+
+local function monitor_overlay_health()
+    local drops = mp.get_property_number('frame-drop-count', 0) or 0
+    if not overlay_adaptive_enabled() or pause or overlay_clock_cache_paused
+        or overlay_clock_seeking or mp.get_property_native('core-idle')
+        or not ENABLED or COMMENTS == nil or not get_danmaku_visibility()
+        or (is_ass_track_mode() and not native_refresh_available) then
+        -- 暂停或无弹幕期间不测量，但保留已累积的稳定时长：暂停本身不构成渲染
+        -- 压力，不应让一次暂停抵消此前的恢复进度。
+        reset_overlay_health_window(8, true)
+        publish_overlay_health('idle')
+        return
+    end
+
+    local now = mp.get_time()
+    if drops < overlay_health_last_drops or now < overlay_health_ready_at then
+        overlay_health_last_drops = drops
+        return
+    end
+
+    local drop_delta = math.max(0, drops - overlay_health_last_drops)
+    overlay_health_last_drops = drops
+    local ratio = overlay_render_ratio()
+    overlay_health_report_drops = overlay_health_report_drops + drop_delta
+    if now - overlay_health_report_at >= 30 then
+        -- Bounded summaries support long-play diagnosis without per-frame log I/O.
+        msg.info(string.format('overlay health: window=%.1fs drops=%d render-ratio=%.3f cadence=%.3f',
+            now - overlay_health_report_at, overlay_health_report_drops,
+            ratio or -1, get_overlay_fps()))
+        overlay_health_report_at, overlay_health_report_drops = now, 0
+    end
+    local over_budget = ratio and ratio >= 0.78
+    -- 渲染预算充足时，丢帧不是弹幕造成的：显示合成、解码、显卡降频都会让
+    -- 输出丢帧，而降弹幕刷新率既救不回这些帧，还白白牺牲滚动流畅度（用户
+    -- 感受为周期性顿感）。因此只有弹幕自身吃掉了可观预算时，丢帧才作为
+    -- 收紧节奏的依据。预算读不到时保留原有判定。
+    local pace_budget_spent = ratio == nil or ratio >= 0.50
+    -- 单个采样窗口里的丢帧尖峰常来自一次性的 OSD 重排（打开统计面板、切换
+    -- 菜单等），它不代表持续的渲染压力；只有丢帧连续跨越多个窗口才收紧。
+    overlay_health_drop_windows = drop_delta >= 2
+        and (overlay_health_drop_windows + 1) or 0
+    local bad = over_budget
+        or (pace_budget_spent and overlay_health_drop_windows >= 3)
+    -- Reduced native redraw cost is not proof that the normal cadence fits.
+    -- Predict that cost before recovering, otherwise a fixed load can bounce
+    -- between (for example) 240 and 120 Hz every protection/recovery window.
+    local recovery_ratio = ratio
+    if overlay_adaptive_level > 0 and is_ass_track_mode() and native_refresh_available then
+        recovery_ratio = overlay_render_ratio(get_base_overlay_fps())
+    end
+    -- Global VO drops can come from presentation or decode scheduling. Once
+    -- protected native ASS has measured normal-rate headroom, they must not
+    -- permanently pin its reduced cadence. Unknown/Overlay budgets keep the
+    -- conservative zero-drop recovery rule.
+    local native_recovery_headroom = overlay_adaptive_level > 0
+        and is_ass_track_mode() and native_refresh_available
+        and recovery_ratio ~= nil and recovery_ratio <= 0.50
+    local good = (drop_delta == 0 or native_recovery_headroom)
+        and (not recovery_ratio or recovery_ratio <= 0.50)
+
+    if bad then
+        overlay_health_bad_samples = overlay_health_bad_samples + 1
+        -- 持续超出预算时立即归零；孤立尖峰只扣减，避免一次操作抵消全部恢复进度
+        overlay_health_good_seconds = over_budget and 0
+            or math.max(0, overlay_health_good_seconds - 6)
+    else
+        overlay_health_bad_samples = 0
+        overlay_health_good_seconds = good
+            and (overlay_health_good_seconds + 2) or 0
+    end
+
+    if overlay_adaptive_level == 0 and overlay_health_bad_samples >= 2 then
+        local reason = over_budget and 'render-pressure' or 'output-drops'
+        change_overlay_adaptive_level(1, reason)
+    elseif overlay_adaptive_level > 0 and overlay_health_good_seconds >= 20 then
+        change_overlay_adaptive_level(0, 'stable-headroom')
+    else
+        publish_overlay_health()
+    end
+end
+
+stop_overlay_health_timer = function()
+    if overlay_health_timer then overlay_health_timer:kill() end
+    reset_overlay_health_window(8)
+    publish_overlay_health('idle')
+end
+
+start_overlay_health_timer = function()
+    if not overlay_adaptive_enabled() then
+        if overlay_health_timer then overlay_health_timer:kill() end
+        overlay_adaptive_level, overlay_health_reason = 0, 'manual'
+        publish_overlay_health('manual')
+        return
+    end
+    if overlay_health_timer and overlay_health_timer:is_enabled() then
+        publish_overlay_health()
+        return
+    end
+    reset_overlay_health_window(8)
+    if not overlay_health_timer then
+        overlay_health_timer = mp.add_periodic_timer(2, monitor_overlay_health)
+    end
+    overlay_health_timer:resume()
+    publish_overlay_health()
 end
 
 local function write_text_file(path, content)
@@ -288,15 +989,26 @@ local function get_ass_track_path()
     if mp.command_native then
         dir = mp.command_native({ "expand-path", "~~/cache" })
     end
+    -- A fresh/isolated config may not have a cache directory yet. Native ASS
+    -- should still work using the existing temporary directory in that case.
+    if dir and utils.file_info then
+        local info = utils.file_info(dir)
+        if not info or not info.is_dir then dir = nil end
+    end
     dir = dir or DANMAKU_PATH or "."
     return utils.join_path(dir, string.format("uosc-danmaku-%s.ass", PID))
 end
 
-local function find_ass_track_id()
+local function find_ass_track_id(existing_ids, path)
     local tracks = mp.get_property_native("track-list") or {}
     for _, track in ipairs(tracks) do
-        if track.type == "sub" and (track.title == "uosc_danmaku"
-        or track["external-filename"] == ass_track_path) then
+        -- Embedded subtitles have no external-filename. Never compare their
+        -- nil filename with the not-yet-assigned ass_track_path (also nil).
+        -- Only claim a newly added external track; a stale same-title track
+        -- from an earlier load must not win either.
+        if track.type == "sub" and track.external and not existing_ids[track.id]
+        and (track.title == "uosc_danmaku"
+            or (path and track["external-filename"] == path)) then
             return track.id
         end
     end
@@ -307,6 +1019,8 @@ local function clear_saved_secondary_state()
     previous_secondary_sid = nil
     previous_secondary_visibility = nil
     previous_secondary_ass_override = nil
+    previous_secondary_full_viewport = nil
+    previous_secondary_refresh = nil
 end
 
 local function set_secondary_property(name, value, native)
@@ -320,7 +1034,40 @@ local function set_secondary_property(name, value, native)
     changing_secondary = false
 end
 
+local function restore_native_viewport()
+    if previous_secondary_refresh ~= nil then
+        set_secondary_property(REFRESH_OPTION, previous_secondary_refresh, true)
+    end
+    if previous_secondary_full_viewport ~= nil then
+        set_secondary_property(FULL_VIEWPORT_OPTION, previous_secondary_full_viewport, true)
+    end
+    native_full_viewport_active = false
+end
+
+sync_native_refresh = function()
+    if not native_refresh_available or not ass_track_id then return end
+    if has_external_secondary_subtitle() then return end
+    local rate = is_ass_track_mode() and get_overlay_fps() or 0
+    if math.abs((mp.get_property_number(REFRESH_OPTION, 0) or 0) - rate) > 0.01 then
+        set_secondary_property(REFRESH_OPTION, rate, true)
+    end
+end
+
+local function sync_native_viewport()
+    sync_native_refresh()
+    if not native_full_viewport_available or not ass_track_id then return end
+    if has_external_secondary_subtitle() then return end
+    local enabled = is_ass_track_mode()
+    if mp.get_property_native(FULL_VIEWPORT_OPTION) ~= enabled then
+        set_secondary_property(FULL_VIEWPORT_OPTION, enabled, true)
+    end
+    native_full_viewport_active = enabled
+end
+
 local function unload_ass_track(restore_secondary)
+    -- Restore before removing the track so a replacement secondary subtitle
+    -- never inherits our full-output setting from this handoff.
+    restore_native_viewport()
     local track_id = ass_track_id
     ass_track_id = nil
     if track_id then
@@ -338,13 +1085,67 @@ local function unload_ass_track(restore_secondary)
     ass_track_path = nil
 end
 
-local function normalize_event_text(text)
+-- V19.5.8 seamless hybrid handoff. For fullscreen letterbox only, keep the
+-- Native ASS track attached but temporarily hidden while the black-bar Overlay
+-- path is active. Returning to windowed mode then becomes a visibility handoff
+-- instead of sub-remove/sub-add, so the comments do not visibly reload.
+local function park_native_ass_track()
+    if not ass_track_id then return false end
+    if tostring(mp.get_property_native("secondary-sid")) ~= tostring(ass_track_id) then return false end
+    set_secondary_property("secondary-sub-visibility", "no")
+    hybrid_ass_parked = true
+    return true
+end
+
+local function resume_parked_native_ass_track()
+    if not hybrid_ass_parked or not ass_track_id then return false end
+    if has_external_secondary_subtitle() then return false end
+    set_secondary_property("secondary-sid", ass_track_id, true)
+    sync_native_viewport()
+    set_secondary_property("secondary-sub-ass-override", "no")
+    set_secondary_property("secondary-sub-visibility", "yes")
+    hybrid_ass_parked = false
+    return true
+end
+
+local function detach_parked_native_ass_track_for_external_secondary()
+    if not hybrid_ass_parked or not ass_track_id then return false end
+    local track_id = ass_track_id
+    restore_native_viewport()
+    ass_track_id = nil
+    pcall(mp.commandv, "sub-remove", track_id)
+    if previous_secondary_visibility ~= nil then
+        set_secondary_property("secondary-sub-visibility", previous_secondary_visibility)
+    end
+    if previous_secondary_ass_override ~= nil then
+        set_secondary_property("secondary-sub-ass-override", previous_secondary_ass_override)
+    end
+    clear_saved_secondary_state()
+    hybrid_ass_parked = false
+    ass_track_dirty = true
+    return true
+end
+
+local function normalize_event_text(text, canvas)
     if not text then return nil end
     text = text:gsub("&#%d+;", "")
     text = text:gsub("\\fs(%d+)", function(size)
         local n = tonumber(size) or 0
         return string.format("\\fs%d", math.floor(n * 1.5))
     end)
+    if canvas.native_x and canvas.native_y then
+        local dx, dy = canvas.native_x, canvas.native_y
+        text = text:gsub('\\move%(([%d%.%-]+),%s*([%d%.%-]+),%s*([%d%.%-]+),%s*([%d%.%-]+)%)',
+            function(x1,y1,x2,y2)
+                return string.format('\\move(%.3f,%.3f,%.3f,%.3f)',
+                    tonumber(x1)+dx,tonumber(y1)+dy,tonumber(x2)+dx,tonumber(y2)+dy)
+            end)
+        text = text:gsub('\\pos%(([%d%.%-]+),%s*([%d%.%-]+)%)',function(x,y)
+            return string.format('\\pos(%.3f,%.3f)',tonumber(x)+dx,tonumber(y)+dy)
+        end)
+        text = string.format('{\\clip(%d,%d,%d,%d)}', math.floor(dx), math.floor(dy),
+            math.ceil(dx + canvas.width), math.ceil(dy + canvas.height)) .. text
+    end
     return "{\\an8}" .. text
 end
 
@@ -355,7 +1156,10 @@ local function event_in_display_area(event, displayarea)
     elseif event.pos then
         y = event.pos[2]
     end
-    return not y or tonumber(y) <= 1080 * displayarea
+    local canvas = COMMENTS and COMMENTS.canvas
+    local limit = canvas and canvas.layout_y_limit
+        or (canvas and canvas.height or 1080) * displayarea + (canvas and canvas.layout_origin or 0)
+    return not y or tonumber(y) <= limit
 end
 
 local function build_ass_track()
@@ -366,7 +1170,8 @@ local function build_ass_track()
     local opacity = tonumber(options.opacity)
     local alpha = string.format("%02X", (1 - (opacity or 0)) * 255)
     local bold = options.bold and "-1" or "0"
-    local fontsize = tonumber(options.fontsize) or 50
+    local canvas = COMMENTS.canvas or get_danmaku_canvas('ass-track')
+    local fontsize = canvas.font_size
     local outline = tonumber(options.outline) or 0
     local shadow = tonumber(options.shadow) or 0
     local displayarea = tonumber(options.displayarea) or 1
@@ -374,8 +1179,8 @@ local function build_ass_track()
     local lines = {
         "[Script Info]",
         "ScriptType: v4.00+",
-        "PlayResX: 1920",
-        "PlayResY: 1080",
+        string.format("PlayResX: %d", canvas.native_width or canvas.width),
+        string.format("PlayResY: %d", canvas.native_height or math.floor(canvas.height + 0.5)),
         "ScaledBorderAndShadow: yes",
         "WrapStyle: 2",
         "",
@@ -391,7 +1196,8 @@ local function build_ass_track()
 
     for _, event in ipairs(COMMENTS) do
         if event_in_display_area(event, displayarea) then
-            local text = normalize_event_text(event.text)
+            update_event_color(event)
+            local text = normalize_event_text(event.text, canvas)
             if text then
                 table.insert(lines, string.format("Dialogue: %d,%s,%s,Default,,0,0,0,,%s",
                     tonumber(event.layer) or 0,
@@ -406,8 +1212,8 @@ local function build_ass_track()
 end
 
 local function render_ass_track()
-    unload_ass_track(false)
     if not COMMENTS or #COMMENTS == 0 then
+        unload_ass_track(false)
         ass_track_dirty = false
         return true
     end
@@ -415,40 +1221,89 @@ local function render_ass_track()
     local content = build_ass_track()
     if not content then return true end
 
-    ass_track_path = get_ass_track_path()
-    if not write_text_file(ass_track_path, content) then
-        ass_track_path = nil
+    -- Live batches must not detach the visible track while the replacement
+    -- file is written/probed. Keep the current libass output until selection
+    -- of the fully opened replacement, then retire only our previous track.
+    local old_id, old_path = ass_track_id, ass_track_path
+    local next_slot = old_id and (1 - ass_track_slot) or 0
+    local next_path = get_ass_track_path()
+    if next_slot == 1 then next_path = next_path:gsub('%.ass$', '-next.ass') end
+    if not write_text_file(next_path, content) then
         return false, "write-failed"
+    end
+
+    if old_id and native_replace_available and not has_external_secondary_subtitle() then
+        local ok, result, err = pcall(mp.commandv, 'secondary-ass-replace', old_id, next_path)
+        if ok and result ~= false and not (result == nil and err) then
+            -- Keep the original backing filename current for explicit reloads.
+            if old_path ~= next_path then write_text_file(old_path, content); pcall(os.remove, next_path) end
+            ass_track_dirty = false
+            sync_native_viewport()
+            return true
+        end
+        msg.warn('原生弹幕原位更新失败，保留画面并尝试备用更新')
     end
 
     if previous_secondary_sid == nil then
         previous_secondary_sid = mp.get_property_native("secondary-sid") or "no"
         previous_secondary_visibility = mp.get_property("secondary-sub-visibility", "yes")
         previous_secondary_ass_override = mp.get_property("secondary-sub-ass-override", "strip")
+        if native_full_viewport_available then
+            previous_secondary_full_viewport = mp.get_property_native(FULL_VIEWPORT_OPTION)
+        end
+        if native_refresh_available then
+            previous_secondary_refresh = mp.get_property_native(REFRESH_OPTION)
+        end
     end
 
-    local command_ok, command_err = pcall(mp.commandv, "sub-add", ass_track_path, "auto", "uosc_danmaku")
-    if not command_ok then
-        unload_ass_track(false)
-        return false, command_err or "sub-add-failed"
+    local existing_ids = {}
+    for _, track in ipairs(mp.get_property_native("track-list") or {}) do
+        if track.type == "sub" then existing_ids[track.id] = true end
     end
-    ass_track_id = find_ass_track_id()
+    local command_ok, result, command_err = pcall(mp.commandv, "sub-add", next_path, "auto", "uosc_danmaku")
+    if not command_ok or result == false or (result == nil and command_err) then
+        if next_path ~= old_path then pcall(os.remove, next_path) end
+        return false, command_err or result or "sub-add-failed"
+    end
+    ass_track_id = find_ass_track_id(existing_ids, next_path)
     if ass_track_id then
+        ass_track_path, ass_track_slot = next_path, next_slot
         set_secondary_property("secondary-sub-visibility", "yes")
         set_secondary_property("secondary-sub-ass-override", "no")
         set_secondary_property("secondary-sid", ass_track_id, true)
+        sync_native_viewport()
+        if native_refresh_available then start_overlay_health_timer() end
+        if old_id then pcall(mp.commandv, "sub-remove", old_id) end
+        if old_path and old_path ~= next_path then pcall(os.remove, old_path) end
+        local _, reason = desired_render_mode()
+        publish_render_mode("ass-track", reason)
+        hybrid_ass_parked = false
         ass_track_dirty = false
         msg.verbose("ASS 弹幕轨已加载: " .. ass_track_path)
+        -- Prime the Overlay/libass contexts invisibly while the Native ASS track
+        -- is already on screen. The first fullscreen switch then does not pay
+        -- the font/provider construction cost in the click-to-fullscreen path.
+        park_overlay_renderers()
         return true
     else
-        unload_ass_track(false)
+        ass_track_id, ass_track_path = old_id, old_path
+        if next_path ~= old_path then pcall(os.remove, next_path) end
         return false, "track-not-found"
     end
 end
 
-local function switch_to_overlay(reason, preserve_current_secondary)
-    ass_track_failed = true
+local function switch_to_overlay(reason, preserve_current_secondary, mark_failed)
+    -- Only an actual ASS track construction/load failure should poison the
+    -- native path. Temporary compatibility fallbacks (for example a user
+    -- selecting a second subtitle) must be able to return to Native ASS later.
+    ass_track_failed = mark_failed == true
+    hybrid_ass_parked = false
     active_render_mode = "overlay"
+    if COMMENTS and COMMENTS.canvas and COMMENTS.canvas.key ~= get_danmaku_canvas('overlay').key
+        and DANMAKU and type(DANMAKU.sources) == 'table' then
+        convert_danmaku_to_ass_events(true, true)
+    end
+    publish_render_mode("overlay", reason and ("ass-track-fallback:" .. tostring(reason)) or "compatibility-fallback")
     stop_overlay_timer()
 
     if preserve_current_secondary then
@@ -465,7 +1320,7 @@ local function switch_to_overlay(reason, preserve_current_secondary)
     if reason then
         msg.warn("ASS 弹幕轨不可用，已自动切换到兼容渲染: " .. tostring(reason))
         if not fallback_notified and show_message then
-            show_message("弹幕已自动切换兼容模式", 3)
+            show_message(i18n.t("弹幕已自动切换兼容模式"), 3)
             fallback_notified = true
         end
     end
@@ -510,21 +1365,27 @@ local function realtime_position_text(event, pos, displayarea)
         end
     end
 
-    local x1, y1, x2, y2 = unpack(event.move)
-    -- 计算移动的时间范围
-    local duration = math.max(0.001, event.end_time - event.start_time)  --mean: options.scrolltime
-    local progress = (pos - event.start_time) / duration  -- 移动进度 [0, 1]
+    if event._overlay_motion_x == nil then
+        local x1, y1, x2, y2 = unpack(event.move)
+        event._overlay_motion_x = x1
+        event._overlay_motion_y = y1
+        event._overlay_motion_dx = x2 - x1
+        event._overlay_motion_dy = y2 - y1
+        event._overlay_motion_inv_duration = 1 /
+            math.max(0.001, event.end_time - event.start_time)
+    end
+    local progress = (pos - event.start_time) * event._overlay_motion_inv_duration
 
     -- 计算当前坐标
-    local current_x = tonumber(x1 + (x2 - x1) * progress)
-    local current_y = tonumber(y1 + (y2 - y1) * progress)
+    local current_x = event._overlay_motion_x + event._overlay_motion_dx * progress
+    local current_y = event._overlay_motion_y + event._overlay_motion_dy * progress
 
     -- 移除 \move 标签并应用当前坐标
     if current_y > displayarea then return end
     if event.style ~= "SP" and event.style ~= "MSG" then
-        return string.format("{\\pos(%.1f,%.1f)\\an8}%s", current_x, current_y, event_text)
+        return string.format("{\\pos(%.2f,%.2f)\\an8}%s", current_x, current_y, event_text)
     else
-        return string.format("{\\pos(%.1f,%.1f)\\an7}%s", current_x, current_y, event_text)
+        return string.format("{\\pos(%.2f,%.2f)\\an7}%s", current_x, current_y, event_text)
     end
 end
 
@@ -546,7 +1407,7 @@ function render(pos_arg)
         if ass_track_dirty or not ass_track_id then
             local ok, reason = render_ass_track()
             if ok then return end
-            switch_to_overlay(reason, false)
+            switch_to_overlay(reason, false, true)
         else
             return
         end
@@ -560,22 +1421,18 @@ function render(pos_arg)
     end
 
     if not pos then
-        overlay_low:remove()
+        remove_overlay_low()
         remove_overlay_high()
         return
     end
 
     local fontname = options.fontname
-    local fontsize = options.fontsize
+    local canvas = COMMENTS.canvas or get_danmaku_canvas('overlay')
+    local fontsize = canvas.font_size
     local opacity = tonumber(options.opacity)
     local alpha = string.format("%02X", (1 - (opacity or 0)) * 255)
 
-    local width, height = 1920, 1080
-    local ratio = osd_width / osd_height
-    if width / height < ratio then
-        height = width / ratio
-        fontsize = options.fontsize - ratio * 2
-    end
+    local width, height = canvas.width, canvas.height
 
     clear_array(ass_events_low)
     clear_array(ass_events_high)
@@ -587,23 +1444,28 @@ function render(pos_arg)
     local lo = binary_search(COMMENTS, window_start, function(item) return item.start_time end)
 
     local ass_prefix = get_ass_prefix(fontname, fontsize, alpha)
+    local active_events, next_event_time = 0, math.huge
 
     for i = lo, #COMMENTS do
         local event = COMMENTS[i]
         if not event then break end
 
-        if event.start_time > pos then break end  -- 后续弹幕提前退出
+        if event.start_time > pos then
+            next_event_time = event.start_time
+            break
+        end
         if event.end_time >= pos then
-            if event.color_source and Color.apply(event, options.smart_color, options.smart_color_percent) then
-                overlay_high_cache_valid = false
-            end
+            active_events = active_events + 1
+            update_event_color(event)
             if event.layer == nil or tonumber(event.layer) == 0 then
-                local text = realtime_position_text(event, pos, height * options.displayarea)
+                local text = realtime_position_text(event, pos,
+                    canvas.layout_y_limit or height * options.displayarea + (canvas.layout_origin or 0))
                 if text then
                     ass_events_low[#ass_events_low + 1] = ass_prefix .. text
                 end
             else
-                local ass_text = static_overlay_ass(event, ass_prefix, height * options.displayarea)
+                local ass_text = static_overlay_ass(event, ass_prefix,
+                    canvas.layout_y_limit or height * options.displayarea + (canvas.layout_origin or 0))
                 if ass_text then
                     overlay_high_active[#overlay_high_active + 1] = event
                 end
@@ -615,8 +1477,13 @@ function render(pos_arg)
     overlay_low.res_x = width
     overlay_low.res_y = height
     overlay_low.z = 0
-    overlay_low.data = table.concat(ass_events_low, '\n')
-    overlay_low:update()
+    local low_data = table.concat(ass_events_low, '\n')
+    if low_data ~= overlay_low_cache_data or width ~= overlay_low_cache_width
+        or height ~= overlay_low_cache_height then
+        overlay_low.data = low_data
+        overlay_low:update()
+        overlay_low_cache_data, overlay_low_cache_width, overlay_low_cache_height = low_data, width, height
+    end
 
     local high_changed = not overlay_high_cache_valid
         or overlay_high_cache_prefix ~= ass_prefix
@@ -650,14 +1517,16 @@ function render(pos_arg)
         overlay_high_cache_height = height
     end
 
-    -- Overlay mode rebuilds the moving ASS payload at up to 60 Hz.  A small
+    -- Overlay mode rebuilds the moving ASS payload at its display cadence.  A small
     -- incremental collection here prevents those short-lived strings from
     -- accumulating into a larger, visible collection pause every few seconds.
     collectgarbage('step', 32)
+    if active_events == 0 then return next_event_time end
 end
 
 function render_danmaku(from_menu, no_osd)
-    if ENABLED and (from_menu or get_danmaku_visibility()) then
+    if ENABLED and type(COMMENTS) == 'table' and #COMMENTS > 0
+        and (from_menu or get_danmaku_visibility()) then
         ass_track_dirty = true
         if not no_osd then
             show_loaded(true)
@@ -718,52 +1587,35 @@ local function overlay_display_sync_eligible()
         return false
     end
 
-    local target_fps = math.min(get_overlay_fps(), display_fps)
-    if video_fps >= target_fps - 1 then return false end
+    -- A 60 fps source on a 144 Hz monitor also needs display-paced redraws.
+    -- Comparing against the overlay's 60 Hz ceiling excluded this common case.
+    if video_fps >= display_fps - 1 then return false end
 
     -- Avoid fighting the existing speed-dependent video-sync auto profile.
     local speed = mp.get_property_number("speed", 1) or 1
     return speed >= 0.96 and speed <= 1.04
 end
 
+local overlay_enhancement_sync_generation = nil
+
+local function update_overlay_display_mode()
+    -- V19.3: overlay timing never owns the video's presentation clock.
+    -- The old path applied danmaku-overlay-sync and changed video-sync to
+    -- display-vdrop. On 60 fps + high-refresh displays that could enter a
+    -- long-play cadence oscillation. Smoothness is now handled solely by the
+    -- exact display-divisor overlay timer above.
+    overlay_sync_profile_active = false
+    overlay_sync_external_override = false
+    overlay_sync_profile_failed = false
+end
+
 local function sync_overlay_display_mode()
-    if not overlay_sync_session_active() then
-        restore_overlay_display_sync(true)
-        return
-    end
-
-    local current = tostring(mp.get_property("video-sync", "audio")):lower()
-    if overlay_sync_profile_active and current ~= "display-vdrop" then
-        -- The user or another profile changed the mode while we were active.
-        -- copy-equal restoration preserves that newer value; do not reapply
-        -- until the current overlay session has ended.
-        restore_overlay_display_sync(false)
-        overlay_sync_external_override = true
-        return
-    end
-
-    if not overlay_display_sync_eligible() then
-        restore_overlay_display_sync(false)
-        return
-    end
-    if overlay_sync_profile_active or overlay_sync_external_override then return end
-
-    -- Existing display-* modes already redraw at the display cadence. Only
-    -- upgrade mpv's default audio timing; never override a user-selected mode.
-    if current:find("display-", 1, true) == 1 or current ~= "audio" then return end
-
-    local ok, err = pcall(mp.commandv, "apply-profile", OVERLAY_SYNC_PROFILE)
-    local applied = ok and tostring(mp.get_property("video-sync", "")):lower() == "display-vdrop"
-    if applied then
-        overlay_sync_profile_active = true
-        overlay_sync_profile_failed = false
-        msg.verbose("低帧率 overlay 弹幕已启用显示器同步重绘")
-    else
-        pcall(mp.commandv, "apply-profile", OVERLAY_SYNC_PROFILE, "restore")
-        if not overlay_sync_profile_failed then
-            msg.warn("无法启用弹幕 overlay 显示同步: " .. tostring(err or "profile unavailable"))
-            overlay_sync_profile_failed = true
-        end
+    update_overlay_display_mode()
+    sync_native_refresh()
+    -- Monitor/sync changes can select a different integer refresh divisor.
+    -- Re-arm its cadence only; keep the current playback anchor intact.
+    if overlay_render_timer and overlay_render_timer:is_enabled() then
+        start_overlay_timer()
     end
 end
 
@@ -781,9 +1633,11 @@ local function sync_danmaku_fps_filter()
 		return
 	end
 
-    -- Until the source transfer is known, avoid touching the video filter
-    -- chain. This prevents a short-lived fps filter from being inserted during
-    -- HDR initialization and then removed again once PQ/HLG metadata arrives.
+    -- V19.5: Native ASS does not require changing the video pipeline. Keep the
+    -- legacy fps helper strictly SDR-only. While transfer metadata is unknown,
+    -- or once PQ/HLG is confirmed (including Dolby Vision output through PQ),
+    -- never insert @danmaku:fps. This avoids the historical HDR/gamma/filter
+    -- side effects and keeps RIFE/AI/video-sync ownership outside the danmaku.
     if not options.vf_fps or get_video_hdr_state() ~= false then
         remove_danmaku_fps_filter()
         return
@@ -804,15 +1658,25 @@ local function sync_danmaku_fps_filter()
     end
 end
 
+local function repaint_danmaku()
+    -- A live batch or a settings edit may arrive between scheduled frames.
+    -- Repaint its content at the last submitted position; moving early here
+    -- creates an extra short step followed by a long one on the display.
+    local position
+    if not is_ass_track_mode() and overlay_render_timer
+        and overlay_render_timer:is_enabled() and not overlay_sleeping then position = overlay_clock_last end
+    render(position)
+end
+
 function show_danmaku_func()
     mp.set_property_bool(HAS_DANMAKU, type(COMMENTS) == "table" and #COMMENTS > 0)
     set_danmaku_visibility(true)
     resolve_render_mode()
-    render()
+    repaint_danmaku()
     if is_ass_track_mode() then
-        stop_overlay_timer()
-        overlay_low:remove()
-        remove_overlay_high()
+        stop_overlay_timer(native_refresh_available)
+        if native_refresh_available then start_overlay_health_timer() end
+        park_overlay_renderers()
     elseif not pause then
         start_overlay_timer()
     end
@@ -825,21 +1689,41 @@ function hide_danmaku_func()
     restore_overlay_display_sync(true)
     stop_overlay_timer()
     unload_ass_track(true)
+    hybrid_ass_parked = false
     mp.set_property_bool(HAS_DANMAKU, false)
     set_danmaku_visibility(false)
     publish_danmaku_layout()
-    overlay_low:remove()
+    remove_overlay_low()
     remove_overlay_high()
     if filter_state("danmaku") then
         mp.commandv("vf", "remove", "@danmaku")
     end
 end
 
+function refresh_danmaku_colors()
+    color_revision = color_revision + 1
+    ass_track_dirty = true
+    overlay_high_cache_valid = false
+    if ENABLED and COMMENTS ~= nil and get_danmaku_visibility() then
+        -- Keep the current clock, timer deadline, visibility and sync profile.
+        repaint_danmaku()
+    end
+end
+
 function refresh_danmaku_renderer()
     ass_track_dirty = true
+    -- An explicit style/colour change must repaint fixed comments even when
+    -- the active event objects and their positions did not change.
+    overlay_high_cache_valid = false
     ass_track_failed = false
     fallback_notified = false
     if ENABLED and COMMENTS ~= nil and get_danmaku_visibility() then
+        -- Style edits (including bold/outline) can alter measured glyph bounds
+        -- without changing the requested font size. Recompute their layout.
+        if DANMAKU and type(DANMAKU.sources) == 'table'
+            and (not COMMENTS.canvas or COMMENTS.canvas.key ~= get_danmaku_canvas().key) then
+            convert_danmaku_to_ass_events(true)
+        end
         show_danmaku_func()
     end
 end
@@ -851,48 +1735,95 @@ function reset_danmaku_association_render()
     clear_overlay_clock()
     clear_array(ass_events_low)
     clear_array(ass_events_high)
-    overlay_low:remove()
+    remove_overlay_low()
     remove_overlay_high()
     ass_track_dirty, ass_track_failed = true, false
+    hybrid_ass_parked = false
+    overlay_timing_samples, overlay_timing_late_sum = 0, 0
+    overlay_timing_late_max, overlay_timing_skipped, overlay_timing_report_at = 0, 0, 0
     mp.set_property_bool(HAS_DANMAKU, false)
     mp.set_property_native(DANMAKU_COUNT, 0)
     publish_danmaku_layout()
 end
 
-local layout_mode_timer = mp.add_timeout(0.08, function()
+local LAYOUT_MODE_DEBOUNCE = 0.015
+local layout_mode_timer = mp.add_timeout(LAYOUT_MODE_DEBOUNCE, function()
     if not ENABLED or COMMENTS == nil or not get_danmaku_visibility() then return end
-    local next_mode = desired_render_mode()
-    if next_mode == active_render_mode then return end
+    local next_mode, next_reason = desired_render_mode()
+    local canvas = get_danmaku_canvas(next_mode)
+    local old_canvas = COMMENTS.canvas
+    if old_canvas and old_canvas.key ~= canvas.key
+        and DANMAKU and type(DANMAKU.sources) == 'table' then
+        convert_danmaku_to_ass_events(true, true)
+        ass_track_dirty = true
+        invalidate_overlay_high_cache()
+    end
+    if next_mode == active_render_mode then
+        sync_native_viewport()
+        publish_render_mode(next_mode, next_reason)
+        if ass_track_dirty then repaint_danmaku() end
+        publish_danmaku_layout()
+        return
+    end
 
     stop_overlay_timer()
     if next_mode == "overlay" then
-        unload_ass_track(true)
-        active_render_mode = "overlay"
-        render()
-        if not pause then start_overlay_timer() end
-        if needs_hdr_overlay() then
-            msg.verbose("检测到 HDR 视频，已切换到不修改视频帧率的 overlay 弹幕")
+        if next_reason == "fullscreen-blackbar" and ass_track_id then
+            -- Build and submit the first black-bar Overlay frame while Native ASS
+            -- is still visible, then hide (not unload) the ASS track. This makes
+            -- window -> fullscreen a continuous handoff instead of a reload.
+            active_render_mode = "overlay"
+            publish_render_mode("overlay", next_reason)
+            reset_overlay_clock(mp.get_property_number('time-pos'))
+            render(get_overlay_media_time(mp.get_time()))
+            park_native_ass_track()
+            if not pause then start_overlay_timer() end
+            msg.verbose("检测到全屏黑边布局，弹幕已无缝切换 overlay 兼容渲染")
         else
-            msg.verbose("检测到全屏顶部黑边，已切换到 overlay 连续布局")
+            unload_ass_track(true)
+            hybrid_ass_parked = false
+            active_render_mode = "overlay"
+            publish_render_mode("overlay", next_reason)
+            reset_overlay_clock(mp.get_property_number('time-pos'))
+            render(get_overlay_media_time(mp.get_time()))
+            if not pause then start_overlay_timer() end
+            if next_reason == "secondary-subtitle" then
+                msg.verbose("检测到第二字幕占用，弹幕已切换 overlay 兼容渲染")
+            else
+                msg.verbose("弹幕已切换 overlay 兼容渲染: " .. tostring(next_reason))
+            end
         end
     else
-        overlay_low:remove()
-        remove_overlay_high()
         active_render_mode = "ass-track"
-        ass_track_dirty = true
-        render()
-        msg.verbose("已恢复原生 ASS 弹幕布局")
+        publish_render_mode("ass-track", next_reason)
+
+        local resumed = false
+        if ass_track_id and hybrid_ass_parked and not ass_track_dirty then
+            resumed = resume_parked_native_ass_track()
+        end
+        if not resumed then
+            ass_track_dirty = true
+            render()
+        end
+        -- Keep the Overlay contexts warm but invisible for the next fullscreen
+        -- handoff. Do not remove them here; remove is reserved for true hide/unload.
+        park_overlay_renderers()
+        if next_reason == "native-ass-hdr" then
+            msg.verbose("HDR/DV 弹幕已无缝恢复原生 ASS 时间轴渲染")
+        else
+            msg.verbose("已无缝恢复原生 ASS 弹幕布局")
+        end
     end
-	-- Gamma/layout changes can switch from overlay back to the optional ASS
-	-- compatibility path asynchronously. Reconcile its legacy fps setting only
-	-- after the new mode is active; overlay remains protected by the hard guard.
-	sync_danmaku_fps_filter()
+    -- Gamma/layout changes can switch renderer asynchronously. Reconcile the
+    -- optional legacy SDR fps helper only after the target mode is active.
+    sync_danmaku_fps_filter()
     sync_overlay_display_mode()
     publish_danmaku_layout()
 end, true)
 
 local function schedule_layout_mode_refresh()
     layout_mode_timer:kill()
+    layout_mode_timer.timeout = LAYOUT_MODE_DEBOUNCE
     layout_mode_timer:resume()
 end
 
@@ -955,7 +1886,12 @@ local function layout_message(text)
             -- continues past the top black bar, stay below its final lane.
             x = math.max(x, math.floor(picture_left + picture_gap + 0.5))
             y = math.floor(picture_top + picture_gap + 0.5)
-            if desired_render_mode() == "overlay" then
+            local canvas = COMMENTS and COMMENTS.canvas
+            if canvas and canvas.full_output and canvas.layout_height then
+                local lane_bottom = (canvas.layout_bottom or (canvas.layout_origin or 0) + canvas.layout_height)
+                    * height / canvas.height
+                y = math.max(y, math.floor(lane_bottom + lane_gap + 0.5))
+            elseif desired_render_mode() == "overlay" then
                 local lane_bottom = height * displayarea + get_overlay_font_height(width, height)
                 y = math.max(y, math.floor(lane_bottom + lane_gap + 0.5))
             else
@@ -964,8 +1900,16 @@ local function layout_message(text)
                 y = math.max(y, math.floor(lane_bottom + lane_gap + 0.5))
             end
         else
-            -- Preserve the established windowed and overlay-mode placement.
+            -- Preserve the established message inset, but also respect a
+            -- centred black-bar group in windowed playback.
             y = math.max(y, math.floor(height * displayarea + 32 * visual_scale + 0.5))
+            local canvas = COMMENTS and COMMENTS.canvas
+            if top_aligned and canvas and canvas.full_output and canvas.layout_height then
+                local lane_bottom = (canvas.layout_bottom or (canvas.layout_origin or 0) + canvas.layout_height)
+                    * height / canvas.height
+                local lane_gap = math.max(6, math.floor(8 * visual_scale + 0.5))
+                y = math.max(y, math.floor(lane_bottom + lane_gap + 0.5))
+            end
         end
     end
     local border = math.max(2, math.floor(2.4 * visual_scale + 0.5))
@@ -1007,6 +1951,15 @@ mp.observe_property('osd-width', 'number', function(_, value)
     render_active_message()
     schedule_layout_mode_refresh()
 end)
+embedded_blackbar = Blackbar.new(mp, utils, schedule_layout_mode_refresh)
+mp.register_event('start-file', embedded_blackbar.reset)
+mp.register_event('end-file', embedded_blackbar.reset)
+mp.register_event('shutdown', embedded_blackbar.reset)
+mp.register_event('playback-restart', function()
+    if options.fullscreen_blackbar ~= false and (options.auto_load or ENABLED) then
+        embedded_blackbar.start()
+    end
+end)
 mp.observe_property('osd-height', 'number', function(_, value)
     osd_height = value or osd_height
     render_active_message()
@@ -1017,6 +1970,9 @@ mp.observe_property('osd-dimensions', 'native', function()
     schedule_layout_mode_refresh()
     publish_danmaku_layout()
 end)
+mp.observe_property('video-out-params', 'native', schedule_layout_mode_refresh)
+mp.observe_property('video-rotate', 'number', schedule_layout_mode_refresh)
+mp.observe_property('video-aspect-override', 'number', schedule_layout_mode_refresh)
 mp.observe_property('fullscreen', 'bool', function()
     render_active_message()
     schedule_layout_mode_refresh()
@@ -1031,7 +1987,10 @@ mp.observe_property('video-params/gamma', 'string', function()
     end
     sync_overlay_display_mode()
 end)
+mp.observe_property('user-data/video-enhancement/sync-managed', 'native', function() sync_overlay_display_mode() end)
+mp.observe_property('user-data/video-enhancement/sync-generation', 'native', function() sync_overlay_display_mode() end)
 mp.observe_property('display-fps', 'number', function() sync_overlay_display_mode() end)
+mp.observe_property('video-sync', 'string', function() sync_overlay_display_mode() end)
 mp.observe_property('estimated-vf-fps', 'number', function() sync_overlay_display_mode() end)
 mp.observe_property('container-fps', 'number', function()
     if ENABLED and COMMENTS ~= nil and get_danmaku_visibility() then
@@ -1040,16 +1999,14 @@ mp.observe_property('container-fps', 'number', function()
 end)
 mp.observe_property('display-hidpi-scale', 'number', function() render_active_message() end)
 mp.observe_property('pause', 'bool', function(_, value)
-    if value ~= nil then
-        pause = value
-    end
+    if value == nil or value == pause then return end
+    if value then hold_overlay_clock() else resume_overlay_clock() end
+    pause = value
     if ENABLED then
         if pause then
-            reset_overlay_clock()
             stop_overlay_timer()
-        elseif COMMENTS ~= nil and not is_ass_track_mode() then
-            reset_overlay_clock()
-            render()
+        elseif COMMENTS ~= nil then
+            if not is_ass_track_mode() then render() end
             start_overlay_timer()
         end
     end
@@ -1065,30 +2022,66 @@ end)
 mp.observe_property('video-speed-correction', 'number', function(_, value)
     if value ~= nil then
         rebase_overlay_clock()
+        if overlay_sleeping then start_overlay_timer() end
     end
 end)
 
 mp.observe_property('seeking', 'bool', function(_, value)
-    overlay_clock_seeking = value == true
+    local seeking = value == true
+    if seeking == overlay_clock_seeking then return end
+    overlay_clock_seeking = seeking
+    overlay_clock_seek_pending = true
     reset_overlay_clock()
+    if seeking then stop_overlay_timer() else start_overlay_timer() end
 end)
 
 mp.observe_property('paused-for-cache', 'bool', function(_, value)
-    overlay_clock_cache_paused = value == true
-    reset_overlay_clock()
+    local stalled = value == true
+    if stalled == overlay_clock_cache_paused then return end
+    if stalled then hold_overlay_clock() else resume_overlay_clock() end
+    overlay_clock_cache_paused = stalled
+    if stalled then stop_overlay_timer() else start_overlay_timer() end
 end)
 
 mp.observe_property('secondary-sid', 'native', function(_, value)
-    if changing_secondary or not ass_track_id or not is_ass_track_mode() then return end
-    if tostring(value) == tostring(ass_track_id) then return end
+    if changing_secondary then return end
 
-    switch_to_overlay(nil, true)
+    if ass_track_id and hybrid_ass_parked and tostring(value) ~= tostring(ass_track_id) then
+        -- Fullscreen hybrid keeps Native ASS attached but hidden. If the user
+        -- selects a real second subtitle, release the parked danmaku track and
+        -- restore the user's secondary-subtitle properties without overriding
+        -- the newly selected track.
+        detach_parked_native_ass_track_for_external_secondary()
+        if ENABLED and COMMENTS ~= nil and get_danmaku_visibility() then
+            publish_render_mode("overlay", "secondary-subtitle")
+            schedule_layout_mode_refresh()
+        end
+        return
+    end
+
+    if ass_track_id and is_ass_track_mode() then
+        if tostring(value) == tostring(ass_track_id) then return end
+
+        -- The user selected a real second subtitle. This is a compatibility
+        -- fallback, not a Native ASS failure; once the external second subtitle
+        -- is disabled, auto mode is allowed to return to the ASS timeline.
+        switch_to_overlay(nil, true, false)
+        publish_render_mode("overlay", "secondary-subtitle")
+        if ENABLED and COMMENTS ~= nil and get_danmaku_visibility() then
+            msg.verbose("检测到用户选择第二字幕，弹幕已切换到 overlay")
+            sync_overlay_display_mode()
+            render()
+            start_overlay_timer()
+            show_message(i18n.t("检测到双字幕，弹幕已切换兼容模式"), 3)
+        end
+        return
+    end
+
+    -- While already in compatibility overlay, track selection can change again
+    -- (e.g. secondary-sid -> no). Re-evaluate so auto mode can recover Native
+    -- ASS immediately instead of remaining stuck in overlay for the whole file.
     if ENABLED and COMMENTS ~= nil and get_danmaku_visibility() then
-        msg.verbose("检测到用户选择第二字幕，弹幕已切换到 overlay")
-        sync_overlay_display_mode()
-        render()
-        start_overlay_timer()
-        show_message("检测到双字幕，弹幕已切换兼容模式", 3)
+        schedule_layout_mode_refresh()
     end
 end)
 
@@ -1098,31 +2091,39 @@ mp.register_event('playback-restart', function(event)
     end
     if ENABLED and COMMENTS ~= nil then
         if not is_ass_track_mode() then
-            reset_overlay_clock()
+            if overlay_clock_seek_pending or overlay_clock_media == nil then reset_overlay_clock() end
+            overlay_clock_seek_pending = false
             render()
+            start_overlay_timer()
         end
     end
 end)
 
 mp.add_hook("on_unload", 50, function()
-    -- 采纳上游 d8c1cd8 对 FALLBACK_TRIGGER 的复位（auto_load_fallback 每文件重新武装）。
-    -- 注意：不引入上游同段的 stop_time_observer() —— 本分支在重构叠加层时钟时已移除该
-    -- 函数（全库无定义），改由 clear_overlay_clock()/stop_overlay_timer() 承担，
-    -- 照搬会导致 on_unload 时调用 nil 报错。
+    -- EmoPlay 保留：复位 auto_load_fallback 武装标志，每文件重新生效（上游 d8c1cd8）。
     FALLBACK_TRIGGER, COMMENTS, DELAY = false, nil, 0
+    -- Protection belongs to the current workload, not the next video's first
+    -- seconds. Every new file starts at its normal rate and is measured again.
+    overlay_adaptive_level, overlay_health_reason = 0, 'native'
     restore_overlay_display_sync(true)
     stop_overlay_timer()
     unload_ass_track(true)
     ass_track_dirty = true
     ass_track_failed = false
     fallback_notified = false
+    hybrid_ass_parked = false
+    overlay_timing_samples, overlay_timing_late_sum = 0, 0
+    overlay_timing_late_max, overlay_timing_skipped, overlay_timing_report_at = 0, 0, 0
     active_render_mode = "overlay"
+    published_render_mode_key = nil
+    mp.set_property_native('user-data/uosc_danmaku/renderer', {mode="idle", reason="unload", hdr=false})
     clear_overlay_clock()
     overlay_clock_seeking, overlay_clock_cache_paused = false, false
+    overlay_clock_seek_pending = false
     ass_prefix_cache_key, ass_prefix_cache_value = nil, nil
     clear_array(ass_events_low)
     clear_array(ass_events_high)
-    overlay_low:remove()
+    remove_overlay_low()
     remove_overlay_high()
     mp.set_property_bool(HAS_DANMAKU, false)
     mp.set_property_native(DELAY_PROPERTY, 0)
@@ -1147,7 +2148,5 @@ mp.add_hook("on_unload", 50, function()
 
     DANMAKU = {sources = {}, count = 1}
     mp.set_property_native(DANMAKU_COUNT, 0)
-    -- 上游在本 hook 末尾追加 set_property_bool(HAS_DANMAKU, false)，但本分支已在
-    -- 上面第 1128 行重置过同一属性，此处只保留本地的按钮刷新，避免重复调用。
     refresh_danmaku_button()
 end)

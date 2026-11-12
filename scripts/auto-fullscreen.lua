@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 local mp = require 'mp'
 local msg = require 'mp.msg'
 local options = require 'mp.options'
@@ -97,7 +98,7 @@ local function set_enabled(value, show_osd)
     end
 
     if show_osd and o.show_osd then
-        mp.osd_message(o.enabled and '起播自动全屏已开启' or '起播自动全屏已关闭', 2.2)
+        mp.osd_message(o.enabled and i18n.t('起播自动全屏已开启') or i18n.t('起播自动全屏已关闭'), 2.2)
     end
 end
 

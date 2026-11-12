@@ -1,3 +1,4 @@
+local Color = require("modules/color")
 local msg = require('mp.msg')
 local utils = require('mp.utils')
 
@@ -34,7 +35,7 @@ end
 -- 构建通用 curl 请求参数
 local function build_mgtv_curl_args(target_url)
     local args = {
-        'curl', '-s', '-L',
+        'curl', '-s', '-L', '--fail', '--connect-timeout', '3', '--max-time', '10',
         '--user-agent', user_agent,
         '-H', 'Accept: application/json',
         target_url,
@@ -52,8 +53,8 @@ local function parse_mgtv_segment(out, output_table)
         local time_s = t_ms / 1000
         local content = item.content or ''
         local mode = 1
-        local color = 16777215
-        local c_param = string.format('%.2f,%d,%d,25,,,', time_s, color, mode)
+        local color = Color.normalize(item.color) or ""
+        local c_param = string.format('%.2f,%s,%d,25,,,', time_s, color, mode)
         table.insert(output_table, { c = c_param, m = content })
     end
 end
@@ -85,12 +86,14 @@ function load_danmaku_for_mgtv(path, callback)
     local url = path or mp.get_property('stream-open-filename', '')
     if not url or url == '' then
         msg.error('mgtv: 无效的 url')
+        callback(false)
         return
     end
 
     local cid, vid = extract_mgtv_ids(url)
     if not cid or not vid then
         msg.error('mgtv: 无法解析 cid/vid: ' .. tostring(url))
+        callback(false)
         return
     end
 

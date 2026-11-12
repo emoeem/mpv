@@ -67,7 +67,8 @@ function M.classify(url)
         return {platform = 'youtube', kind = 'youtube-video', content_type = 'video'}
     end
 
-    if host == 'live.bilibili.com' and path:match('^/[A-Za-z0-9_%-]+/?') then
+    if host == 'live.bilibili.com'
+            and (path:match('^/%d+/?$') or path:match('^/blanc/%d+/?$')) then
         return {platform = 'bilibili', kind = 'bilibili-live', content_type = 'live'}
     end
 
@@ -81,14 +82,37 @@ function M.classify(url)
         ['m.bilibili.com'] = true,
     }
     if bili_hosts[host] then
+        -- 大小写两种写法都要认：`ep` / `ss` / `md` 三个前缀各自都有小写与大写
+        -- 入口，缺一个字母这里就会静默漏掉（`ss` 曾因为第二组没有小写 s 而漏掉，
+        -- 于是整季链接落到 mpv 手里当成网页打开）。数字前缀后面才是 id。
         if path:match('^/video/[Bb][Vv][%w]+') or path:match('^/video/[Aa][Vv]%d+')
-                or path:match('^/bangumi/play/[eEsSmM][pSdD]%d+') then
+                or path:match('^/bangumi/play/[eE][pP]%d+/?$')
+                or path:match('^/bangumi/play/[sS][sS]%d+/?$')
+                or path:match('^/bangumi/play/[mM][dD]%d+/?$') then
             return {platform = 'bilibili', kind = 'bilibili-video', content_type = 'video'}
         end
     end
 
-    if host == 'live.douyin.com' and path:match('^/[A-Za-z0-9_%-]+/?') then
+    -- 路径允许为空：抖音直播首页/推荐位把当前房间号放在 query 的 live_web_rid 里
+    -- （`live.douyin.com/?live_web_rid=87787514002`），路径只有 `/`，不含房间信息。
+    -- 是不是直播间由解析器判定，路由器只负责认出平台。
+    if host == 'live.douyin.com' and path:match('^/[A-Za-z0-9_%-]*/?') then
         return {platform = 'douyin', kind = 'douyin-live', content_type = 'live'}
+    end
+
+    -- 抖音直播搜索结果页同样把房间号放在 live_web_rid 里
+    -- （`www.douyin.com/search/…?type=live&live_web_rid=…`），路径里没有房间号。
+    -- 只放行带合法房间号的链接，普通视频页/用户页不在这里识别。
+    if host == 'douyin.com' or host == 'www.douyin.com' then
+        -- Following-feed live pages carry the room in the path. anchor_id is
+        -- the broadcaster identity, not the live room number.
+        if path:match('^/follow/live/%d%d%d%d+/?$') then
+            return {platform = 'douyin', kind = 'douyin-live', content_type = 'live'}
+        end
+        local douyin_room = query_value(parsed.query, 'live_web_rid') or ''
+        if douyin_room:match('^%d%d%d%d+$') then
+            return {platform = 'douyin', kind = 'douyin-live', content_type = 'live'}
+        end
     end
 
     if (host == 'v.douyin.com' and path ~= '/')

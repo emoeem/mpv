@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 local mp = require 'mp'
 local msg = require 'mp.msg'
 local options = require 'mp.options'
@@ -28,18 +29,18 @@ local function normalize_mode(value)
 end
 
 local function label_for_peak(peak)
-    if peak == 150 then return '柔和 · 150 nits' end
-    if peak == 203 then return '标准 · 203 nits' end
-    if peak == 250 then return '明亮 · 250 nits' end
-    if peak == 300 then return '高亮 · 300 nits' end
-    if peak == 400 then return '较强 · 400 nits' end
+    if peak == 150 then return i18n.t('柔和 · 150 nits') end
+    if peak == 203 then return i18n.t('标准 · 203 nits') end
+    if peak == 250 then return i18n.t('明亮 · 250 nits') end
+    if peak == 300 then return i18n.t('高亮 · 300 nits') end
+    if peak == 400 then return i18n.t('较强 · 400 nits') end
     return string.format('%d nits', peak)
 end
 
 local function label_for_mode(mode)
-    if mode == 'video' then return '随视频（HDR 原生）' end
+    if mode == 'video' then return i18n.t('随视频（HDR 原生）') end
     if mode == 'sdr' then return 'SDR / sRGB' end
-    return '自动判断'
+    return i18n.t('自动判断')
 end
 
 local function core_supported()
@@ -80,7 +81,7 @@ end
 local function resolve_mode()
     local requested = normalize_mode(o.mode) or 'auto'
     if requested ~= 'auto' then
-        return requested, '手动指定'
+        return requested, i18n.t('手动指定')
     end
 
     local subtitle = selected_track('sub')
@@ -92,26 +93,60 @@ local function resolve_mode()
     -- UHD HDR/DV 正片中的内封 PGS 通常按正片 PQ/BT.2020 调色板制作，
     -- 应随视频进入同一色彩管理链；外置 PGS、VobSub 与 DVB 则保守按 SDR 处理。
     if hdr and kind == 'PGS' and subtitle and not subtitle.external and source_is_uhd(video) then
-        return 'video', 'UHD HDR/DV 内封 PGS'
+        return 'video', i18n.t('UHD HDR/DV 内封 PGS')
     end
     if hdr and kind then
-        return 'sdr', (subtitle and subtitle.external and 'HDR 外置 ' or 'HDR ') .. kind
+        return 'sdr', (subtitle and subtitle.external and i18n.t('HDR 外置 ') or 'HDR ') .. kind
     end
 
-    return 'video', kind and ('SDR ' .. kind) or '非 HDR 或无图形字幕'
+    return 'video', kind and ('SDR ' .. kind) or i18n.t('非 HDR 或无图形字幕')
+end
+
+-- 状态由 video-params/track-list 驱动，在 HDR 片源播放期间会被反复触发。
+-- 无去重时每次都提交相同内容，仅增加属性系统与日志负担；比较须用 native 值，
+-- 因为 user-data 字符串经 mp.get_property 读回会带 JSON 引号。
+-- 属性不存在时 get_property_native 会返回 (nil, "property not found")，必须先用
+-- 局部变量收敛成单值，否则内层 tonumber 会把这句错误描述当成第二个实参。
+local function set_if_changed(name, value)
+    local current = mp.get_property_native(name)
+    if tostring(current) ~= tostring(value) then
+        mp.set_property(name, value)
+    end
+end
+
+local function set_number_if_changed(name, value)
+    local target = tonumber(value)
+    if not target then return end
+    local current = mp.get_property_native(name)
+    if tonumber(current) ~= target then
+        mp.set_property_number(name, target)
+    end
+end
+
+-- Core image-subtitle options can invalidate renderer state even when the
+-- effective value is unchanged.  Dynamic DV/HDR metadata used to make the
+-- aggregate video-params observer submit the same two options many times per
+-- second.  Keep the core write path idempotent as a second line of defence.
+local function set_core_if_changed(name, value)
+    local target = tostring(value)
+    local current = mp.get_property_native(name)
+    if current ~= nil and tostring(current) == target then
+        return true, nil
+    end
+    return pcall(mp.set_property, name, target)
 end
 
 local function publish_state(supported, peak, requested, effective, reason)
     local effective_peak = effective == 'video' and 'video' or tostring(peak)
-    mp.set_property('user-data/image-subs-brightness/supported', supported and 'yes' or 'no')
-    mp.set_property_number('user-data/image-subs-brightness/peak', peak)
-    mp.set_property('user-data/image-subs-brightness/label', label_for_peak(peak))
-    mp.set_property('user-data/image-subs-brightness/mode', requested)
-    mp.set_property('user-data/image-subs-brightness/mode-label', label_for_mode(requested))
-    mp.set_property('user-data/image-subs-brightness/effective-mode', effective)
-    mp.set_property('user-data/image-subs-brightness/effective-label', label_for_mode(effective))
-    mp.set_property('user-data/image-subs-brightness/effective-peak', effective_peak)
-    mp.set_property('user-data/image-subs-brightness/reason', reason or '')
+    set_if_changed('user-data/image-subs-brightness/supported', supported and 'yes' or 'no')
+    set_number_if_changed('user-data/image-subs-brightness/peak', peak)
+    set_if_changed('user-data/image-subs-brightness/label', label_for_peak(peak))
+    set_if_changed('user-data/image-subs-brightness/mode', requested)
+    set_if_changed('user-data/image-subs-brightness/mode-label', label_for_mode(requested))
+    set_if_changed('user-data/image-subs-brightness/effective-mode', effective)
+    set_if_changed('user-data/image-subs-brightness/effective-label', label_for_mode(effective))
+    set_if_changed('user-data/image-subs-brightness/effective-peak', effective_peak)
+    set_if_changed('user-data/image-subs-brightness/reason', reason or '')
 end
 
 local function persist_settings()
@@ -141,9 +176,9 @@ local function apply_settings(show_osd)
     local effective, reason = resolve_mode()
 
     if supported then
-        local color_ok, color_err = pcall(mp.set_property, 'image-subs-colorspace', effective)
+        local color_ok, color_err = set_core_if_changed('image-subs-colorspace', effective)
         local effective_peak = effective == 'video' and 'video' or tostring(peak)
-        local peak_ok, peak_err = pcall(mp.set_property, 'image-subs-hdr-peak', effective_peak)
+        local peak_ok, peak_err = set_core_if_changed('image-subs-hdr-peak', effective_peak)
         if not color_ok or not peak_ok then
             supported = false
             msg.error('无法应用图形字幕设置：' .. tostring(color_err or peak_err))
@@ -154,12 +189,12 @@ local function apply_settings(show_osd)
     if show_osd then
         if supported then
             local mode_text = requested == 'auto'
-                and string.format('自动 → %s（%s）', label_for_mode(effective), reason)
+                and string.format(i18n.t('自动 → %s（%s）'), label_for_mode(effective), reason)
                 or label_for_mode(effective)
-            local peak_text = effective == 'video' and '峰值随视频' or label_for_peak(peak)
-            mp.osd_message(string.format('HDR 图形字幕：%s；%s', mode_text, peak_text), 3)
+            local peak_text = effective == 'video' and i18n.t('峰值随视频') or label_for_peak(peak)
+            mp.osd_message(string.format(i18n.t('HDR 图形字幕：%s；%s'), mode_text, peak_text), 3)
         else
-            mp.osd_message('当前 mpv 核心不支持独立图形字幕色彩管理', 3)
+            mp.osd_message(i18n.t('当前 mpv 核心不支持独立图形字幕色彩管理'), 3)
         end
     end
 end
@@ -179,7 +214,7 @@ end
 mp.register_script_message('set', function(value)
     local peak = normalize_peak(value)
     if not peak then
-        mp.osd_message('无效的图形字幕亮度', 2)
+        mp.osd_message(i18n.t('无效的图形字幕亮度'), 2)
         return
     end
     o.peak = peak
@@ -194,7 +229,7 @@ end)
 mp.register_script_message('set-mode', function(value)
     local mode = normalize_mode(value)
     if not mode then
-        mp.osd_message('无效的图形字幕色彩模式', 2)
+        mp.osd_message(i18n.t('无效的图形字幕色彩模式'), 2)
         return
     end
     o.mode = mode
@@ -203,7 +238,18 @@ mp.register_script_message('set-mode', function(value)
 end)
 
 mp.observe_property('track-list', 'native', schedule_apply)
-mp.observe_property('video-params', 'native', schedule_apply)
+-- Do not observe the aggregate video-params table: Dolby Vision/HDR dynamic
+-- metadata can update it many times per second even though subtitle colour
+-- policy has not changed.  Only the fields resolve_mode() actually consumes
+-- are relevant here.
+for _, property in ipairs({
+    'video-params/gamma',
+    'video-params/w',
+    'video-params/h',
+    'current-tracks/video/dolby-vision-profile',
+}) do
+    mp.observe_property(property, 'native', schedule_apply)
+end
 mp.register_event('file-loaded', schedule_apply)
 mp.register_event('playback-restart', schedule_apply)
 

@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 -- ontop_mode.lua
 -- 三态置顶图钉按钮：取消置顶 / 播放时置顶 / 始终置顶
 -- 独立悬浮版：不依赖 uosc.conf，不需要快捷键
@@ -51,9 +52,9 @@ local opts = {
 options.read_options(opts, 'ontop_mode')
 
 local modes = {
-    { id = 'always',  label = '始终置顶'   },
-    { id = 'playing', label = '播放时置顶' },
-    { id = 'off',     label = '取消置顶'   },
+    { id = 'always',  label = i18n.t('始终置顶')   },
+    { id = 'playing', label = i18n.t('播放时置顶') },
+    { id = 'off',     label = i18n.t('取消置顶')   },
 }
 
 -- 默认：播放时置顶
@@ -335,7 +336,9 @@ local function set_ontop_by_mode()
     local mode = current().id
     local target
 
-    if mode == 'always' then
+    if mp.get_property_bool('user-data/pip/active', false) then
+        target = true
+    elseif mode == 'always' then
         target = true
     elseif mode == 'off' then
         target = false
@@ -392,13 +395,15 @@ local function cycle()
     if index > #modes then index = 1 end
 
     apply()
-    show_feedback('置顶模式：' .. current().label)
+    show_feedback(i18n.t('置顶模式：') .. current().label)
 end
 
 mp.register_script_message('cycle', cycle)
 
 -- uosc 顶栏按钮点击 → 三态循环
 local function sync_from_ontop(_, value)
+    -- Ignore notifications made obsolete by a subsequent internal update.
+    if value ~= mp.get_property_bool('ontop', false) then return end
     if value == expected_ontop then return end
     cycle()
 end
@@ -422,6 +427,9 @@ mp.observe_property('pause', 'bool', apply)
 mp.observe_property('idle-active', 'bool', apply)
 mp.observe_property('fullscreen', 'bool', draw_button)
 mp.observe_property('ontop', 'bool', sync_from_ontop)
+-- A temporary PiP override changes only the effective window state. Explicit
+-- pin/shortcut actions still cycle and persist the user's three-state mode.
+mp.observe_property('user-data/pip/active', 'bool', set_ontop_by_mode)
 
 mp.register_event('file-loaded', apply)
 mp.register_event('end-file', apply)
@@ -442,5 +450,5 @@ mp.add_timeout(0.5, function()
     if saved then index = saved end
     initial_load_done = true
     apply()
-    show_feedback('置顶模式：' .. current().label)
+    show_feedback(i18n.t('置顶模式：') .. current().label)
 end)

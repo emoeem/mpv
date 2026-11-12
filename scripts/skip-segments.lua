@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 local mp = require('mp')
 local msg = require('mp.msg')
 local options = require('mp.options')
@@ -1256,7 +1257,7 @@ local function lookup()
         if #chosen == 0 and had_error then lookup_status = 'error' end
         apply_ranges(chosen)
         if #chosen == 0 and o.auto_skip then
-            show_message(had_error and '片头片尾查询失败' or '未找到片头片尾数据')
+            show_message(had_error and i18n.t('片头片尾查询失败') or i18n.t('未找到片头片尾数据'))
         end
     end
 
@@ -1272,7 +1273,7 @@ on_time_pos = function(_, position)
         if not range.skipped and position >= range.start - 0.15 and position < range['end'] - 0.2 then
             range.skipped = true
             local label = range.kind == 'intro' and '片头' or '片尾'
-            show_message('已自动跳过' .. label, 1.8)
+            show_message(i18n.t('已自动跳过') .. label, 1.8)
             local duration = mp.get_property_number('duration', 0)
             if range.kind == 'outro' and range['end'] >= duration - 1 then
                 local current_generation = generation
@@ -1298,7 +1299,7 @@ local function toggle_auto()
     persist_option('auto_skip', o.auto_skip)
     sync_range_chapters()
     set_buttons()
-    show_message(o.auto_skip and '自动跳过片头片尾：开启' or '自动跳过片头片尾：关闭')
+    show_message(o.auto_skip and i18n.t('自动跳过片头片尾：开启') or i18n.t('自动跳过片头片尾：关闭'))
     if o.auto_skip then on_time_pos(nil, mp.get_property_number('time-pos')) end
 end
 

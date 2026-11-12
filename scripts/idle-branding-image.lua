@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 local mp = require 'mp'
 local msg = require 'mp.msg'
 local options = require 'mp.options'
@@ -143,12 +144,15 @@ end
 
 local function branding_enabled()
     if branding_state ~= nil then return branding_state end
-    return mp.get_property('user-data/uosc/idle-branding', 'yes') ~= 'no'
+    return mp.get_property_native('user-data/uosc/idle-branding', 'yes') ~= 'no'
 end
 
 local function foreground_overlay_open()
     return mp.get_property_bool('user-data/file_browser/open', false)
         or mp.get_property_bool('user-data/yaozhi-donation/visible', false)
+        or mp.get_property_bool('user-data/yaozhi-home/visible', false)
+        -- 品牌图居中绘制，会落进统计面板左上角的文字区域；统计打开时让位。
+        or mp.get_property_native('user-data/stats/visible') == 'yes'
         or mp.get_property_native('user-data/uosc/menu/type') ~= nil
 end
 
@@ -233,12 +237,12 @@ end
 
 local function select_image()
     if picker_pending then
-        mp.osd_message('启动页图片选择窗口已打开', 2)
+        mp.osd_message(i18n.t('启动页图片选择窗口已打开'), 2)
         return
     end
     local picker_info = picker_path and utils.file_info(picker_path)
     if package.config:sub(1, 1) ~= '\\' or not picker_info or not picker_info.is_file then
-        mp.osd_message('当前系统无法打开图片选择器', 3)
+        mp.osd_message(i18n.t('当前系统无法打开图片选择器'), 3)
         return
     end
 
@@ -266,7 +270,7 @@ local function select_image()
         if not success or not result or result.status ~= 0 then
             msg.error('Idle branding image conversion failed: '
                 .. tostring(result and result.stderr or error or 'unknown error'))
-            mp.osd_message('启动页图片读取失败', 3)
+            mp.osd_message(i18n.t('启动页图片读取失败'), 3)
             render_overlay()
             return
         end
@@ -274,7 +278,7 @@ local function select_image()
         local data = utils.parse_json(result.stdout or '')
         if not data then
             msg.error('Idle branding image picker returned invalid data')
-            mp.osd_message('启动页图片读取失败', 3)
+            mp.osd_message(i18n.t('启动页图片读取失败'), 3)
             render_overlay()
             return
         end
@@ -290,7 +294,7 @@ local function select_image()
         persist_options()
         publish_mode()
         render_overlay()
-        mp.osd_message('启动页图片：已使用自定义图案', 2)
+        mp.osd_message(i18n.t('启动页图片：已使用自定义图案'), 2)
     end)
 end
 
@@ -300,7 +304,7 @@ local function reset_image()
     remove_overlay()
     publish_mode()
     render_overlay()
-    mp.osd_message('启动页图片：已恢复默认图案', 2)
+    mp.osd_message(i18n.t('启动页图片：已恢复默认图案'), 2)
 end
 
 mp.register_script_message('select', select_image)
@@ -314,7 +318,9 @@ mp.observe_property('idle-active', 'bool', render_overlay)
 mp.observe_property('osd-dimensions', 'native', render_overlay)
 mp.observe_property('user-data/uosc/idle-branding', 'string', on_branding_state_change)
 mp.observe_property('user-data/file_browser/open', 'bool', render_overlay)
+mp.observe_property('user-data/stats/visible', 'native', render_overlay)
 mp.observe_property('user-data/yaozhi-donation/visible', 'bool', render_overlay)
+mp.observe_property('user-data/yaozhi-home/visible', 'bool', render_overlay)
 mp.observe_property('user-data/uosc/menu/type', 'native', render_overlay)
 mp.register_event('shutdown', remove_overlay)
 

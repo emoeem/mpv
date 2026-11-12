@@ -1,10 +1,14 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
+local Color = require("modules/color")
 local msg = require('mp.msg')
 local utils = require('mp.utils')
+local SourceCache = require('modules/source_cache')
 
 local user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
 local function build_curl_args(url, extra_headers)
-    local args = {'curl', '-L', '-s', '--user-agent', user_agent}
+    local args = {'curl', '-L', '-s', '--connect-timeout', '4', '--max-time', '20',
+        '--fail', '--user-agent', user_agent}
     extra_headers = extra_headers or {}
     for _, h in ipairs(extra_headers) do
         table.insert(args, '-H')
@@ -75,8 +79,12 @@ local function yk_t_sign(token, t, appkey, data)
     return MD5.sum(text)
 end
 
+local function extract_vid(url)
+    return url:match('/v_show/id_([%w=]+)') or url:match('id_([%w=]+)') or url:match("[?&]vid=([^&]+)")
+end
+
 local function get_vinfos_by_video_id(url, callback)
-    local vid = url:match('/v_show/id_([%w=]+)') or url:match('id_([%w=]+)') or url:match("[?&]vid=([^&]+)")
+    local vid = extract_vid(url)
     if not vid then
         callback(nil)
         return
@@ -165,37 +173,35 @@ local function youku_parse_response(out, server, output_table)
 
     if not parsed then
         msg.warn('youku parse failed for response; skipping')
-        return 0
+        return 0, false
     end
 
-    if tostring(parsed.code) == '-1' then return 0 end
+    if tostring(parsed.code) == '-1' then return 0, false end
     local danmus = parsed.data and parsed.data.result or parsed.result
-    if not danmus then return 0 end
+    if type(danmus) ~= 'table' then return 0, false end
 
     local added = 0
     for _, d in ipairs(danmus) do
-        local content = {}
         local timepoint = tonumber(d.playat) and tonumber(d.playat)/1000 or 0
         local properties = {}
         if d.propertis then
             local ps = utils.parse_json(d.propertis)
             if ps then properties = ps end
         end
-        local color = tonumber(properties.color) or 16777215
-        content.c = string.format('%s,%s,%s,25,,,', timepoint, color, 1)
-        content.m = d.content or ''
-        table.insert(output_table, content)
+        table.insert(output_table, {time = timepoint, type = 1, size = 25,
+            color = Color.normalize(properties.color), text = d.content or ''})
         added = added + 1
     end
 
-    return added
+    return added, true
 end
 
 -- Helper: 最终保存并加载弹幕
 local function youku_final_save(output_table, url, callback)
     local ok = #output_table > 0
-    local final_json_str = utils.format_json(output_table)
-    save_danmaku_json(url, final_json_str)
+    local source = DANMAKU.sources[url] or {from = 'user_custom'}
+    source.data = output_table
+    DANMAKU.sources[url] = source
     load_danmaku(true)
     callback(ok)
 end
@@ -260,7 +266,7 @@ local function gather_cna_and_tk(cb)
 end
 
 -- Helper: 从已知参数发起 youku 弹幕请求并处理结果
-local function start_youku_requests(source_url, vid, duration, cna, tk, callback)
+local function start_youku_requests(source_url, vid, duration, cna, tk, callback, cached_path)
     local max_mat = math.floor(duration / 60) + 1
     if max_mat < 1 then max_mat = 1 end
     msg.verbose(string.format('vid: %s duration: %s mats: %d', vid, tostring(duration), max_mat))
@@ -271,18 +277,22 @@ local function start_youku_requests(source_url, vid, duration, cna, tk, callback
     end
 
     local output_table = {}
+    local complete = true
 
     local function per_response_cb(server, err, out)
         if err then
+            complete = false
             msg.warn('youku request failed: ' .. tostring(err))
             return
         end
-        if not out or out == '' then return end
-        youku_parse_response(out, server, output_table)
+        if not out or out == '' then complete = false; return end
+        local _, valid = youku_parse_response(out, server, output_table)
+        if not valid then complete = false end
     end
 
     local function final_cb()
         youku_final_save(output_table, source_url, callback)
+        if complete then SourceCache.save_later(cached_path, vid, output_table) end
     end
 
     parallel_requests(servers, youku_build_curl_args_for_server, per_response_cb, final_cb, {concurrency = 6, per_request_timeout = 20})
@@ -297,27 +307,41 @@ function load_danmaku_for_youku(path, callback)
         return
     end
 
-    get_vinfos_by_video_id(url, function(vid, duration)
-        if not vid then
-            show_message('获取优酷 video_id 失败', 3)
+    local id = extract_vid(url)
+    if not id then callback(false); return end
+    local cached_path = SourceCache.path('youku', id)
+    local cached = SourceCache.read(cached_path, id)
+    if cached then
+        msg.info('复用本集完整弹幕缓存')
+        youku_final_save(cached, url, callback)
+        return
+    end
+    -- Metadata and anonymous request tokens are independent. Fetch them
+    -- concurrently instead of adding another network round trip to startup.
+    local info, tokens
+    local function ready()
+        if not info or not tokens then return end
+        if not info.vid then
+            show_message(i18n.t('获取优酷 video_id 失败'), 3)
             callback(false)
             return
         end
-
-        gather_cna_and_tk(function(res)
-            local cna = res.cna
-            local tk = res.tk
-            if not cna then
-                show_message('获取优酷 cna 失败', 3)
-                callback(false)
-                return
-            end
-            if not tk then
-                show_message('获取优酷 tk_enc 失败', 3)
-                callback(false)
-                return
-            end
-            start_youku_requests(url, vid, duration, cna, tk, callback)
-        end)
+        local cna = tokens.cna
+        local tk = tokens.tk
+        if not cna then
+            show_message(i18n.t('获取优酷 cna 失败'), 3)
+            callback(false)
+            return
+        end
+        if not tk then
+            show_message(i18n.t('获取优酷 tk_enc 失败'), 3)
+            callback(false)
+            return
+        end
+        start_youku_requests(url, info.vid, info.duration, cna, tk, callback, cached_path)
+    end
+    get_vinfos_by_video_id(url, function(vid, duration)
+        info = {vid = vid, duration = duration}; ready()
     end)
+    gather_cna_and_tk(function(res) tokens = res; ready() end)
 end

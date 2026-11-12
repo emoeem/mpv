@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 local mp = require 'mp'
 local msg = require 'mp.msg'
 local options = require 'mp.options'
@@ -95,7 +96,7 @@ local function set_pause_on_minimize(value, show_osd)
     publish_state()
 
     if show_osd then
-        mp.osd_message(o.pause_on_minimize and '最小化自动暂停已开启' or '最小化自动暂停已关闭', 2.2)
+        mp.osd_message(o.pause_on_minimize and i18n.t('最小化自动暂停已开启') or i18n.t('最小化自动暂停已关闭'), 2.2)
     end
 end
 

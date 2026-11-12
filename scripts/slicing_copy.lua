@@ -4,6 +4,7 @@ local options = require "mp.options"
 
 local cut_pos = nil
 local copy_audio = true
+mp.set_property_native("user-data/slicing-copy/copy-audio", copy_audio)
 local ext_map = {
     ["mpegts"] = "ts",
 }
@@ -189,11 +190,12 @@ local function toggle_mark()
     else
         cut_pos = pos
         info(string.format("Marked %s as start position", timestamp(pos)))
-    end
+    end    
 end
 
 local function toggle_audio()
     copy_audio = not copy_audio
+    mp.set_property_native("user-data/slicing-copy/copy-audio", copy_audio)
     info("Audio capturing is " .. (copy_audio and "enabled" or "disabled"))
 end
 

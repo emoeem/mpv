@@ -1,4 +1,5 @@
-local Color = require "modules/color"
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
+local Color = require 'modules/color'
 local msg   = require 'mp.msg'
 local utils = require 'mp.utils'
 local s2t   = require("dicts/s2t_chars")
@@ -157,20 +158,26 @@ end
 local ch_convert_cache = {}
 local ch_cache_keys = {}
 local ch_cache_max = 5000
+local ch_cache_next, ch_cache_mode = 1, nil
 
 local function ch_convert_cached(text)
     if type(text) ~= "string" or text == "" then return text end
+    if options.chConvert ~= 1 and options.chConvert ~= 2 then return text end
+    if ch_cache_mode ~= options.chConvert then
+        ch_convert_cache, ch_cache_keys = {}, {}
+        ch_cache_next, ch_cache_mode = 1, options.chConvert
+    end
     local cached = ch_convert_cache[text]
     if cached ~= nil then return cached end
 
     local converted = ch_convert(text)
+    -- A fixed ring avoids moving all 5,000 keys for every new comment in a
+    -- long episode. Disabled conversion also needs no cache at all.
+    local old_key = ch_cache_keys[ch_cache_next]
+    if old_key then ch_convert_cache[old_key] = nil end
     ch_convert_cache[text] = converted
-    ch_cache_keys[#ch_cache_keys+1] = text
-
-    if #ch_cache_keys > ch_cache_max then
-        local old_key = table.remove(ch_cache_keys, 1)
-        ch_convert_cache[old_key] = nil
-    end
+    ch_cache_keys[ch_cache_next] = text
+    ch_cache_next = ch_cache_next % ch_cache_max + 1
 
     return converted
 end
@@ -229,7 +236,7 @@ local function merge_duplicate_danmaku(danmakus, threshold)
                         end
                     end
                 end
-                
+            
                 for _, cg in ipairs(color_groups) do
                     table.insert(final_groups, cg)
                 end
@@ -246,11 +253,18 @@ local function merge_duplicate_danmaku(danmakus, threshold)
         local i = 1
         while i <= #group do
             local base = group[i]
+            local color_source = base.color_source
             local times = { base.time }
             local count = 1
             local j = i + 1
 
             while j <= #group and abs(group[j].time - base.time) <= threshold do
+                -- A merged uncoloured copy must not cause an explicitly
+                -- authored colour (including white) to receive smart fill.
+                if color_source and Color.normalize(color_source.color) == nil
+                    and group[j].color ~= nil then
+                    color_source = group[j].color_source
+                end
                 times[#times+1] = group[j].time
                 count = count + 1
                 j = j + 1
@@ -269,6 +283,7 @@ local function merge_duplicate_danmaku(danmakus, threshold)
                 type = base.type,
                 size = base.size,
                 color = base.color,
+                color_source = color_source,
                 text = base.text,
                 source = base.source,
                 orig_time = base.orig_time,
@@ -326,19 +341,14 @@ function parse_xml_danmaku(xml_string)
     -- [^>]* 匹配其他 attributes
     -- %f[^%s] 确保 p= 前面是空白字符
     for p_attr, text in xml_string:gmatch('<d%s+[^>]*%f[^%s]p="([^"]+)"[^>]*>([^<]+)</d>') do
-        local params = {}
-        local i = 1
-        for val in p_attr:gmatch("([^,]+)") do
-            params[i] = tonumber(val)
-            i = i + 1
-        end
-
-        if params[1] and params[2]  and params[3] and params[4] then
+        local params = Color.csv(p_attr)
+        local time, mode, size = tonumber(params[1]), tonumber(params[2]), tonumber(params[3])
+        if time and mode and size then
             table.insert(danmakus, {
-                time = params[1],
-                type = params[2] or 1,
-                size = params[3] or 25,
-                color = params[4] or 0xFFFFFF,
+                time = time,
+                type = mode,
+                size = size,
+                color = Color.normalize(params[4]),
                 text = xml_unescape(text)
             })
         end
@@ -365,19 +375,14 @@ function parse_json_danmaku(json_string)
         local c = entry.c
         local text = entry.m or ""
         if type(c) == "string" then
-            local params = {}
-            local i = 1
-            for val in c:gmatch("([^,]+)") do
-                params[i] = tonumber(val)
-                i = i + 1
-            end
-
-            if params[1] and params[2] and params[3] and params[4] then
+            local params = Color.csv(c)
+            local time, mode, size = tonumber(params[1]), tonumber(params[3]), tonumber(params[4])
+            if time and mode and size then
                 table.insert(danmakus, {
-                    time = params[1],
-                    color = params[2] or 0xFFFFFF,
-                    type = params[3] or 1,
-                    size = params[4] or 25,
+                    time = time,
+                    color = Color.normalize(params[2]),
+                    type = mode,
+                    size = size,
                     text = text
                 })
             end
@@ -442,9 +447,12 @@ function DanmakuArray:new(res_x, res_y, font_size)
     return obj
 end
 
-function DanmakuArray:set_time_length(row, time, length)
-    if row > 0 and row <= self.rows then
-        self.time_length_array[row] = { time = time, length = length, empty = false }
+function DanmakuArray:set_time_length(row, time, length, kind, duration, span)
+    for i = row, math.min(self.rows, row + (span or 1) - 1) do
+        if i > 0 then
+            self.time_length_array[i] = {time=time, length=length, empty=false,
+                kind=kind or 'rolling', until_time=time + (duration or 0)}
+        end
     end
 end
 
@@ -470,32 +478,29 @@ function DanmakuArray:is_empty(row)
 end
 
 -- 滚动弹幕 Y 坐标算法
-function get_position_y(font_size, appear_time, text_length, resolution_x, roll_time, array)
+function get_position_y(font_size, appear_time, text_length, resolution_x, roll_time, array, span)
     local velocity = (text_length + resolution_x) / roll_time
-
-    for i = 1, array.rows do
-        local previous_appear_time = array:get_time(i)
-        if array:is_empty(i) then
-            array:set_time_length(i, appear_time, text_length)
-            return 1 + (i - 1) * font_size
+    span = span or 1
+    for i = 1, array.rows - span + 1 do
+        local clear = true
+        for row = i, i + span - 1 do
+            local previous = array.time_length_array[row]
+            if not previous.empty then
+                if previous.kind == 'fixed' then
+                    clear = appear_time >= previous.until_time
+                else
+                    local previous_velocity = (previous.length + resolution_x) / roll_time
+                    local delta_velocity = velocity - previous_velocity
+                    local delta_x = (appear_time - previous.time) * previous_velocity - previous.length
+                    clear = delta_x >= 0 and (delta_velocity <= 0
+                        or delta_x / delta_velocity >= roll_time)
+                end
+                if not clear then break end
+            end
         end
-
-        local previous_length = array:get_length(i)
-        local previous_velocity = (previous_length + resolution_x) / roll_time
-        local delta_velocity = velocity - previous_velocity
-        local delta_x = (appear_time - previous_appear_time) * previous_velocity - previous_length
-
-        if delta_x >= 0 then
-            if delta_velocity <= 0 then
-                array:set_time_length(i, appear_time, text_length)
-                return 1 + (i - 1) * font_size
-            end
-
-            local delta_time = delta_x / delta_velocity
-            if delta_time >= roll_time then
-                array:set_time_length(i, appear_time, text_length)
-                return 1 + (i - 1) * font_size
-            end
+        if clear then
+            array:set_time_length(i, appear_time, text_length, 'rolling', roll_time, span)
+            return 1 + (i - 1) * font_size
         end
     end
     -- 所有行都被占用，放弃渲染
@@ -503,29 +508,54 @@ function get_position_y(font_size, appear_time, text_length, resolution_x, roll_
 end
 
 -- 固定弹幕 Y 坐标算法
-function get_fixed_y(font_size, appear_time, fixtime, array, from_top)
+function get_fixed_y(font_size, appear_time, fixtime, array, from_top, span)
+    span = span or 1
     local row_start, row_end, row_step
     if from_top then
-        row_start, row_end, row_step = 1, array.rows, 1
+        row_start, row_end, row_step = 1, array.rows - span + 1, 1
     else
-        row_start, row_end, row_step = array.rows, 1, -1
+        row_start, row_end, row_step = array.rows - span + 1, 1, -1
     end
 
     for i = row_start, row_end, row_step do
-        local previous_appear_time = array:get_time(i)
-        if array:is_empty(i) then
-            array:set_time_length(i, appear_time, 0)
-            return (i - 1) * font_size + 1
-        else
-            local delta_time = appear_time - previous_appear_time
-            if delta_time > fixtime then
-                array:set_time_length(i, appear_time, 0)
-                return (i - 1) * font_size + 1
+        local clear = true
+        for row = i, i + span - 1 do
+            local previous = array.time_length_array[row]
+            if not previous.empty and appear_time < previous.until_time then
+                clear = false
+                break
             end
+        end
+        if clear then
+            array:set_time_length(i, appear_time, 0, 'fixed', fixtime, span)
+            return (i - 1) * font_size + 1
         end
     end
     -- 所有行都被占用，放弃渲染
     return nil
+end
+
+-- Layout uses plain text, never ASS escape/style tags. Leave room for bold
+-- glyphs, wide Latin letters and outlines without synchronous libass calls for
+-- every comment. Multiline comments reserve a contiguous block of lanes.
+local function estimate_text_size(text, font_size, width_padding)
+    local longest, line_width, lines = 0, 0, 1
+    for ch in utf8_iter(text) do
+        if ch == '\n' then
+            longest, line_width, lines = math.max(longest, line_width), 0, lines + 1
+        elseif ch ~= '\r' then
+            local width = 1
+            if #ch == 1 then
+                if ch:match('[MW@%%&]') then width = 1
+                elseif ch:match('[ilI%.,:;!|%s]') then width = 0.45
+                else width = 0.75 end
+            end
+            line_width = line_width + width * font_size
+        end
+    end
+    local padding = 2 * math.max(0, tonumber(options.outline) or 0)
+        + math.max(0, tonumber(options.shadow) or 0) + 2
+    return math.ceil(math.max(longest, line_width) * 1.1 + padding + (width_padding or 0)), lines
 end
 
 -- 将弹幕转换为 XML 格式
@@ -543,7 +573,7 @@ function convert_danmaku_to_xml(danmaku_out)
                     time = adjusted_time,
                     type = d.type,
                     size = d.size,
-                    color = d.color,
+                    color = Color.normalize(d.color),
                     text = d.text,
                     source = url,
                 })
@@ -552,7 +582,7 @@ function convert_danmaku_to_xml(danmaku_out)
     end
 
     if #danmakus == 0 then
-        show_message("弹幕内容为空，无法保存", 3)
+        show_message(i18n.t("弹幕内容为空，无法保存"), 3)
         msg.verbose("弹幕内容为空，无法保存")
         COMMENTS = {}
         return false
@@ -564,7 +594,7 @@ function convert_danmaku_to_xml(danmaku_out)
        local time = d.time
        local type = d.type or 1
        local size = d.size or 25
-       local color = d.color or 0xFFFFFF
+       local color = Color.normalize(d.color) or ""
        local text = d.text or ""
 
        text = text:gsub("&", "&amp;")
@@ -580,76 +610,125 @@ function convert_danmaku_to_xml(danmaku_out)
     -- 写入 XML 文件
     local file = io.open(danmaku_out, "w")
     if not file then
-       show_message("无法写入目标 XML 文件", 3)
+       show_message(i18n.t("无法写入目标 XML 文件"), 3)
        msg.info("无法写入目标 XML 文件: " .. danmaku_out)
        return false
     end
     file:write(table.concat(xml))
     file:close()
-    show_message("转换 XML 弹幕成功： " .. danmaku_out, 3)
+    show_message(i18n.t("转换 XML 弹幕成功： ") .. danmaku_out, 3)
     msg.info("转换 XML 弹幕成功： " .. danmaku_out)
     return true
 end
 
-function convert_danmaku_to_ass_events(force)
-    local per_source_lists = {}
-    for url, source in pairs(DANMAKU.sources) do
-        if not source.blocked and source.data then
-            local get_cached_delay = make_delay_lookup(source)
+local prepared_danmakus, prepared_sources
+local geometry_cache, geometry_keys = {}, {}
+-- Reuse text preparation across new canvases of one immutable VOD snapshot.
+-- These are content-byte/entry limits, not a claim about total Lua memory.
+local prepared_text_cache
+local prepared_text_limit, prepared_text_bytes = 16384, 2 * 1024 * 1024
+local function clear_prepared_layouts()
+    prepared_danmakus, prepared_sources = nil, nil
+    geometry_cache, geometry_keys = {}, {}
+    prepared_text_cache = nil
+end
+mp.register_event('start-file', clear_prepared_layouts)
+mp.register_event('end-file', clear_prepared_layouts)
 
-            local list = {}
-            for _, d in ipairs(source.data) do
-                local base_time = d.orig_time or d.time
-                if d.orig_time == nil then d.orig_time = base_time end
-                local adjusted_time = base_time + get_cached_delay(base_time)
-                local entry = {
-                    orig_time = d.orig_time,
-                    time = adjusted_time,
-                    type = d.type,
-                    size = d.size,
-                    color = d.color,
-                    text = d.text,
-                    source = url,
-                }
-                if not is_blacklisted(d.text, black_patterns) then
-                    table.insert(list, entry)
+function convert_danmaku_to_ass_events(force, geometry_only)
+    local canvas = get_danmaku_canvas and get_danmaku_canvas() or {
+        width=1920, height=1080, font_size=tonumber(options.fontsize) or 50,
+        line_height=math.ceil((tonumber(options.fontsize) or 50) * 1.2
+            + 2 * math.max(0, tonumber(options.outline) or 0) + 1), key='legacy'}
+    local danmakus
+    if geometry_only and prepared_sources == DANMAKU.sources and prepared_danmakus then
+        if geometry_cache[canvas.key] then COMMENTS = geometry_cache[canvas.key]; return end
+        danmakus = prepared_danmakus
+    else
+        clear_prepared_layouts()
+        local per_source_lists = {}
+        for url, source in pairs(DANMAKU.sources) do
+            if not source.blocked and source.data then
+                local get_cached_delay = make_delay_lookup(source)
+
+                local list = {}
+                for _, d in ipairs(source.data) do
+                    local base_time = d.orig_time or d.time
+                    if d.orig_time == nil then d.orig_time = base_time end
+                    local adjusted_time = base_time + get_cached_delay(base_time)
+                    local entry = {
+                        orig_time = d.orig_time,
+                        time = adjusted_time,
+                        type = d.type,
+                        size = d.size,
+                        color = Color.normalize(d.color),
+                        color_source = d,
+                        text = d.text,
+                        source = url,
+                        live = source.live == true,
+                        sequence = d.live_sequence,
+                    }
+                    if not is_blacklisted(d.text, black_patterns) then
+                        table.insert(list, entry)
+                    end
+                end
+
+                if #list > 0 then
+                    table.sort(list, function(a, b) return a.time < b.time end)
+                    per_source_lists[#per_source_lists + 1] = list
                 end
             end
+        end
 
-            if #list > 0 then
-                table.sort(list, function(a, b) return a.time < b.time end)
-                per_source_lists[#per_source_lists + 1] = list
+        danmakus = {}
+
+        local heap = new_min_heap()
+        for li = 1, #per_source_lists do
+            local lst = per_source_lists[li]
+            if lst and #lst > 0 then
+                heap.push({ time = lst[1].time, list_idx = li, pos = 1, entry = lst[1] })
             end
         end
-    end
 
-    local danmakus = {}
+        while true do
+            local node = heap.pop()
+            if not node then break end
+            table.insert(danmakus, node.entry)
+            local li = node.list_idx
+            local next_pos = node.pos + 1
+            local lst = per_source_lists[li]
+            if lst and lst[next_pos] then
+                heap.push({ time = lst[next_pos].time, list_idx = li, pos = next_pos, entry = lst[next_pos] })
+            end
+        end
 
-    local heap = new_min_heap()
-    for li = 1, #per_source_lists do
-        local lst = per_source_lists[li]
-        if lst and #lst > 0 then
-            heap.push({ time = lst[1].time, list_idx = li, pos = 1, entry = lst[1] })
+        -- An incoming duplicate must not change the width/time of a live comment
+        -- already crossing the screen. Ordinary video merging stays unchanged.
+        local recorded, live = {}, {}
+        for _, d in ipairs(danmakus) do
+            local list = d.live and live or recorded
+            list[#list + 1] = d
+        end
+        danmakus = merge_duplicate_danmaku(recorded, options.merge_tolerance)
+        for _, d in ipairs(live) do danmakus[#danmakus + 1] = d end
+        if #live > 0 then
+            table.sort(danmakus, function(a, b)
+                if a.time ~= b.time then return a.time < b.time end
+                return (a.sequence or 0) < (b.sequence or 0)
+            end)
+        end
+
+        prepared_danmakus, prepared_sources = danmakus, DANMAKU.sources
+        -- Live batches keep their existing per-comment lane reservations.
+        -- Never restore a cached snapshot over a newer live reservation set.
+        for _, source in pairs(DANMAKU.sources) do
+            if source.live then prepared_danmakus, prepared_sources = nil, nil; break end
         end
     end
-
-    while true do
-        local node = heap.pop()
-        if not node then break end
-        table.insert(danmakus, node.entry)
-        local li = node.list_idx
-        local next_pos = node.pos + 1
-        local lst = per_source_lists[li]
-        if lst and lst[next_pos] then
-            heap.push({ time = lst[next_pos].time, list_idx = li, pos = next_pos, entry = lst[next_pos] })
-        end
-    end
-
-    danmakus = merge_duplicate_danmaku(danmakus, options.merge_tolerance)
 
     if #danmakus == 0 then
         if not force then
-            show_message("该集弹幕内容为空，结束加载", 3)
+            show_message(i18n.t("该集弹幕内容为空，结束加载"), 3)
             msg.verbose("该集弹幕内容为空，结束加载")
         end
         COMMENTS = {}
@@ -660,24 +739,43 @@ function convert_danmaku_to_ass_events(force)
         msg.info("已解析 " .. #danmakus .. " 条弹幕")
     end
 
-    local fontsize = tonumber(options.fontsize) or 50
+    local fontsize, line_height = canvas.font_size, canvas.line_height
+    local text_cache
+    if prepared_danmakus == danmakus then
+        if not prepared_text_cache or prepared_text_cache.mode ~= options.chConvert then
+            prepared_text_cache = {mode=options.chConvert, texts={}, bytes=0}
+        end
+        text_cache = prepared_text_cache
+        if not text_cache.widths or text_cache.fontsize ~= fontsize
+            or text_cache.padding ~= canvas.width_padding
+            or text_cache.outline ~= options.outline or text_cache.shadow ~= options.shadow then
+            text_cache.widths, text_cache.spans = {}, {}
+            text_cache.fontsize, text_cache.padding = fontsize, canvas.width_padding
+            text_cache.outline, text_cache.shadow = options.outline, options.shadow
+        end
+    end
     local scrolltime = tonumber(options.scrolltime) or 15
     local fixtime = tonumber(options.fixtime) or 5
 
-    local res_x = 1920
-    local res_y = 1080
+    local res_x, res_y = canvas.width, canvas.height
     local displayarea = math.max(0.01, math.min(1, tonumber(options.displayarea) or 1))
-    local layout_res_y = math.max(fontsize, math.floor(res_y * displayarea + fontsize + 0.5))
+    local layout_res_y = math.max(line_height, math.floor(res_y * displayarea + line_height + 0.5))
+    if canvas.max_layout_height then
+        layout_res_y = math.min(layout_res_y, canvas.max_layout_height)
+    end
+    local live_layout_key = table.concat({canvas.key, scrolltime, fixtime, layout_res_y,
+        canvas.layout_origin or 0}, ':')
 
-    local roll_array = DanmakuArray:new(res_x, layout_res_y, fontsize)
-    local top_array = DanmakuArray:new(res_x, layout_res_y, fontsize)
+    local lane_array = DanmakuArray:new(res_x, layout_res_y, line_height)
+    canvas.layout_height = lane_array.rows * line_height
 
     -- 预处理弹幕，先计算时间段以便进行数量限制
     local pre_events = {}
     for _, d in ipairs(danmakus) do
-        local time = d.type == 1 and math.floor(d.time + 0.5) or d.time
-        local orig_time = d.type == 1 and math.floor(d.orig_time + 0.5) or d.orig_time
-        local appear_time = time
+        -- Keep the source timestamp and segment delay precise. Native ASS
+        -- applies its own centisecond rounding when the track is serialized.
+        local orig_time = d.orig_time
+        local appear_time = d.time
         local danmaku_type = d.type
 
         local end_time = nil
@@ -693,28 +791,62 @@ function convert_danmaku_to_ass_events(force)
     end
 
     local ass_events = {}
-    for _, ev in ipairs(pre_events) do
+    for i, ev in ipairs(pre_events) do
         local d = ev.danmaku
         local appear_time = ev.start_time
         local danmaku_type = d.type
-        local clean_text = ch_convert_cached(decode_html_entities(d.text))
-        local text = ass_escape(clean_text)
-                    :gsub("x(%d+)$", "{\\b1\\i1}x%1")
-
-        -- 颜色统一经过 Yaozhi 的稳定智能补色；已有非白色原色保持不变。
-        local color = Color.resolve(d, options.smart_color, options.smart_color_percent)
-        local color_text = Color.tag(color)
-
+        -- Supported event order is stable within prepared_danmakus. Live
+        -- batches never use this cache or retain their source entries here.
+        local clean_text, text_length, row_span
+        if text_cache then
+            clean_text = text_cache.texts[i]
+            text_length = clean_text and text_cache.widths[i]
+            row_span = clean_text and text_cache.spans[i]
+            if not clean_text then
+                clean_text = ch_convert_cached(decode_html_entities(d.text))
+                if i <= prepared_text_limit
+                    and text_cache.bytes + #clean_text <= prepared_text_bytes then
+                    text_cache.texts[i] = clean_text
+                    text_cache.bytes = text_cache.bytes + #clean_text
+                end
+            end
+            if not text_length then
+                text_length, row_span = estimate_text_size(clean_text, fontsize, canvas.width_padding)
+                if text_cache.texts[i] then
+                    text_cache.widths[i], text_cache.spans[i] = text_length, row_span
+                end
+            end
+        else
+            -- Keep the live path's original preparation work unchanged.
+            clean_text = ch_convert_cached(decode_html_entities(d.text))
+            text_length, row_span = estimate_text_size(clean_text, fontsize, canvas.width_padding)
+        end
         local style, effect
         local pos, move = nil, nil
+        local saved = d.live and d.color_source._live_layout
+        if saved and saved.key ~= live_layout_key then saved = nil end
+        local function live_y(array, length, choose)
+            local y
+            if saved then
+                y = saved.y
+                if y then array:set_time_length(math.floor((y - 1) / line_height) + 1,
+                    appear_time, length, danmaku_type <= 3 and 'rolling' or 'fixed',
+                    danmaku_type <= 3 and scrolltime or fixtime, row_span) end
+            else
+                y = choose()
+                if d.live then d.color_source._live_layout = {key=live_layout_key, y=y or false} end
+            end
+            return y and y + (canvas.layout_origin or 0)
+        end
 
         -- 滚动弹幕 (类型 1, 2, 3)
         if danmaku_type >= 1 and danmaku_type <= 3 then
             style = "R2L"
-            local text_length = get_str_width(text, fontsize)
             local x1 = res_x + text_length / 2
             local x2 = -text_length / 2
-            local y = get_position_y(fontsize, appear_time, text_length, res_x, scrolltime, roll_array)
+            local y = live_y(lane_array, text_length, function()
+                return get_position_y(line_height, appear_time, text_length, res_x, scrolltime, lane_array, row_span)
+            end)
             if y then
                 effect = string.format("{\\move(%d, %d, %d, %d)}", x1, y, x2, y)
                 move = {x1, y, x2, y}
@@ -724,7 +856,9 @@ function convert_danmaku_to_ass_events(force)
         elseif danmaku_type == 5 then
             style = "TOP"
             local x = res_x / 2
-            local y = get_fixed_y(fontsize, appear_time, fixtime, top_array, true)
+            local y = live_y(lane_array, 0, function()
+                return get_fixed_y(line_height, appear_time, fixtime, lane_array, true, row_span)
+            end)
             if y then
                 effect = string.format("{\\pos(%d, %d)}", x, y)
                 pos = {x, y}
@@ -734,7 +868,9 @@ function convert_danmaku_to_ass_events(force)
         elseif danmaku_type == 4 then
             style = "BTM"
             local x = res_x / 2
-            local y = get_fixed_y(fontsize, appear_time, fixtime, top_array, false)
+            local y = live_y(lane_array, 0, function()
+                return get_fixed_y(line_height, appear_time, fixtime, lane_array, false, row_span)
+            end)
             if y then
                 effect = string.format("{\\pos(%d, %d)}", x, y)
                 pos = {x, y}
@@ -742,6 +878,12 @@ function convert_danmaku_to_ass_events(force)
         end
 
         if style and effect then
+            local text = ass_escape(clean_text)
+                        :gsub("x(%d+)$", "{\\b1\\i1}x%1")
+
+            local color = Color.resolve(d.color_source or d, options.smart_color,
+                options.smart_color_percent, options.force_white)
+            local color_text = Color.tag(color)
             text = effect .. color_text .. text
             local event = {
                 orig_time = ev.orig_time,
@@ -755,7 +897,7 @@ function convert_danmaku_to_ass_events(force)
                 move = move,
                 layer = (style == "R2L") and 0 or 1,
                 source = d.source,
-                color_source = d,
+                color_source = d.color_source or d,
                 render_color = color,
             }
             table.insert(ass_events, event)
@@ -766,4 +908,10 @@ function convert_danmaku_to_ass_events(force)
         ass_events = limit_danmaku(ass_events, options.max_screen_danmaku)
     end
     COMMENTS = ass_events
+    COMMENTS.canvas = canvas
+    if #geometry_keys >= 3 then
+        geometry_cache[table.remove(geometry_keys, 1)] = nil
+    end
+    geometry_keys[#geometry_keys + 1] = canvas.key
+    geometry_cache[canvas.key] = COMMENTS
 end

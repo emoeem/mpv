@@ -1,18 +1,23 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 -- Portable video-enhancement policy and fail-safe manager for mpv-Yaozhi.
 -- It never installs Python/VapourSynth system-wide. HDR10/HDR10+ can use a
--- metadata-preserving BT.2020/PQ path; Dolby Vision, HLG, HDR Vivid,
+-- metadata-preserving BT.2020/PQ path. HDR Vivid requires an explicit ordinary
+-- HDR-base compatibility choice; Dolby Vision, HLG,
 -- optical-disc/ISO, VFR, high-frame-rate and non-1x playback retain a safe
 -- fallback. WebDAV/OpenAlist and bitstream audio are supported when the
 -- video-only RIFE path can keep the original audio clock.
 
 local mp = require 'mp'
 local msg = require 'mp.msg'
+local persistence = dofile(mp.command_native({'expand-path', '~~/script-modules/yaozhi-persistence.lua'}))
 local options = require 'mp.options'
+local utils = require 'mp.utils'
 
 local o = {
     enabled = true,
     backend_mode = 'auto',
     hq_processing_mode = 'native',
+    hdr_vivid_mode = 'preserve',
     gpu_id = -1,
     gpu_thread = 1,
     medium_auto_width = 768,
@@ -41,21 +46,158 @@ local o = {
     startup_quality_timeout = 0.8,
     startup_ready_hold = 1.2,
     startup_notice = true,
+    background_prepare_timeout = 300,
+    auto_enable_prepared = true,
     verify_timeout = 12.0,
     guard_interval = 2.0,
     guard_start_delay = 8.0,
     guard_drop_delta = 3,
     guard_mistimed_delta = 5,
     guard_bad_samples = 2,
+    guard_drop_only_bad_samples = 5,
     guard_avsync = 0.20,
     guard_progress_ratio = 0.82,
     guard_presentation_cooldown = 6.0,
+    -- Keep older personal configs readable. Runtime graph downgrades and new
+    -- learned-cap writes are disabled regardless of these legacy values.
     learning_settle_time = 30.0,
     adaptive_learning = true,
-    max_runtime_downgrades = 2,
+    max_runtime_downgrades = 0,
     show_osd = false,
 }
 options.read_options(o, 'ai_interpolation')
+local schedule_evaluate
+local preparation_spec
+local on_background_failure
+local background
+local generation = 0
+local prepared_generation = -1
+local prepared_backend = nil
+local prepared_specs = {}
+local prepared_benchmarks = {}
+local prepared_device_identities = {}
+local prepared_devices = {}
+local auto_retry_disabled_specs = {}
+local active_auto_key = nil
+local canceled_generation = -1
+local preparation_watch = nil
+-- An exact prepared spec authorizes at most one automatic graph per file.
+-- Throughput eligibility is independent of the native sync compatibility policy.
+local prepared_auto_pending = nil
+local prepared_auto_attempted_generation = -1
+local prepared_auto_external_generation = -1
+local function invalidate_prepared_auto_pending()
+    prepared_auto_pending = nil
+end
+local function publish_auto_status(value)
+    local property = 'user-data/video-enhancement/ai-auto-status'
+    if mp.get_property_native(property) ~= value then mp.set_property_native(property, value) end
+end
+publish_auto_status('idle')
+local function positive_finite(value)
+    local number = tonumber(value)
+    return number and number == number and number > 0 and number < math.huge and number or nil
+end
+local function probe_verdict(spec, data)
+    if data and data.format_supported == false then return 'unsupported' end
+    if not data or data.format_supported ~= true then return 'unknown' end
+    local measured = positive_finite(data and data.benchmark_fps)
+    local reported_target = positive_finite(data and data.required_fps)
+    local target = positive_finite(spec.required_fps)
+    if not measured or not reported_target or not target
+        or math.abs(reported_target-target) > math.max(0.001, target*0.0001) then return 'unknown' end
+    if measured < target then return 'insufficient' end
+    -- Three times the target remains a conservative diagnostic signal. A
+    -- measured real-time graph below that margin can still try once after a stable window.
+    return data.auto_safe == true and measured >= target*3 and 'safe' or 'slow'
+end
+local function preparation_key(spec)
+    return table.concat({
+        tostring(spec.backend), tostring(spec.runtime), tostring(spec.graph),
+        tostring(spec.width), tostring(spec.height), tostring(spec.hdr),
+        tostring(spec.user_data), tostring(spec.source_format),
+        tostring(spec.buffered_frames), tostring(spec.concurrent_frames),
+        string.format('%.3f', tonumber(spec.required_fps) or 0),
+        tostring(spec.target_gpu_name), tostring(spec.gpu_id_requested),
+    }, '|')
+end
+local function publish_prepared_device(key)
+    local device = prepared_devices[key]
+    mp.set_property_native('user-data/video-enhancement/ai-backend-device-ordinal', device and device.ordinal or 'unknown')
+    mp.set_property_native('user-data/video-enhancement/ai-backend-device-name', device and device.name or 'unknown')
+    mp.set_property_native('user-data/video-enhancement/ai-backend-device-identity', device and device.identity or 'unknown')
+end
+background = dofile(mp.command_native({'expand-path', '~~/script-modules/ai-background.lua'})).new({
+    helper = mp.command_native({'expand-path', '~~/vs/prepare-ai.py'}),
+    timeout = math.max(15, math.min(900, o.background_prepare_timeout)),
+    key = preparation_key,
+    on_start = function(spec)
+        preparation_watch = {
+            spec=spec, time=mp.get_time(),
+            position=mp.get_property_number('time-pos', nil),
+            drops=mp.get_property_number('frame-drop-count', 0) or 0,
+        }
+    end,
+    on_ready = function(spec, data)
+        preparation_watch = nil
+        prepared_generation = generation
+        prepared_backend = spec.backend
+        local verdict = probe_verdict(spec, data)
+        local safe = verdict == 'safe'
+        local supported = verdict ~= 'unsupported'
+        local key = preparation_key(spec)
+        local device = data and data.device
+        local identity = type(device) == 'table' and device.identity
+        local verified_identity = type(identity) == 'string' and #identity <= 160
+            and (identity:match('^uuid:[%w_-]+$') or identity:match('^pci:[%x:.]+$'))
+        local ordinal = type(device) == 'table' and tonumber(device.ordinal)
+        local resolved = ordinal and ordinal == ordinal and ordinal >= 0
+            and ordinal < math.huge and ordinal == math.floor(ordinal)
+            and type(device.name) == 'string' and device.name ~= '' and verified_identity
+        prepared_device_identities[key] = resolved and identity or nil
+        prepared_devices[key] = resolved and {ordinal=ordinal,
+            name=device.name:gsub('[%c]', ''):sub(1,160), identity=identity} or nil
+        if spec.backend == 'nvidia_hq' and not resolved then verdict='unknown'; safe=false end
+        prepared_specs[key] = verdict
+        auto_retry_disabled_specs[key] = nil
+        local measured = positive_finite(data and data.benchmark_fps) or 0
+        local required = positive_finite(spec.required_fps) or 0
+        local ratio = required > 0 and measured / required or 0
+        prepared_benchmarks[key] = string.format('%.2f / %.2f FPS（%.2f×）',
+            measured, required, ratio)
+        mp.set_property_native('user-data/video-enhancement/ai-probe',
+            prepared_benchmarks[key])
+        mp.set_property_native('user-data/video-enhancement/ai-warmup-phase',
+            'deferred')
+        msg.info(string.format('AI background probe: %.2f fps measured, %.2f fps required, margin %.2fx, format=%s, verdict=%s',
+            measured, required, ratio, supported and 'supported' or 'unsupported',
+            verdict == 'slow' and 'limited' or verdict))
+        mp.set_property_native('user-data/video-enhancement/ai-auto-safe',
+            safe and 'yes' or 'no')
+        mp.set_property_native('user-data/video-enhancement/ai-probe-verdict',
+            verdict == 'slow' and 'limited' or verdict)
+        publish_prepared_device(key)
+        -- A ready exact spec may make one protected attempt on this file;
+        -- native display-clock compatibility is a separate policy.
+        if not o.auto_enable_prepared then return false end
+        if verdict == 'safe' or verdict == 'slow' then
+            if schedule_evaluate then schedule_evaluate(0.05) end
+            return safe and 'prepared-auto-pending' or 'prepared-auto-limited'
+        end
+        return not supported and 'deferred-unsupported'
+            or verdict == 'insufficient' and 'deferred-insufficient'
+            or verdict == 'unknown' and 'deferred-unknown'
+            or safe and 'deferred' or 'deferred-slow'
+    end,
+    on_failure = function(spec, code)
+        preparation_watch = nil
+        prepared_benchmarks[preparation_key(spec)] = nil
+        prepared_device_identities[preparation_key(spec)] = nil
+        prepared_devices[preparation_key(spec)] = nil
+        if code ~= 'busy' then prepared_specs[preparation_key(spec)] = 'failed' end
+        if on_background_failure then on_background_failure(spec, code) end
+    end,
+})
 
 local valid_backend_modes = {auto = true, vulkan = true, nvidia_hq = true}
 local backend_mode_labels = {
@@ -89,6 +231,140 @@ end
 
 o.hq_processing_mode = normalize_hq_processing_mode(o.hq_processing_mode)
 
+-- Keep source identification separate from processing permission. This is
+-- ordinary PQ-base interpolation on the verified gpu-next path, not a Vivid
+-- renderer or a promise about the display's eventual HDR/SDR output.
+local hdr_policy = {}
+function hdr_policy.normalize(value)
+    return value == 'hdr10' and 'hdr10' or 'preserve'
+end
+o.hdr_vivid_mode = hdr_policy.normalize(o.hdr_vivid_mode)
+function hdr_policy.source_format()
+    local value = mp.get_property('video-params/hw-pixelformat', '')
+    if value == '' then value = mp.get_property('video-params/pixelformat', '') end
+    return value:lower()
+end
+function hdr_policy.startup_candidate()
+    local format = hdr_policy.source_format()
+    return o.hdr_vivid_mode == 'hdr10'
+        and mp.get_property('current-vo', '') == 'gpu-next'
+        and mp.get_property('video-params/gamma', ''):lower() == 'pq'
+        and mp.get_property('video-params/primaries', ''):lower() == 'bt.2020'
+        and mp.get_property('video-params/colormatrix', ''):lower() == 'bt.2020-ncl'
+        and (format == 'yuv420p10' or format == 'yuv420p10le'
+            or format == 'p010' or format == 'p010le')
+end
+function hdr_policy.startup_status(value, detail)
+    for name, text in pairs({['ai-startup-format-state']=value,
+        ['ai-startup-format-detail']=detail or ''}) do
+        local key = 'user-data/video-enhancement/' .. name
+        if mp.get_property_native(key) ~= text then mp.set_property_native(key, text) end
+    end
+end
+function hdr_policy.reset_startup(tracking)
+    hdr_policy.tracking = tracking
+    hdr_policy.first_frame = false
+    hdr_policy.target_vivid = false
+    hdr_policy.replanned = false
+    hdr_policy.stable_signature = nil
+    hdr_policy.stable_since = nil
+    hdr_policy.startup_status('idle')
+end
+function hdr_policy.observe_frame()
+    if not hdr_policy.tracking or hdr_policy.first_frame then return end
+    local frame = mp.get_property_native('video-frame-info')
+    if type(frame) == 'table' and next(frame) ~= nil then
+        hdr_policy.first_frame = true
+        hdr_policy.stable_since = nil
+        if schedule_evaluate then schedule_evaluate(0.05) end
+    end
+end
+function hdr_policy.startup_wait()
+    hdr_policy.observe_frame()
+    if not hdr_policy.first_frame then
+        hdr_policy.startup_status('waiting-frame', '等待真实首帧与 HDR 元数据，当前普通播放')
+        return true
+    end
+    if hdr_policy.target_vivid and not mp.get_property_bool('video-params/hdr-vivid', false) then
+        -- An absent per-frame flag during opening must not start a second
+        -- ordinary-HDR worker after this file already identified as Vivid.
+        hdr_policy.stable_since = nil
+        hdr_policy.startup_status('settling', '已识别 HDR Vivid，等待帧元数据稳定，当前普通播放')
+        return true
+    end
+    local signature = table.concat({
+        tostring(mp.get_property_number('video-params/w', 0)),
+        tostring(mp.get_property_number('video-params/h', 0)),
+        hdr_policy.source_format(), mp.get_property('video-params/gamma', ''),
+        mp.get_property('video-params/primaries', ''), mp.get_property('video-params/colormatrix', ''),
+        tostring(mp.get_property_bool('video-params/hdr-vivid', false)),
+        mp.get_property('current-vo', ''),
+    }, '|')
+    local now = mp.get_time()
+    if signature ~= hdr_policy.stable_signature or not hdr_policy.stable_since then
+        hdr_policy.stable_signature, hdr_policy.stable_since = signature, now
+    end
+    local remaining = 0.5 - (now - hdr_policy.stable_since)
+    if remaining > 0.001 then
+        hdr_policy.startup_status('settling', '正在确认首帧 HDR 格式，稳定后按当前规格准备 AI')
+        schedule_evaluate(remaining)
+        return true
+    end
+    hdr_policy.startup_status('ready')
+    return false
+end
+function hdr_policy.check()
+    local profile = math.max(
+        mp.get_property_number('user-data/media-format/dolby-vision-profile', 0) or 0,
+        mp.get_property_number('current-tracks/video/dolby-vision-profile', 0) or 0,
+        mp.get_property_number('video-params/dolby-vision-profile', 0) or 0)
+    local matrix = mp.get_property('video-params/colormatrix', ''):lower()
+    if profile > 0 or matrix == 'dolbyvision' then
+        local name = profile > 0 and string.format('Dolby Vision P%d', profile) or 'Dolby Vision'
+        local chain = profile == 7 and 'BL/EL（如存在）及 RPU'
+            or profile == 5 and 'P5 专属色彩及 RPU' or 'DV 色彩及 RPU'
+        return 'dv-protected', name .. ' 暂不启用 AI 补帧：当前链路未适配'
+            .. chain .. '；保持原有处理，与显卡性能无关'
+    end
+    local gamma = mp.get_property('video-params/gamma', ''):lower()
+    if gamma == 'hlg' then
+        return 'hlg-protected', 'HLG 暂不启用 AI 补帧：当前链路未适配场景光处理，保持原有画质'
+    end
+    if not mp.get_property_bool('video-params/hdr-vivid', false) then
+        if hdr_policy.target_vivid and not hdr_policy.startup_candidate() then
+            return 'vivid-unverified', '本片已识别 HDR Vivid，当前色彩或输出参数未通过兼容检查，保持原有处理'
+        end
+        return 'normal', ''
+    end
+    if o.hdr_vivid_mode ~= 'hdr10' then
+        return 'vivid-protected', 'HDR Vivid 默认不启用 AI 补帧：保持原有处理；可主动选择普通 HDR 基底兼容补帧'
+    end
+    local format = hdr_policy.source_format()
+    local ten_bit = format == 'yuv420p10' or format == 'yuv420p10le'
+        or format == 'p010' or format == 'p010le'
+    if gamma ~= 'pq' or mp.get_property('video-params/primaries', ''):lower() ~= 'bt.2020'
+        or matrix ~= 'bt.2020-ncl' or not ten_bit then
+        return 'vivid-unverified', 'HDR Vivid 兼容补帧未启用：需确认 10-bit / PQ / BT.2020-NCL，保持原有处理'
+    end
+    if mp.get_property('current-vo', '') ~= 'gpu-next' then
+        return 'vivid-unverified', 'HDR Vivid 兼容补帧仅验证 gpu-next 输出，当前保持原有处理'
+    end
+    return 'vivid-hdr10', '按普通 HDR 基底补帧；保留 10-bit / PQ / BT.2020，不应用 Vivid 专属动态映射；最终输出沿显示设置'
+end
+function hdr_policy.publish()
+    local status, detail = hdr_policy.check()
+    for name, value in pairs({['hdr-vivid-mode']=o.hdr_vivid_mode,
+        ['ai-format-status']=status, ['ai-format-detail']=detail}) do
+        local key = 'user-data/video-enhancement/' .. name
+        if mp.get_property_native(key) ~= value then mp.set_property_native(key, value) end
+    end
+end
+function hdr_policy.matches(plan)
+    local status = hdr_policy.check()
+    return plan and (status == 'normal' and not plan.vivid_compat and not hdr_policy.target_vivid
+        or status == 'vivid-hdr10' and plan.vivid_compat == true)
+end
+
 local extension_root = mp.command_native({
     'expand-path', '~~/experimental/video-enhancement/rife-ncnn-vulkan'
 })
@@ -96,13 +372,20 @@ local runtime_root = extension_root .. '\\runtime'
 local hq_extension_root = mp.command_native({
     'expand-path', '~~/experimental/video-enhancement/rife-nvidia-tensorrt'
 })
+-- Installed profiles keep optional packs outside replaceable version trees.
+-- Retain the portable pack location for existing installations and ZIP users.
+local personal_hq_root = mp.command_native({
+    'expand-path', '~~/extensions/video-enhancement/rife-nvidia-tensorrt'
+})
+if utils.file_info(personal_hq_root .. '/extension.conf') then
+    hq_extension_root = personal_hq_root
+end
 local hq_runtime_root = hq_extension_root .. '\\runtime'
 local hq_manifest_path = hq_extension_root .. '\\extension.conf'
 local hq_superres_model_path = hq_runtime_root
     .. '\\vs-plugins\\models\\superres\\animejanai-v2-l1-x2-fp16.onnx'
 local config_path = mp.command_native({'expand-path', '~~/script-opts/ai_interpolation.conf'})
 local filter_label = '@yaozhi_ai'
-local generation = 0
 local blocked_generation = -1
 local blocked_reason = nil
 local blocked_protected = false
@@ -116,16 +399,27 @@ local active = false
 local activation_committed = false
 local active_source_fps = 0
 local active_plan = nil
+-- An installed VF owns the current graph until an explicit policy/geometry
+-- transition or a safety fallback.  `active` alone is false during verification.
+local graph_state = 'absent'
+local graph_signature = nil
+local graph_revision = 0
+local graph_token = nil
+local graph_source_width = 0
+local graph_source_height = 0
+local graph_smooth_mode = nil
+local graph_hq_mode = nil
 local state = 'idle'
 local evaluate_timer = nil
+local evaluate_due_at = nil
 local verify_timer = nil
 local guard_ready_at = 0
 local guard_bad_samples = 0
+local guard_drop_only_samples = 0
 local last_drops = 0
 local last_mistimed = 0
 local last_progress_wall = nil
 local last_progress_pos = nil
-local runtime_downgrades = 0
 local runtime_environment_backend = nil
 local vsscript_preload = nil
 local fps_settle_until = 0
@@ -143,9 +437,21 @@ local observed_pause = nil
 local startup_ready_release_at = 0
 local activation_started_at = 0
 local graph_build_seconds = 0
-local learning_safe_at = 0
 local fail_current_file
 local hq_restart_required = false
+local hq_driver_incompatible = false
+local hq_prepare_failure_generation = -1
+local hq_prepare_failure_reason = nil
+
+local function hq_runtime_failure()
+    if hq_driver_incompatible then
+        return 'NVIDIA 驱动版本低于当前 CUDA 运行库要求；请更新驱动并重启播放器'
+    end
+    if hq_prepare_failure_generation == generation then
+        return hq_prepare_failure_reason or 'TensorRT 后台准备失败'
+    end
+    return nil
+end
 
 local function trim(value)
     return tostring(value or ''):gsub('^%s+', ''):gsub('%s+$', '')
@@ -198,36 +504,17 @@ local function read_key_value_file(path)
     return result
 end
 
+local function persist_options(changes)
+    local ok, err = persistence.update_options(config_path, changes)
+    if not ok then
+        msg.error('AI 补帧设置未保存，原配置已保留：' .. tostring(err))
+        mp.osd_message(i18n.t('AI 补帧设置未保存，已保持原设置'), 4)
+    elseif err then msg.warn(tostring(err)) end
+    return ok == true
+end
+
 local function persist_ai_option(name, value)
-    local file = config_path and io.open(config_path, 'rb') or nil
-    if not file then
-        msg.error('无法读取 AI 补帧配置：' .. tostring(config_path))
-        return false
-    end
-    local data = file:read('*a') or ''
-    file:close()
-
-    local replacement = name .. '=' .. value
-    local replaced = false
-    local pattern = '([\r\n]?)' .. name .. '%s*=[^\r\n]*'
-    data = data:gsub(pattern, function(prefix)
-        if replaced then return prefix .. replacement end
-        replaced = true
-        return prefix .. replacement
-    end)
-    if not replaced then
-        if data ~= '' and not data:match('[\r\n]$') then data = data .. '\n' end
-        data = data .. replacement .. '\n'
-    end
-
-    file = io.open(config_path, 'wb')
-    if not file then
-        msg.error('无法保存 AI 补帧配置：' .. tostring(config_path))
-        return false
-    end
-    file:write(data)
-    file:close()
-    return true
+    return persist_options({[name] = tostring(value)})
 end
 
 local function persist_backend_mode(value)
@@ -378,13 +665,15 @@ local function manifest_has_capability(manifest, capability)
     return capabilities:find(',' .. tostring(capability):lower() .. ',', 1, true) ~= nil
 end
 
-local function hq_full_pack_ready()
-    local rife_ready, missing = runtime_ready('nvidia_hq')
+local function hq_full_pack_ready(rife_ready, missing, manifest)
+    -- Optional inputs are fresh values from this same publication, never a
+    -- retained capability cache. Activation callers still probe on demand.
+    if rife_ready == nil then rife_ready, missing = runtime_ready('nvidia_hq') end
     if not rife_ready then return false, missing end
     if not file_exists(hq_superres_model_path) then
         return false, hq_superres_model_path
     end
-    local manifest = read_key_value_file(hq_manifest_path)
+    manifest = manifest or read_key_value_file(hq_manifest_path)
     if not manifest_has_capability(manifest, 'rife-tensorrt-fp16')
         or not manifest_has_capability(manifest, 'superres-tensorrt-fp16')
         or not manifest_has_capability(manifest, 'uhd-2k-rife') then
@@ -416,20 +705,36 @@ end
 
 local function desired_backend()
     if o.backend_mode == 'vulkan' then return 'vulkan' end
+    if hq_runtime_failure() then return 'vulkan' end
     local supported = hq_gpu_support()
     local ready = runtime_ready('nvidia_hq')
     if supported and ready then return 'nvidia_hq' end
     return 'vulkan'
 end
 
-local function publish_hq_state()
+local hq_publish_timer
+local function publish_hq_state(defer_static)
+    -- Source safety is synchronous, including late HDR/DV recognition. Only
+    -- installation/display work may be coalesced within one event batch.
+    hdr_policy.publish()
+    if defer_static then
+        if not hq_publish_timer then
+            hq_publish_timer = mp.add_timeout(0, function()
+                hq_publish_timer = nil
+                publish_hq_state()
+            end)
+        end
+        return
+    end
+    if hq_publish_timer then hq_publish_timer:kill(); hq_publish_timer = nil end
     local present = hq_pack_present()
     local vulkan_ready = runtime_ready('vulkan')
-    local rife_ready = runtime_ready('nvidia_hq')
-    local ready, missing = hq_full_pack_ready()
-    local supported, gpu_reason = hq_gpu_support()
+    local rife_ready, rife_missing = runtime_ready('nvidia_hq')
     local manifest = read_key_value_file(hq_manifest_path)
+    local ready, missing = hq_full_pack_ready(rife_ready, rife_missing, manifest)
+    local supported, gpu_reason = hq_gpu_support()
     local version = manifest.version or (present and '兼容旧包' or '')
+    local runtime_failure = hq_runtime_failure()
     local status
     if not present then
         status = '未安装'
@@ -438,6 +743,8 @@ local function publish_hq_state()
         status = '安装不完整 · 缺少 ' .. missing_name
     elseif not supported then
         status = '已安装 · ' .. tostring(gpu_reason)
+    elseif runtime_failure then
+        status = '扩展暂不可用 · ' .. runtime_failure
     elseif hq_restart_required then
         status = '设置已保存 · 重启播放器后切换 VF 后端'
     else
@@ -456,11 +763,12 @@ local function publish_hq_state()
     local capability_code = not present and 'not-installed'
         or not ready and (rife_ready and 'missing-full-dependency' or 'missing-runtime')
         or not supported and 'unsupported-gpu'
+        or runtime_failure and (hq_driver_incompatible and 'driver-incompatible' or 'runtime-failure')
         or hq_restart_required and 'restart-required'
         or 'ready'
     local available_backends = {}
     if vulkan_ready then available_backends[#available_backends + 1] = 'vulkan' end
-    if rife_ready and supported then
+    if rife_ready and supported and not runtime_failure then
         available_backends[#available_backends + 1] = 'nvidia_hq'
     end
     mp.set_property_native('user-data/video-enhancement/hq-capability-code', capability_code)
@@ -531,6 +839,8 @@ local function configure_runtime_environment(backend)
         .. (current_path ~= '' and (';' .. current_path) or '')
     local wide_runtime = utf8_to_wide(spec.runtime_root)
     local configured = set_process_environment('VSSCRIPT_PATH', spec.vsscript_path)
+        and (spec.id ~= 'nvidia_hq'
+            or set_process_environment('YAOZHI_RIFE_NVIDIA_RUNTIME', spec.runtime_root))
         and set_process_environment('PYTHONNOUSERSITE', '1')
         and set_process_environment('PYTHONDONTWRITEBYTECODE', '1')
         and set_process_environment('PATH', runtime_path)
@@ -565,17 +875,24 @@ local function release_startup_gate(reason)
             local ready = tostring(reason or ''):find('AI ready', 1, true) ~= nil
             local spatial = active_plan and active_plan.pipeline_kind == 'superres'
             mp.osd_message(ready
-                and (spatial and 'TensorRT AI 超分已就绪，正在自动播放'
-                    or 'RIFE AI 2× 已就绪，正在自动播放')
-                or '视频增强预热已结束，正在恢复播放', 1.8)
+                and (spatial and i18n.t('TensorRT AI 超分已就绪，正在自动播放')
+                    or i18n.t('RIFE AI 2× 已就绪，正在自动播放'))
+                or i18n.t('视频增强预热已结束，正在恢复播放'), 1.8)
         end
     end
 end
 
-local function acquire_startup_gate()
+local function acquire_startup_gate(plan)
+    -- Background preparation has already evaluated real output frames. When
+    -- the user enables it during playback, keep the clock running: pausing here
+    -- freezes estimated-vf-fps on the old stream history and cannot prove 2x.
+    -- Verification and the runtime guard still reject an unready/slow graph.
+    if background.approved or (o.auto_enable_prepared
+        and generation > prepared_generation
+        and prepared_backend == plan.backend) then return end
     if not o.startup_gate or startup_gate_generation == generation then return end
-    -- One warm-up gate per file is enough. Runtime quality downgrades must not
-    -- repeatedly interrupt playback, and an existing user pause already gives
+    -- One warm-up gate per file is enough. Repeated explicit mode changes must
+    -- not repeatedly interrupt playback, and an existing user pause already gives
     -- VapourSynth a safe window without transferring pause ownership to us.
     startup_gate_generation = generation
     if mp.get_property_bool('pause', false) then return end
@@ -583,17 +900,17 @@ local function acquire_startup_gate()
     mp.set_property_bool('pause', true)
     msg.info('RIFE startup gate acquired')
     if o.startup_notice then
-        mp.osd_message('AI 视频增强正在安全预热…\n完成后将自动继续播放，无需手动操作\n首次建模稍慢，同规格后续会复用本机缓存', 30)
+        mp.osd_message(i18n.t('AI 视频增强正在安全预热…\n完成后将自动继续播放，无需手动操作\n首次建模稍慢，同规格后续会复用本机缓存'), 30)
     end
 end
 
 local function arm_startup_gate_timeout()
     if not startup_gate_owned then return end
     cancel_timer(startup_gate_timer)
-    local serial = generation
+    local serial = graph_token
     startup_gate_timer = mp.add_timeout(math.max(1, o.startup_gate_timeout), function()
         startup_gate_timer = nil
-        if serial ~= generation or not loaded or not startup_gate_owned then return end
+        if serial ~= graph_token or not loaded or not startup_gate_owned then return end
         -- Never let an unfinished VapourSynth graph continue warming up after
         -- playback resumes. That produces the visible slow-motion/fast-catchup
         -- sequence this gate exists to prevent. A slow machine safely falls
@@ -607,19 +924,18 @@ local function arm_startup_gate_timeout()
 end
 
 local function audio_is_passthrough()
-    local enabled = mp.get_property_native('user-data/audio-passthrough/enabled')
-    if enabled == true or enabled == 'yes' then return true end
-    local format = mp.get_property('audio-params/format', ''):lower()
+    local format = mp.get_property('audio-out-params/format', ''):lower()
+    if format == '' then format = mp.get_property('audio-params/format', ''):lower() end
     return format:find('spdif-', 1, true) == 1 or format:find('iec61937', 1, true) ~= nil
 end
 
 local function mode()
     local value = trim(mp.get_property_native(
-        'user-data/video-enhancement/smooth-mode') or 'auto'):lower()
+        'user-data/video-enhancement/smooth-mode') or 'off'):lower()
     if value == 'off' or value == 'auto' or value == 'performance' or value == 'quality' then
         return value
     end
-    return 'auto'
+    return 'off'
 end
 
 
@@ -760,6 +1076,8 @@ local function classify_ai_reason(new_state, detail, temporal_active, superres_a
     if temporal_active then return 'active-rife' end
     if superres_active then return 'active-ai-superres' end
     if new_state == 'off' then return 'user-disabled' end
+    if text:find('配套', 1, true) or text:find('设备模块', 1, true) then return 'device-contract-mismatch' end
+    if text:find('CUDA 运行库', 1, true) then return 'driver-incompatible' end
     if new_state == 'detecting' or text:find('等待', 1, true) then return 'detecting' end
     if new_state == 'unavailable' or text:find('运行库', 1, true)
         or text:find('VSScript', 1, true) or text:find('缺少', 1, true) then
@@ -801,14 +1119,16 @@ local function publish(new_state, effective, detail, is_active)
         and active_plan.temporal ~= false
     local superres_active = active and active_plan ~= nil
         and active_plan.pipeline_kind == 'superres'
+    local hdr_compat_active = temporal_active and active_plan.vivid_compat == true
+    set_native_if_changed('user-data/video-enhancement/ai-hdr-compat-active',
+        hdr_compat_active and 'yes' or 'no')
     local active_label = temporal_active and 'yes' or 'no'
     local effective_label = effective or '关闭'
     local detail_label = detail or effective or '关闭'
     local source_fps = temporal_active and active_source_fps or 0
     local result_fps = temporal_active
         and active_source_fps * (active_plan.fps_multiplier or 2) or 0
-    local requested_smooth = mp.get_property_native(
-        'user-data/video-enhancement/smooth-mode') or 'auto'
+    local requested_smooth = mode()
     local effective_backend = active_plan and tostring(active_plan.backend or 'unknown')
         or new_state == 'native' and 'mpv-native'
         or 'none'
@@ -819,7 +1139,7 @@ local function publish(new_state, effective, detail, is_active)
         tostring(source_fps), tostring(result_fps), superres_active and 'yes' or 'no',
         active_plan and tostring(active_plan.pipeline_kind or 'rife') or 'none',
         o.backend_mode, o.hq_processing_mode, tostring(requested_smooth),
-        effective_backend, reason_code,
+        effective_backend, reason_code, hdr_compat_active and 'hdr10' or 'original',
     }, '\31')
     if publication_key == last_publication_key then return false end
     last_publication_key = publication_key
@@ -876,6 +1196,12 @@ local function remove_filter()
     local had_filter = filter_present()
     if had_filter then pcall(mp.commandv, 'vf', 'remove', filter_label) end
     if had_filter then fps_settle_until = mp.get_time() + 2.5 end
+    graph_state = 'absent'
+    graph_signature = nil
+    graph_token = nil
+    set_native_if_changed('user-data/video-enhancement/ai-graph-token', '')
+    graph_source_width, graph_source_height = 0, 0
+    graph_smooth_mode, graph_hq_mode = nil, nil
     active = false
     active_source_fps = 0
     active_plan = nil
@@ -912,6 +1238,7 @@ local function plan_for_current_video(ignore_filtered_fps)
     local selected_mode = mode()
     local wants_hq_superres = o.hq_processing_mode == 'ai_superres'
     local wants_uhd_2k = o.hq_processing_mode == 'uhd_2k'
+    local hq_failure = hq_runtime_failure()
     publish_ai_safety_limit(selected_mode)
     if not o.enabled then return nil, 'AI 扩展已关闭', false end
     if selected_mode == 'off' and not wants_hq_superres then
@@ -930,6 +1257,9 @@ local function plan_for_current_video(ignore_filtered_fps)
     if (wants_hq_superres or wants_uhd_2k) and not hq_gpu_support() then
         return nil, '当前显卡未进入完整依赖高性能方案验证范围', false
     end
+    if hq_failure and (wants_hq_superres or runtime_environment_backend == 'nvidia_hq') then
+        return nil, hq_failure, false
+    end
 
     local path_reason, transient, remote_source = protected_path()
     if path_reason then return nil, path_reason, transient end
@@ -939,28 +1269,12 @@ local function plan_for_current_video(ignore_filtered_fps)
     if speed < 0.96 or speed > 1.04 then return nil, '倍速播放自动回退', false end
     if mp.get_property_bool('seeking', false) then return nil, '等待跳转完成', true end
 
-    local detected_dv_profile = mp.get_property_number(
-        'user-data/media-format/dolby-vision-profile', 0) or 0
-    local track_dv_profile = mp.get_property_number(
-        'current-tracks/video/dolby-vision-profile', 0) or 0
-    local frame_dv_profile = mp.get_property_number(
-        'video-params/dolby-vision-profile', 0) or 0
-    if math.max(detected_dv_profile, track_dv_profile, frame_dv_profile) > 0 then
-        -- The open reference TensorRT graph interpolates only mpv's decoded
-        -- base image. It neither interpolates a Profile 7 enhancement layer nor
-        -- creates an RPU for each synthetic frame. Running it would therefore
-        -- make the statistics say RIFE while silently flattening or alternating
-        -- the authored DV chain. Keep the complete chain instead.
-        return nil, 'Dolby Vision P7/FEL 完整保留 BL + EL/FEL + RPU；当前模型不伪装补帧', false
+    local format_status, format_detail = hdr_policy.check()
+    if format_status ~= 'normal' and format_status ~= 'vivid-hdr10' then
+        return nil, format_detail, false
     end
-
+    local vivid_compat = format_status == 'vivid-hdr10'
     local gamma = mp.get_property('video-params/gamma', ''):lower()
-    if gamma == 'hlg' then
-        return nil, 'HLG 保持原始场景光色彩链与安全平滑', false
-    end
-    if mp.get_property_bool('video-params/hdr-vivid', false) then
-        return nil, 'HDR Vivid 保持动态元数据原始色彩链与安全平滑', false
-    end
     local primaries = mp.get_property('video-params/primaries', ''):lower()
     if primaries == 'bt.2020' and gamma ~= 'pq' then
         return nil, 'BT.2020 广色域保持原始色彩链', false
@@ -980,7 +1294,10 @@ local function plan_for_current_video(ignore_filtered_fps)
     local w = mp.get_property_number('video-params/w', 0) or 0
     local h = mp.get_property_number('video-params/h', 0) or 0
     if w <= 0 or h <= 0 then return nil, '等待视频参数', true end
-    -- Dolby Vision, HLG and HDR Vivid were rejected above. A valid PQ +
+    if hq_failure and wants_uhd_2k and (w > 2560 or h > 1440) then
+        return nil, hq_failure .. '；4K→2K 方案已安全停用', false
+    end
+    -- Dolby Vision, HLG and non-opted-in HDR Vivid were rejected above. PQ +
     -- BT.2020-NCL source is HDR10/HDR10+ and can use the explicit 2K motion
     -- inference path: authored HDR frames stay source-native while generated
     -- middle frames are restored to source geometry with copied frame props.
@@ -1018,11 +1335,16 @@ local function plan_for_current_video(ignore_filtered_fps)
 
     local tier = trim(mp.get_property_native('user-data/adaptive-quality/tier') or 'balanced')
     local gpu_name = trim(mp.get_property_native('user-data/adaptive-quality/gpu') or '')
-    local gpu_index = tonumber(o.gpu_id) or -1
+    local gpu_requested = tonumber(o.gpu_id) or -1
+    if gpu_requested ~= gpu_requested or math.abs(gpu_requested) == math.huge then gpu_requested=-1 end
+    gpu_requested = math.max(-1, math.floor(gpu_requested))
+    local gpu_index = gpu_requested
     if gpu_index < 0 then
         gpu_index = tonumber(mp.get_property_native('user-data/adaptive-quality/gpu-index')) or -1
     end
-    if gpu_index < 0 then return nil, '无法绑定目标显卡，已回退', false end
+    if gpu_index < 0 and (runtime_environment_backend or desired_backend()) ~= 'nvidia_hq' then
+        return nil, '无法绑定目标显卡，已回退', false
+    end
     if tier == 'low' then return nil, '入门显卡保持轻量平滑', false end
     if selected_mode == 'auto' and tier == 'balanced' then
         return nil, '均衡显卡自动档保持轻量平滑', false
@@ -1098,15 +1420,16 @@ local function plan_for_current_video(ignore_filtered_fps)
     -- process, while the current process keeps its already-initialized runtime.
     -- This prevents a live Python 3.12/3.14 swap from corrupting the VF chain.
     local backend = runtime_environment_backend or desired_backend()
+    -- Windows/WMI adapter order is not CUDA device order. The NVIDIA graph
+    -- resolves an automatic request by exact target name inside CUDA itself.
+    if backend == 'nvidia_hq' then gpu_index = gpu_requested end
     local spec = backend_spec(backend)
     local ready, missing = runtime_ready(backend)
     if not ready then
         msg.warn('RIFE runtime is incomplete: ' .. tostring(missing))
         return nil, 'RIFE 运行库不完整，已回退', false
     end
-    if not kernel32 or not configure_runtime_environment(backend) then
-        return nil, '无法初始化便携 VSScript，已回退', false
-    end
+    if not kernel32 then return nil, '无法初始化便携 VSScript，已回退', false end
     if not ignore_filtered_fps and not reuse_validated_cfr then
         validated_cfr_generation = generation
         validated_source_fps = source_fps
@@ -1288,12 +1611,20 @@ local function plan_for_current_video(ignore_filtered_fps)
         native_1080_family = native_1080_family,
         remote_source = remote_source,
         hdr_pq = gamma == 'pq',
+        vivid_compat = vivid_compat,
     }, nil, false
 end
 
 local activate
 
 fail_current_file = function(reason)
+    publish_auto_status('blocked')
+    background:revoke()
+    if active_auto_key then
+        prepared_specs[active_auto_key] = 'slow'
+        auto_retry_disabled_specs[active_auto_key] = true
+        active_auto_key = nil
+    end
     blocked_generation = generation
     blocked_reason = reason or 'RIFE 初始化或实时性能不足'
     blocked_protected = false
@@ -1304,11 +1635,18 @@ fail_current_file = function(reason)
             string.format('%.3f', math.max(0, mp.get_time() - activation_started_at)))
     end
     publish('failed', 'AI 已回退', blocked_reason, false)
-    if o.show_osd then mp.osd_message('RIFE AI：已安全回退\n' .. tostring(reason), 3) end
+    if o.show_osd then mp.osd_message(i18n.t('RIFE AI：已安全回退\n') .. i18n.status(tostring(reason)), 3) end
     msg.warn('RIFE fallback: ' .. tostring(reason))
 end
 
 local function protect_current_file(reason)
+    publish_auto_status('blocked')
+    background:revoke()
+    if active_auto_key then
+        prepared_specs[active_auto_key] = 'slow'
+        auto_retry_disabled_specs[active_auto_key] = true
+        active_auto_key = nil
+    end
     blocked_generation = generation
     blocked_reason = reason or '空间画质不得倒退：已保留原有画质链'
     blocked_protected = true
@@ -1316,81 +1654,16 @@ local function protect_current_file(reason)
     set_native_if_changed('user-data/video-enhancement/ai-warmup-phase', 'protected')
     publish('protected', '空间画质保护', blocked_reason, false)
     if o.show_osd then
-        mp.osd_message('空间画质保护：已保留原有画质链\n补帧改用原生安全方案', 3)
+        mp.osd_message(i18n.t('空间画质保护：已保留原有画质链\n补帧改用原生安全方案'), 3)
     end
     msg.info('RIFE spatial quality protection: ' .. tostring(blocked_reason))
 end
 
-local function downgrade_after_overload(reason, learn_cap)
-    local plan = active_plan
-    if plan and plan.pipeline_kind == 'superres' then
-        fail_current_file(reason .. '；已回退主包 GLSL 超分链')
-        return
-    end
-    if not plan or runtime_downgrades >= math.max(0, o.max_runtime_downgrades) then
-        fail_current_file(reason)
-        return
-    end
-    local landscape = plan.max_width >= plan.max_height
-    local min_width = plan.min_width or (landscape and 640 or 360)
-    local min_height = plan.min_height or (landscape and 360 or 640)
-    if plan.max_width <= min_width and plan.max_height <= min_height then
-        fail_current_file(string.format(
-            '%s；继续降档将低于质量下限 %d×%d，已改用原生平滑',
-            reason, min_width, min_height))
-        return
-    end
-    local next_plan = {}
-    for key, value in pairs(plan) do next_plan[key] = value end
-    next_plan.max_width = math.max(min_width, math.floor(plan.max_width * 0.82 / 2) * 2)
-    next_plan.max_height = math.max(min_height, math.floor(plan.max_height * 0.82 / 2) * 2)
-    next_plan.inference_width, next_plan.inference_height = bounded_dimensions(
-        next_plan.source_width, next_plan.source_height,
-        next_plan.max_width, next_plan.max_height)
-    next_plan.output_width = next_plan.hdr_pq and next_plan.source_width
-        or next_plan.inference_width
-    next_plan.output_height = next_plan.hdr_pq and next_plan.source_height
-        or next_plan.inference_height
-    if spatial_quality_regresses(next_plan.source_width, next_plan.source_height,
-        next_plan.inference_width, next_plan.inference_height)
-        and not next_plan.allow_spatial_tradeoff then
-        protect_current_file(spatial_quality_reason(
-            next_plan.source_width, next_plan.source_height,
-            next_plan.inference_width, next_plan.inference_height))
-        return
-    end
-    if next_plan.inference_width == plan.inference_width
-        and next_plan.inference_height == plan.inference_height then
-        if plan.allow_spatial_tradeoff then
-            fail_current_file(string.format(
-                '%s；4K→2K 性能档已在固定质量下限 %d×%d，不能继续降采样',
-                reason, plan.inference_width or 0, plan.inference_height or 0))
-        else
-            protect_current_file(string.format(
-                '%s；RIFE 已按源分辨率 %d×%d 运行，继续降档无法减负且会越过“空间画质不得倒退”红线，已改用原生安全平滑',
-                reason, plan.source_width or 0, plan.source_height or 0))
-        end
-        return
-    end
-    local persist_cap = learn_cap == true and not plan.remote_source
-    next_plan.learned = plan.learned or persist_cap
-    next_plan.runtime_downgraded = true
-    if next_plan.max_width == plan.max_width and next_plan.max_height == plan.max_height then
-        fail_current_file(reason)
-        return
-    end
-    runtime_downgrades = runtime_downgrades + 1
-    if persist_cap then
-        write_learned_cap(plan.gpu_name, plan.backend,
-            next_plan.max_width * next_plan.max_height, min_width * min_height)
-    end
-    remove_filter()
-    publish('starting', 'AI 性能降档', string.format('%s · 推理降至≤%d×%d',
-        reason, next_plan.max_width, next_plan.max_height), false)
-    local serial = generation
-    mp.add_timeout(0.4, function()
-        if serial == generation and loaded then activate(next_plan) end
-    end)
+local function fallback_after_overload(reason)
+    -- Rebuilding with a lower inference size in the middle of playback causes
+    -- a visible interruption. A sustained failure is terminal for this file;
+    -- the next file gets a fresh plan rather than inheriting this graph.
+    fail_current_file(reason .. '；本集保持普通播放，避免运行中重新建图')
 end
 
 local function reset_progress_guard()
@@ -1402,33 +1675,46 @@ local function reset_guard_for_presentation_change(reason)
     if not loaded then return end
     local now = mp.get_time()
     guard_bad_samples = 0
+    guard_drop_only_samples = 0
     last_drops = mp.get_property_number('frame-drop-count', 0) or 0
     last_mistimed = mp.get_property_number('mistimed-frame-count', 0) or 0
     reset_progress_guard()
     guard_ready_at = math.max(guard_ready_at,
         now + math.max(0, o.guard_presentation_cooldown, o.guard_interval * 2))
-    learning_safe_at = math.max(learning_safe_at,
-        now + math.max(0, tonumber(o.learning_settle_time) or 30))
     if state == 'active' then
         msg.info('RIFE guard presentation cooldown: ' .. tostring(reason))
     end
 end
 
 local function complete_activation(serial, reason)
-    if serial ~= generation or not loaded or not active or not filter_present() then return end
+    if serial ~= graph_token or not loaded or not active or not filter_present() then return end
+    if mode() ~= graph_smooth_mode or o.hq_processing_mode ~= graph_hq_mode
+        or not hdr_policy.matches(active_plan) then
+        schedule_evaluate(0.05)
+        return
+    end
     cancel_timer(startup_quality_timer)
     startup_quality_timer = nil
     startup_ready_release_at = 0
     release_startup_gate(reason or 'AI ready')
     local now = mp.get_time()
-    guard_ready_at = now + math.max(0, o.guard_start_delay)
-    learning_safe_at = math.max(learning_safe_at,
-        now + math.max(0, tonumber(o.learning_settle_time) or 30))
+    local start_delay = math.max(0, o.guard_start_delay)
+    if background.approved and active_plan
+        and prepared_specs[preparation_key(preparation_spec(active_plan))] == 'insufficient' then
+        -- Only an explicitly accepted, already measured slow trial starts
+        -- sampling earlier. The existing sustained guard and all seek/pause/
+        -- presentation cooldowns still own their normal thresholds/windows.
+        start_delay = math.min(start_delay, math.max(0, o.guard_interval))
+    end
+    guard_ready_at = math.max(guard_ready_at, now + start_delay)
     guard_bad_samples = 0
+    guard_drop_only_samples = 0
     last_drops = mp.get_property_number('frame-drop-count', 0) or 0
     last_mistimed = mp.get_property_number('mistimed-frame-count', 0) or 0
     reset_progress_guard()
     activation_committed = true
+    background:commit()
+    publish_auto_status(active_auto_key and 'active' or 'manual')
     local warmup_seconds = activation_started_at > 0
         and math.max(0, now - activation_started_at) or 0
     set_native_if_changed('user-data/video-enhancement/ai-warmup-phase', 'ready')
@@ -1442,12 +1728,13 @@ local function complete_activation(serial, reason)
         math.max(0, warmup_seconds - graph_build_seconds)))
     if o.show_osd then
         mp.osd_message(active_plan and active_plan.pipeline_kind == 'superres'
-            and 'TensorRT AI 超分已启用' or 'RIFE AI 2× 已启用', 2)
+            and i18n.t('TensorRT AI 超分已启用') or active_plan and active_plan.vivid_compat
+            and i18n.t('普通 HDR 兼容补帧已启用\n不应用 Vivid 专属动态映射') or i18n.t('RIFE AI 2× 已启用'), 3)
     end
 end
 
 local function finish_activation(serial, reason)
-    if serial ~= generation or not loaded or not active or not filter_present() then return end
+    if serial ~= graph_token or not loaded or not active or not filter_present() then return end
     cancel_timer(startup_quality_timer)
     startup_quality_timer = nil
     local delay = math.max(0, startup_ready_release_at - mp.get_time())
@@ -1465,13 +1752,70 @@ local function finish_activation(serial, reason)
     complete_activation(serial, reason)
 end
 
+local function graph_user_data(plan, expected_identity)
+    local pipeline_code = plan.pipeline_kind == 'rife_uhd_2k' and 1
+        or plan.pipeline_kind == 'superres' and 2 or 0
+    local user_data = string.format('%dx%dx%dx%dx%dx%dx%dx%dx%d',
+        plan.gpu_id, plan.max_width, plan.max_height, plan.gpu_thread,
+        plan.matrix_id or 0, plan.uhd_mode and 1 or 0, pipeline_code,
+        plan.output_width or plan.source_width, plan.output_height or plan.source_height)
+    if plan.backend == 'nvidia_hq' then
+        local target_hex = tostring(plan.gpu_name or ''):gsub('.', function(byte)
+            return string.format('%02x', byte:byte())
+        end)
+        user_data = user_data .. 'x' .. target_hex
+        if expected_identity or plan.vivid_compat then
+            user_data = user_data .. 'x' .. tostring(expected_identity or ''):gsub('.', function(byte)
+                return string.format('%02x', byte:byte())
+            end)
+        end
+    end
+    if plan.vivid_compat then
+        if plan.backend ~= 'nvidia_hq' then user_data = user_data .. 'xx' end
+        user_data = user_data .. 'x1'
+    end
+    return user_data
+end
+
+local function graph_filter_for(plan)
+    local identity = plan.backend == 'nvidia_hq'
+        and prepared_device_identities[preparation_key(preparation_spec(plan))] or nil
+    local user_data = graph_user_data(plan, identity)
+    local filter = string.format(
+        '%s:vapoursynth=file=%s:buffered-frames=%d:concurrent-frames=%d:user-data=%s',
+        filter_label, plan.script,
+        plan.buffered_frames or 4, plan.concurrent_frames or 1, user_data)
+    -- Source geometry and cadence matter even when the serialized VF options
+    -- happen to be identical. Shader/display properties do not belong here.
+    local signature = table.concat({filter, tostring(plan.backend),
+        tostring(plan.source_width), tostring(plan.source_height),
+        string.format('%.3f', tonumber(plan.fps) or 0)}, '\31')
+    return filter, signature
+end
+
 local function verify_activation(serial, deadline)
-    if serial ~= generation or not loaded then return end
+    if serial ~= graph_token or not loaded then return end
+    if mode() ~= graph_smooth_mode or o.hq_processing_mode ~= graph_hq_mode
+        or not hdr_policy.matches(active_plan) then
+        schedule_evaluate(0.05)
+        return
+    end
     if not filter_present() then
         fail_current_file('AI 滤镜未进入视频链')
         return
     end
     local filtered_fps = mp.get_property_number('estimated-vf-fps', 0) or 0
+    -- Respect a user pause while waiting for output cadence; no automatic
+    -- unpause or false timeout merely because the user has stopped the clock.
+    if (background.approved or (o.auto_enable_prepared
+        and generation > prepared_generation
+        and prepared_backend == (active_plan or {}).backend))
+        and mp.get_property_bool('pause', false) then
+        verify_timer = mp.add_timeout(0.2, function()
+            verify_activation(serial, mp.get_time() + math.max(2, o.verify_timeout))
+        end)
+        return
+    end
     local plan = active_plan or {}
     local target = active_source_fps * (plan.fps_multiplier or 2)
     if target > 0 and math.abs(filtered_fps - target) / target <= 0.035 then
@@ -1503,7 +1847,12 @@ local function verify_activation(serial, deadline)
             format_fps(active_source_fps), format_fps(target),
             geometry,
             plan.learned and ' · 已应用本机学习档' or '')
-        if plan.hdr_pq then
+        if plan.vivid_compat then
+            detail = detail .. string.format(
+                ' · 普通 HDR 兼容补帧 %d×%d；10-bit/PQ/BT.2020，不应用 Vivid 专属动态映射',
+                plan.output_width or plan.source_width or 0,
+                plan.output_height or plan.source_height or 0)
+        elseif plan.hdr_pq then
             detail = detail .. string.format(
                 ' · HDR10/HDR10+ 输出 %d×%d、元数据保留',
                 plan.output_width or plan.source_width or 0,
@@ -1517,7 +1866,7 @@ local function verify_activation(serial, deadline)
         if plan.allow_spatial_tradeoff then
             if plan.hdr_pq then
                 detail = detail .. string.format(
-                    ' · HDR10 仅将运动推理降至 %d×%d，原始帧与最终输出保持 %d×%d',
+                    ' · HDR 基底仅将运动推理降至 %d×%d，原始帧与最终输出保持 %d×%d',
                     inference_width, inference_height,
                     plan.source_width or 0, plan.source_height or 0)
             else
@@ -1561,6 +1910,17 @@ local function verify_activation(serial, deadline)
 end
 
 activate = function(plan)
+    if plan.backend == 'nvidia_hq'
+        and not prepared_device_identities[preparation_key(preparation_spec(plan))] then
+        fail_current_file('CUDA 设备物理身份未通过后台核验；请重新准备 AI 后再启用')
+        return
+    end
+    local filter, signature = graph_filter_for(plan)
+    if graph_state ~= 'absent' or filter_present() then
+        if graph_signature == signature then return end
+        msg.warn('RIFE graph already owned by current video; refusing duplicate vf add')
+        return
+    end
     if spatial_quality_regresses(plan.source_width, plan.source_height,
         plan.inference_width, plan.inference_height)
         and not plan.allow_spatial_tradeoff then
@@ -1577,6 +1937,20 @@ activate = function(plan)
             or '空间画质不得倒退：已保留原有超分质量')
         return
     end
+    -- The worker has already proved this exact graph. Bind the process-local
+    -- VSScript runtime only now, so a failed TensorRT probe can still use the
+    -- independent Vulkan runtime in this player process.
+    if not configure_runtime_environment(plan.backend) then
+        fail_current_file('无法初始化便携 VSScript，已回退')
+        return
+    end
+    graph_state = 'building'
+    graph_signature = signature
+    graph_revision = graph_revision + 1
+    graph_token = tostring(generation) .. ':' .. tostring(graph_revision)
+    set_native_if_changed('user-data/video-enhancement/ai-graph-token', graph_token)
+    graph_source_width, graph_source_height = plan.source_width, plan.source_height
+    graph_smooth_mode, graph_hq_mode = mode(), o.hq_processing_mode
     activation_committed = false
     activation_started_at = mp.get_time()
     graph_build_seconds = 0
@@ -1585,34 +1959,27 @@ activate = function(plan)
     set_native_if_changed('user-data/video-enhancement/ai-graph-build-seconds', '')
     active_source_fps = plan.fps
     active_plan = plan
-    local pipeline_code = plan.pipeline_kind == 'rife_uhd_2k' and 1
-        or plan.pipeline_kind == 'superres' and 2 or 0
-    local user_data = string.format('%dx%dx%dx%dx%dx%dx%dx%dx%d',
-        plan.gpu_id, plan.max_width, plan.max_height, plan.gpu_thread,
-        plan.matrix_id or 0, plan.uhd_mode and 1 or 0, pipeline_code,
-        plan.output_width or plan.source_width, plan.output_height or plan.source_height)
-    local filter = string.format(
-        '%s:vapoursynth=file=%s:buffered-frames=%d:concurrent-frames=%d:user-data=%s',
-        filter_label, plan.script,
-        plan.buffered_frames or 4, plan.concurrent_frames or 1, user_data)
     local starting_label = plan.pipeline_kind == 'superres'
         and 'AI 超分初始化中' or 'RIFE 初始化中'
-    local starting_detail = string.format('绑定 %s · %s · GPU %d',
+    local starting_detail = string.format('绑定 %s · %s · %s',
         mp.get_property_native('user-data/adaptive-quality/gpu') or '目标显卡',
-        plan.backend_label or 'RIFE v4.6', plan.gpu_id)
+        plan.backend_label or 'RIFE v4.6', plan.gpu_id < 0
+            and 'CUDA 设备自动核验' or string.format('GPU %d', plan.gpu_id))
     if plan.native_1080_trial then
         starting_detail = starting_detail .. string.format(
             ' · 原生 %d×%d 实时验证',
             plan.inference_width or 0, plan.inference_height or 0)
     end
     publish('starting', starting_label, starting_detail, false)
-    acquire_startup_gate()
+    acquire_startup_gate(plan)
     local graph_started_at = mp.get_time()
     local ok, result = pcall(mp.commandv, 'vf', 'add', filter)
     if not ok or result == false then
         fail_current_file('无法创建 VapourSynth 滤镜：' .. tostring(result))
         return
     end
+    publish_prepared_device(preparation_key(preparation_spec(plan)))
+    graph_state = 'installed'
     -- vf add initializes VapourSynth synchronously. TensorRT's first engine
     -- build can block the Lua event loop for tens of seconds, so a timer armed
     -- before this call cannot interrupt it: the overdue callback would run only
@@ -1624,15 +1991,204 @@ activate = function(plan)
         string.format('%.3f', graph_build_seconds))
     msg.info(string.format('RIFE graph created in %.3fs', graph_build_seconds))
     arm_startup_gate_timeout()
-    local serial = generation
+    local serial = graph_token
     verify_timer = mp.add_timeout(
         math.max(0.05, tonumber(o.startup_verify_interval) or 0.15), function()
         verify_activation(serial, mp.get_time() + math.max(2, o.verify_timeout))
     end)
 end
 
+preparation_spec = function(plan)
+    local backend = backend_spec(plan.backend)
+    -- Hardware decoding reports d3d11/cuda as the surface type. The probe
+    -- needs the underlying pixel layout to decide whether its synthetic
+    -- frames represent the current source faithfully.
+    local source_format = hdr_policy.source_format()
+    return {
+        backend=plan.backend,
+        runtime=backend.runtime_root,
+        graph=mp.command_native({'expand-path', plan.script}),
+        width=plan.source_width, height=plan.source_height,
+        hdr=plan.matrix_id == 3,
+        user_data=graph_user_data(plan),
+        target_gpu_name=plan.backend == 'nvidia_hq' and plan.gpu_name or nil,
+        gpu_id_requested=plan.backend == 'nvidia_hq' and plan.gpu_id or nil,
+        source_format=source_format,
+        source_fps=plan.fps,
+        buffered_frames=plan.buffered_frames or 4,
+        concurrent_frames=plan.concurrent_frames or 1,
+        required_fps=plan.fps * (plan.fps_multiplier or 2),
+    }
+end
+
+local function try_prepared_auto(plan, key, verdict)
+    local clock = mp.get_property_native('user-data/video-enhancement/native-clock-guard')
+    local protected = clock == 'protected' or clock == 'preprotected'
+    local owner = mp.get_property_native('user-data/video-enhancement/sync-managed')
+    local sync = mp.get_property('video-sync', 'audio')
+    local interpolation = mp.get_property_bool('interpolation', false)
+    local managed_clock = owner == 'yes' and ((sync == 'audio' and not interpolation)
+        or (sync == 'display-resample' and interpolation))
+    local ordinary_audio = owner ~= 'yes' and sync == 'audio' and not interpolation
+    local timing_allowed = owner ~= 'external' and clock ~= 'external'
+        and (protected and owner == 'yes' and sync == 'audio' and not interpolation
+            or not protected and (managed_clock or ordinary_audio))
+    local selected_mode = mode()
+    local eligible = o.auto_enable_prepared and timing_allowed
+        and (selected_mode == 'auto' or selected_mode == 'quality')
+        and prepared_auto_attempted_generation ~= generation
+        and prepared_auto_external_generation ~= generation
+        and graph_state == 'absent' and not filter_present()
+        and blocked_generation ~= generation and canceled_generation ~= generation
+        and (verdict == 'safe' or verdict == 'slow') and not auto_retry_disabled_specs[key]
+        and background.status == 'ready' and background.key == key
+        and (plan.backend ~= 'nvidia_hq' or prepared_device_identities[key] ~= nil)
+    if not eligible then
+        invalidate_prepared_auto_pending()
+        local automatic = o.auto_enable_prepared and (selected_mode == 'auto' or selected_mode == 'quality')
+        publish_auto_status(not automatic and 'off' or background.status == 'ready' and 'blocked' or 'idle')
+        return false
+    end
+    local speed = positive_finite(mp.get_property_number('speed', nil))
+    if not speed or math.abs(speed - 1) > 0.001
+        or mp.get_property_bool('pause', false)
+        or mp.get_property_bool('paused-for-cache', false)
+        or mp.get_property_bool('seeking', false)
+        or mp.get_property_bool('core-idle', false) then
+        invalidate_prepared_auto_pending()
+        publish_auto_status('suspended')
+        -- Property changes resume evaluation; do not poll a suspended video.
+        return true
+    end
+    local now = mp.get_time()
+    local signature = table.concat({tostring(generation), key, selected_mode,
+        o.hq_processing_mode, clock or 'idle', owner or 'none', sync, tostring(interpolation), verdict,
+        plan.backend == 'nvidia_hq' and prepared_device_identities[key] or 'vulkan'}, '\31')
+    if not prepared_auto_pending or prepared_auto_pending.signature ~= signature then
+        prepared_auto_pending = {generation=generation, key=key,
+            signature=signature, ready_at=now + 1.0}
+    end
+    if now < prepared_auto_pending.ready_at then
+        publish_auto_status('waiting')
+        schedule_evaluate(prepared_auto_pending.ready_at - now)
+        return true
+    end
+    -- Reaching here means the current generation/spec and every live policy
+    -- condition survived another evaluation. Never clear a failed/canceled
+    -- generation as the explicit manual trial is allowed to do.
+    local pending = prepared_auto_pending
+    invalidate_prepared_auto_pending()
+    if pending.generation ~= generation or pending.key ~= key then return true end
+    if not background:enable() then return true end
+    prepared_auto_attempted_generation = generation
+    active_auto_key = key
+    publish_auto_status('trying')
+    msg.info('Prepared AI auto trial: trying the ' .. (verdict == 'safe' and 'ample' or 'limited')
+        .. ' exact-spec graph once for this file')
+    activate(plan)
+    return true
+end
+
 local function evaluate()
     if not loaded then return end
+    hdr_policy.publish()
+    local format_status, format_detail = hdr_policy.check()
+    if hdr_policy.tracking and mp.get_property_bool('video-params/hdr-vivid', false) then
+        hdr_policy.target_vivid = true
+    end
+    -- A seek/pause may postpone ordinary replanning, but must never postpone
+    -- revoking a graph whose source or explicit colour permission changed.
+    if graph_state ~= 'absent' and active_plan and not hdr_policy.matches(active_plan) then
+        local opening_vivid = not active and state == 'starting'
+            and not activation_committed and not hdr_policy.replanned
+            and not active_plan.vivid_compat and active_plan.hdr_pq
+            and (format_status == 'vivid-hdr10' or format_status == 'normal' and hdr_policy.target_vivid)
+            and hdr_policy.startup_candidate()
+            and active_plan.source_width == mp.get_property_number('video-params/w', 0)
+            and active_plan.source_height == mp.get_property_number('video-params/h', 0)
+            and not mp.get_property_bool('seeking', false) and not seek_recovery
+            and canceled_generation ~= generation and blocked_generation ~= generation
+            and prepared_auto_external_generation ~= generation
+            and mp.get_property_native('user-data/video-enhancement/sync-managed') ~= 'external'
+            and mp.get_property_native('user-data/video-enhancement/native-clock-guard') ~= 'external'
+            and mode() == graph_smooth_mode and o.hq_processing_mode == graph_hq_mode
+            and math.abs((mp.get_property_number('speed', 1) or 1) - 1) <= 0.001
+        invalidate_prepared_auto_pending()
+        remove_filter()
+        background:reset()
+        if opening_vivid then
+            -- This graph never committed. Revoke its token/approval and make
+            -- one new exact-spec preparation, not a runtime-failure retry.
+            hdr_policy.replanned = true
+            hdr_policy.stable_since = nil
+            hdr_policy.stable_signature = nil
+            prepared_auto_attempted_generation = -1
+            active_auto_key = nil
+            set_native_if_changed('user-data/video-enhancement/ai-probe', '')
+            set_native_if_changed('user-data/video-enhancement/ai-probe-verdict', 'unknown')
+            publish_auto_status('idle')
+            hdr_policy.startup_status('replanning', '首帧确认 HDR Vivid，正在按兼容规格重新准备一次')
+            publish('native', '普通播放', '起播识别到 HDR Vivid，撤销未完成的旧图，稳定后重新准备一次', false)
+            schedule_evaluate(0.05)
+            return
+        end
+        blocked_generation = generation
+        blocked_reason = format_detail ~= '' and format_detail or 'HDR 处理格式已改变'
+        blocked_protected = true
+        hdr_policy.startup_status('blocked', '格式条件改变，已停止本片自动接入')
+        publish_auto_status('blocked')
+        publish('protected', '格式保护', blocked_reason .. '；本集保持普通播放', false)
+        return
+    end
+    if canceled_generation == generation then
+        invalidate_prepared_auto_pending()
+        hdr_policy.startup_status('blocked', '已取消本片 AI 自动接入，当前普通播放')
+        publish_auto_status('blocked')
+        publish('native', '普通播放', '已取消 AI 准备，本集继续普通播放', false)
+        return
+    end
+    if o.enabled and graph_state == 'absent' and blocked_generation ~= generation
+        and (mode() == 'auto' or mode() == 'quality')
+        and (format_status == 'normal' or format_status == 'vivid-hdr10')
+        and hdr_policy.startup_candidate() then
+        if hdr_policy.startup_wait() then
+            -- Source changes also cancel old workers before the stable window.
+            if background.status == 'preparing' or background.status == 'ready' then
+                background:reset()
+            end
+            invalidate_prepared_auto_pending()
+            publish_auto_status('suspended')
+            publish('native', '普通播放', mp.get_property_native(
+                'user-data/video-enhancement/ai-startup-format-detail'), false)
+            return
+        end
+    elseif graph_state == 'absent' then
+        hdr_policy.startup_status('idle')
+    end
+    local prepared_verdict = prepared_specs[background.key]
+    if graph_state == 'absent' and background.status == 'ready' and o.auto_enable_prepared
+        and (format_status == 'normal' or format_status == 'vivid-hdr10')
+        and (prepared_verdict == 'safe' or prepared_verdict == 'slow')
+        and blocked_generation ~= generation and not auto_retry_disabled_specs[background.key]
+        and (mode() == 'auto' or mode() == 'quality') then
+        if mp.get_property_native('user-data/video-enhancement/sync-managed') == 'external'
+            or mp.get_property_native('user-data/video-enhancement/native-clock-guard') == 'external' then
+            prepared_auto_external_generation = generation
+            invalidate_prepared_auto_pending()
+            publish_auto_status('blocked')
+            return
+        end
+        local speed = positive_finite(mp.get_property_number('speed', nil))
+        if not speed or math.abs(speed - 1) > 0.001
+            or mp.get_property_bool('pause', false)
+            or mp.get_property_bool('paused-for-cache', false)
+            or mp.get_property_bool('seeking', false)
+            or mp.get_property_bool('core-idle', false) then
+            invalidate_prepared_auto_pending()
+            publish_auto_status('suspended')
+            return
+        end
+    end
     -- A user seek resets the inner VapourSynth queue, but it does not require
     -- removing and re-adding the managed filter entry. A previously queued
     -- property evaluation could observe transient `seeking`, tear down the
@@ -1642,10 +2198,80 @@ local function evaluate()
     if active and (seek_recovery or mp.get_property_bool('seeking', false)) then
         return
     end
-    local plan, reason, transient = plan_for_current_video(active)
+    if graph_state ~= 'absent' and not filter_present() then
+        fail_current_file('AI 滤镜已从视频链消失；本集保持普通播放')
+        return
+    end
+    local graph_installed = graph_state ~= 'absent'
+    local source_width = mp.get_property_number('video-params/w', 0) or 0
+    local source_height = mp.get_property_number('video-params/h', 0) or 0
+    local source_changed = graph_installed and source_width > 0 and source_height > 0
+        and (source_width ~= graph_source_width or source_height ~= graph_source_height)
+    local policy_changed = graph_installed
+        and (mode() ~= graph_smooth_mode or o.hq_processing_mode ~= graph_hq_mode)
+    local plan, reason, transient = plan_for_current_video(graph_installed)
+    source_changed = source_changed or graph_installed and plan and active_plan
+        and (plan.vivid_compat == true) ~= (active_plan.vivid_compat == true)
+    if graph_installed then
+        if not plan and transient and not source_changed then return end
+        if not plan then
+            remove_filter()
+            background:reset()
+            publish('native', '普通播放',
+                (reason or '当前片源不再满足 AI 条件')
+                    .. '；本集不在播放中重新挂载 AI', false)
+            return
+        end
+        local _, signature = graph_filter_for(plan)
+        if signature == graph_signature then
+            graph_smooth_mode, graph_hq_mode = mode(), o.hq_processing_mode
+            return
+        end
+        if source_changed then
+            -- A new source size invalidates the old VS graph.  Its throughput
+            -- verdict must be measured separately, so do not attach it after
+            -- the current video's first frame has already been shown.
+            remove_filter()
+            background:reset()
+            blocked_generation = generation
+            publish('native', '普通播放',
+                '片源分辨率或 HDR 处理格式已改变；本集保持普通播放，下个视频重新评估 AI', false)
+            return
+        end
+        if policy_changed then
+            -- A user-selected AI mode may require a genuinely different graph.
+            -- Same-parameter menu clicks were handled by the signature check.
+            remove_filter()
+            if plan.backend == 'nvidia_hq'
+                and not prepared_device_identities[preparation_key(preparation_spec(plan))] then
+                -- This explicit pipeline has a different exact spec. Prepare
+                -- it outside mpv instead of treating missing proof as a graph
+                -- initialization failure or reusing the previous device proof.
+                background:reset()
+            else
+                activate(plan)
+                return
+            end
+        else
+            -- Adaptive quality and presentation changes only own shader/sync
+            -- budget; they cannot replace a running VapourSynth graph.
+            return
+        end
+    end
     if not plan then
-        if active or filter_present() then remove_filter() end
+        invalidate_prepared_auto_pending()
+        if not transient and (background.status == 'preparing' or background.status == 'ready') then
+            background:reset()
+        end
+        if active or filter_present() then
+            remove_filter()
+            -- A click authorizes one activation, not another pipeline rebuild
+            -- after a temporary policy change during the same video.
+            background:reset()
+        end
         local current_mode = mode()
+        local automatic = o.auto_enable_prepared and (current_mode == 'auto' or current_mode == 'quality')
+        publish_auto_status(not automatic and 'off' or 'blocked')
         local native_fallback = reason and reason:find('原生平滑', 1, true) ~= nil
         local spatial_protection = reason
             and reason:find('空间画质不得倒退', 1, true) ~= nil
@@ -1670,23 +2296,150 @@ local function evaluate()
         end
         return
     end
-    if active then return end
+    if active or (state == 'starting' and filter_present()) then return end
     if blocked_generation == generation then
+        invalidate_prepared_auto_pending()
+        publish_auto_status('blocked')
         publish(blocked_protected and 'protected' or 'failed',
             blocked_protected and '空间画质保护' or 'AI 已回退',
-            (blocked_reason or '本文件已触发性能保护') .. '；下个文件自动重试', false)
+            (blocked_reason or '本文件已触发性能保护') .. '；可在菜单手动重试', false)
+        return
+    end
+    -- Cache only an exact-spec throughput verdict, never a graph or approval.
+    -- Each file computes its own plan and waits for stable live trial conditions.
+    local spec = preparation_spec(plan)
+    local key = preparation_key(spec)
+    local verdict = prepared_specs[key]
+    if verdict == 'safe' or verdict == 'slow' or verdict == 'unsupported'
+        or verdict == 'insufficient' or verdict == 'unknown' then
+        background:restore(spec)
+        mp.set_property_native('user-data/video-enhancement/ai-auto-safe',
+            verdict == 'safe' and 'yes' or 'no')
+        mp.set_property_native('user-data/video-enhancement/ai-probe-verdict',
+            verdict == 'slow' and 'limited' or verdict)
+        publish_prepared_device(key)
+    end
+    set_native_if_changed('user-data/video-enhancement/ai-probe',
+        prepared_benchmarks[key] or '')
+    if (verdict == 'insufficient' or verdict == 'unknown') and not background.approved then
+        invalidate_prepared_auto_pending()
+        publish_auto_status('blocked')
+        set_native_if_changed('user-data/video-enhancement/ai-warmup-phase', 'skipped')
+        publish('native', '普通播放', verdict == 'insufficient'
+            and 'AI 模型已准备，但当前规格测速低于目标帧率；已保持普通播放，可手动试跑'
+            or 'AI 模型已准备，但实时性能结果未确认；已保持普通播放，可重新检测或手动试跑', false)
+        return
+    elseif verdict == 'unsupported' and not background.approved then
+        invalidate_prepared_auto_pending()
+        publish_auto_status('blocked')
+        set_native_if_changed('user-data/video-enhancement/ai-warmup-phase', 'skipped')
+        publish('native', '普通播放',
+            '当前视频像素格式未通过后台验证，自动补帧已跳过；可手动尝试', false)
+        return
+    elseif (verdict == 'safe' or verdict == 'slow')
+        and auto_retry_disabled_specs[key] and not background.approved then
+        invalidate_prepared_auto_pending()
+        publish_auto_status('blocked')
+        set_native_if_changed('user-data/video-enhancement/ai-warmup-phase', 'skipped')
+        publish('native', '普通播放',
+            '该规格自动补帧曾回退，后续保持普通播放；可手动重新尝试', false)
+        return
+    elseif (verdict == 'failed' or verdict == 'interrupted') and not background.approved then
+        invalidate_prepared_auto_pending()
+        publish_auto_status('blocked')
+        set_native_if_changed('user-data/video-enhancement/ai-warmup-phase', 'skipped')
+        publish('native', '普通播放',
+            verdict == 'interrupted'
+                and '后台检测出现播放压力，已停止；后续同规格保持普通播放，可手动重新检测'
+                or '该规格 AI 准备曾失败，已保持普通播放；可在高级设置重新检测', false)
+        return
+    end
+    if not background.approved and try_prepared_auto(plan, key, verdict) then return end
+    local allowed = background:allow(spec)
+    if not allowed then
+        local preparation_details = {
+            ready=o.auto_enable_prepared
+                and 'AI 已准备好；当前自动条件未满足，可查看诊断或手动试跑'
+                or 'AI 已准备好，等待启用',
+            preparing='AI 后台准备期间保持普通播放',
+            canceled='已取消 AI 准备，继续普通播放',
+            interrupted='后台检测出现播放压力，已停止并保持普通播放',
+            timeout='AI 准备超时，继续普通播放；可在菜单重试',
+            busy='另一窗口正在准备 AI，继续普通播放',
+            failed=background.failure_code == 'cuda-driver-too-old'
+                and 'NVIDIA 驱动与 CUDA 运行库不兼容；当前继续普通播放'
+                or 'AI 暂未准备成功，继续普通播放；可在菜单重试',
+        }
+        publish('native', '普通播放', preparation_details[background.status]
+            or '当前继续普通播放', false)
         return
     end
     remove_filter()
     activate(plan)
 end
 
-local function schedule_evaluate(delay)
+schedule_evaluate = function(delay, keep_earlier)
+    local due = mp.get_time() + math.max(0.05, delay or 0.15)
+    if keep_earlier and evaluate_timer and evaluate_due_at and evaluate_due_at <= due then return end
     cancel_timer(evaluate_timer)
+    evaluate_due_at = due
     local serial = generation
     evaluate_timer = mp.add_timeout(math.max(0.05, delay or 0.15), function()
+        evaluate_timer = nil
+        evaluate_due_at = nil
         if serial == generation then evaluate() end
     end)
+end
+
+on_background_failure = function(spec, code)
+    if spec.backend ~= 'nvidia_hq' or code == 'busy' then return end
+    local current_plan = loaded and plan_for_current_video(false)
+    local matches_current = current_plan
+        and preparation_key(preparation_spec(current_plan)) == preparation_key(spec)
+    if code == 'cuda-driver-too-old' then hq_driver_incompatible = true end
+    if not matches_current then return end
+    hq_prepare_failure_generation = generation
+    hq_prepare_failure_reason = code == 'cuda-driver-too-old'
+        and 'NVIDIA 驱动版本低于当前 CUDA 运行库要求；请更新驱动并重启播放器'
+        or code == 'device-contract-mismatch'
+        and 'AI 配套设备模块缺失或版本不一致；请成套更新 vs 目录后重启播放器'
+        or code == 'cuda-device-request-invalid'
+        and 'AI 设备参数未通过解析；请核对配套设备模块与所选设备，当前保持普通播放'
+        or 'TensorRT 后台准备失败；本文件改用兼容方案'
+    -- A loaded Python runtime cannot be swapped in-process. Before it is
+    -- loaded, native RIFE can safely re-plan with the portable Vulkan backend.
+    publish_hq_state()
+    schedule_evaluate(0.05)
+end
+
+local function monitor_background_pressure()
+    local watch = preparation_watch
+    if not watch or background.status ~= 'preparing' then
+        preparation_watch = nil
+        return
+    end
+    local now = mp.get_time()
+    local position = mp.get_property_number('time-pos', nil)
+    local drops = mp.get_property_number('frame-drop-count', 0) or 0
+    if mp.get_property_bool('pause', false)
+        or mp.get_property_bool('paused-for-cache', false)
+        or mp.get_property_bool('seeking', false) then
+        watch.time, watch.position, watch.drops = now, position, drops
+        return
+    end
+    local elapsed = now - watch.time
+    local progress = position and watch.position and position - watch.position
+    local speed = math.max(0.01, mp.get_property_number('speed', 1) or 1)
+    local pressure = drops - watch.drops >= 2
+        or (elapsed >= 1 and progress and progress >= 0
+            and progress < elapsed * speed * 0.65)
+    if not pressure then return end
+    prepared_specs[preparation_key(watch.spec)] = 'interrupted'
+    preparation_watch = nil
+    background:cancel('interrupted')
+    publish('native', '普通播放', '后台检测出现播放压力，已停止并保持普通播放', false)
+    mp.osd_message(i18n.t('已停止 AI 后台检测，优先保持当前播放流畅'), 3)
+    msg.info('AI background probe stopped to protect playback')
 end
 
 local function monitor_guard()
@@ -1701,6 +2454,7 @@ local function monitor_guard()
         -- rebuilds and cadence-policy changes. Carrying them into the first
         -- live sample can falsely downgrade an otherwise healthy GPU.
         guard_bad_samples = 0
+        guard_drop_only_samples = 0
         if mp.get_property_bool('paused-for-cache', false)
             or mp.get_property_bool('seeking', false)
             or mp.get_property_bool('pause', false) then
@@ -1732,9 +2486,26 @@ local function monitor_guard()
         or mistimed_delta >= o.guard_mistimed_delta
     local clock_or_source_pressure = avsync >= o.guard_avsync
         or (progress_valid and progress_ratio < o.guard_progress_ratio)
-    local bad = render_overload or clock_or_source_pressure
-    guard_bad_samples = bad and (guard_bad_samples + 1) or math.max(0, guard_bad_samples - 1)
-    if guard_bad_samples >= math.max(1, o.guard_bad_samples) then
+    local drop_only = drop_delta >= o.guard_drop_delta
+        and mistimed_delta < o.guard_mistimed_delta and not clock_or_source_pressure
+    if drop_only then
+        guard_drop_only_samples = guard_drop_only_samples + 1
+        guard_bad_samples = 0
+        if guard_drop_only_samples >= 2 then
+            msg.info(string.format(
+                'RIFE drop-only guard sample %d/%d: drop +%d, mistimed +%d, A-V %.3fs, progress %.0f%%, VO ratio %s',
+                guard_drop_only_samples, math.max(2, o.guard_drop_only_bad_samples),
+                drop_delta, mistimed_delta, avsync, progress_ratio * 100,
+                tostring(mp.get_property_native('user-data/adaptive-quality/render-ratio') or '-')))
+        end
+    elseif render_overload or clock_or_source_pressure then
+        guard_bad_samples = guard_bad_samples + 1
+        guard_drop_only_samples = 0
+    else
+        guard_bad_samples, guard_drop_only_samples = 0, 0
+    end
+    if guard_bad_samples >= math.max(1, o.guard_bad_samples)
+        or guard_drop_only_samples >= math.max(2, o.guard_drop_only_bad_samples) then
         local reason = string.format(
             '连续实时过载（drop +%d / mistimed +%d / A-V %.3fs / 进度 %.0f%%）',
             drop_delta, mistimed_delta, avsync, progress_ratio * 100)
@@ -1746,61 +2517,103 @@ local function monitor_guard()
             -- On a 120/144 Hz desktop, the secondary display-resample pass can consume
             -- the remaining VO budget even when inference itself is healthy.
             -- Keep RIFE first, shed only that optional cadence-alignment layer,
-            -- then downgrade inference only if the protected path still drops.
+            -- then use the normal sustained-failure fallback only if pressure remains.
             cadence_safe_requested = true
-            guard_bad_samples = 0
+            guard_bad_samples, guard_drop_only_samples = 0, 0
             last_drops, last_mistimed = drops, mistimed
             reset_progress_guard()
             guard_ready_at = mp.get_time() + math.max(4, o.guard_interval * 2)
             mp.commandv('script-message-to', 'adaptive_quality', 'rife-clock-safe', reason)
             msg.warn('RIFE cadence protection requested: ' .. reason)
             if o.show_osd then
-                mp.osd_message('RIFE 性能保护：保留真实 2×，关闭高刷二次对齐', 3)
+                mp.osd_message(i18n.t('RIFE 性能保护：保留真实 2×，关闭高刷二次对齐'), 3)
             end
             return
         end
-        -- A per-file downgrade is always safe. Persist a lower GPU learning cap
-        -- only when clean render counters prove compute pressure; never learn
-        -- from WebDAV/cache stalls, A/V clock anomalies or startup transients.
-        local learning_stable = now >= learning_safe_at
-        if render_overload and not clock_or_source_pressure and not learning_stable then
-            msg.warn(string.format(
-                'RIFE persistent learning skipped during settle window (%.1fs remaining)',
-                math.max(0, learning_safe_at - now)))
-        end
-        downgrade_after_overload(reason,
-            render_overload and not clock_or_source_pressure and learning_stable)
+        fallback_after_overload(reason)
     end
 end
 
 mp.register_event('file-loaded', function()
+    hdr_policy.reset_startup(true)
+    publish_auto_status('idle')
+    local continuing_spec = background:next_file()
+    mp.set_property_native('user-data/video-enhancement/ai-auto-safe', 'unknown')
+    mp.set_property_native('user-data/video-enhancement/ai-probe-verdict', 'unknown')
+    mp.set_property_native('user-data/video-enhancement/ai-backend-device-ordinal', 'unknown')
+    mp.set_property_native('user-data/video-enhancement/ai-backend-device-name', 'unknown')
+    mp.set_property_native('user-data/video-enhancement/ai-backend-device-identity', 'unknown')
+    set_native_if_changed('user-data/video-enhancement/ai-probe', '')
     generation = generation + 1
+    invalidate_prepared_auto_pending()
+    prepared_auto_attempted_generation = -1
+    prepared_auto_external_generation = -1
+    set_native_if_changed('user-data/video-enhancement/ai-file-generation', generation)
+    active_auto_key = nil
+    hq_prepare_failure_generation = -1
+    hq_prepare_failure_reason = nil
     blocked_generation = -1
     blocked_reason = nil
     blocked_protected = false
-    runtime_downgrades = 0
     validated_cfr_generation = -1
     validated_source_fps = 0
     startup_gate_generation = -1
     cadence_safe_requested = false
-    learning_safe_at = mp.get_time()
-        + math.max(0, tonumber(o.learning_settle_time) or 30)
+    guard_ready_at = 0
     last_progress_wall, last_progress_pos = nil, nil
     loaded = true
     remove_filter()
     activation_started_at = 0
     graph_build_seconds = 0
-    set_native_if_changed('user-data/video-enhancement/ai-warmup-phase', 'waiting')
+    local selected_mode = mode()
+    local no_ai_policy = not o.enabled or (o.hq_processing_mode ~= 'ai_superres'
+        and (selected_mode == 'off' or selected_mode == 'performance'))
+    if no_ai_policy then
+        background:reset()
+        preparation_watch = nil
+    elseif continuing_spec then
+        -- Reset playback-pressure counters for this file without restarting
+        -- the model builder. A different current spec cancels it in allow().
+        preparation_watch = {
+            spec=continuing_spec, time=mp.get_time(),
+            position=mp.get_property_number('time-pos', nil),
+            drops=mp.get_property_number('frame-drop-count', 0) or 0,
+        }
+    end
+    set_native_if_changed('user-data/video-enhancement/ai-warmup-phase',
+        no_ai_policy and 'idle' or 'waiting')
     set_native_if_changed('user-data/video-enhancement/ai-warmup-seconds', '')
     set_native_if_changed('user-data/video-enhancement/ai-graph-build-seconds', '')
     set_native_if_changed('user-data/video-enhancement/ai-safety-limit',
         '正在计算当前显卡与策略上限')
-    publish('detecting', '检测中', '确认 SDR、CFR、分辨率、帧率与显卡余量', false)
-    schedule_evaluate(o.start_delay)
+    if no_ai_policy then
+        -- Disabled AI and basic smoothing need no AI admission check.
+        -- Publishing `detecting` here briefly disables native smoothing on
+        -- every file and can disturb the first frames and subtitle cadence.
+        publish(not o.enabled and 'unavailable'
+                or selected_mode == 'off' and 'off' or 'native',
+            not o.enabled and 'AI 扩展已关闭'
+                or selected_mode == 'off' and 'AI 未启用' or '原生轻量平滑',
+            not o.enabled and 'AI 扩展已关闭'
+                or selected_mode == 'off' and '用户已关闭补帧'
+                or '性能优先使用 mpv 原生平滑', false)
+        schedule_evaluate(0.05)
+    else
+        publish('detecting', '检测中', '确认 SDR、CFR、分辨率、帧率与显卡余量', false)
+        schedule_evaluate(prepared_backend and 0.05 or o.start_delay)
+    end
 end)
 
 mp.register_event('end-file', function()
+    hdr_policy.reset_startup(false)
+    publish_auto_status('idle')
+    background:next_file()
+    preparation_watch = nil
     generation = generation + 1
+    invalidate_prepared_auto_pending()
+    prepared_auto_attempted_generation = -1
+    prepared_auto_external_generation = -1
+    set_native_if_changed('user-data/video-enhancement/ai-file-generation', generation)
     loaded = false
     last_progress_wall, last_progress_pos = nil, nil
     remove_filter()
@@ -1810,6 +2623,7 @@ mp.register_event('end-file', function()
 end)
 
 mp.register_event('seek', function()
+    invalidate_prepared_auto_pending()
     if state == 'starting' and filter_present() then
         -- Adding VapourSynth rebuilds the video chain and emits an internal
         -- seek. Keep the in-flight filter instead of mistaking it for a user
@@ -1828,8 +2642,8 @@ mp.register_event('seek', function()
         publish_seek_recovery(true, '正在精准定位并恢复 AI 帧窗口')
         local now = mp.get_time()
         guard_ready_at = now + math.max(0, o.guard_start_delay)
-        learning_safe_at = now + math.max(0, tonumber(o.learning_settle_time) or 30)
         guard_bad_samples = 0
+        guard_drop_only_samples = 0
         last_drops = mp.get_property_number('frame-drop-count', 0) or 0
         last_mistimed = mp.get_property_number('mistimed-frame-count', 0) or 0
         reset_progress_guard()
@@ -1839,6 +2653,7 @@ mp.register_event('seek', function()
 end)
 
 mp.register_event('playback-restart', function()
+    hdr_policy.observe_frame()
     if not seek_recovery then return end
     local recovery_seconds = seek_recovery_started
         and math.max(0, mp.get_time() - seek_recovery_started) or 0
@@ -1854,8 +2669,8 @@ mp.register_event('playback-restart', function()
     publish_seek_recovery(false)
     local now = mp.get_time()
     guard_ready_at = now + math.max(0, o.guard_start_delay)
-    learning_safe_at = now + math.max(0, tonumber(o.learning_settle_time) or 30)
     guard_bad_samples = 0
+    guard_drop_only_samples = 0
     last_drops = mp.get_property_number('frame-drop-count', 0) or 0
     last_mistimed = mp.get_property_number('mistimed-frame-count', 0) or 0
     reset_progress_guard()
@@ -1882,8 +2697,8 @@ mp.observe_property('pause', 'bool', function(_, paused)
         -- timer phase from the paused period (which could leave almost no grace).
         local now = mp.get_time()
         guard_ready_at = now + math.max(0, o.guard_start_delay)
-        learning_safe_at = now + math.max(0, tonumber(o.learning_settle_time) or 30)
         guard_bad_samples = 0
+        guard_drop_only_samples = 0
         last_drops = mp.get_property_number('frame-drop-count', 0) or 0
         last_mistimed = mp.get_property_number('mistimed-frame-count', 0) or 0
         reset_progress_guard()
@@ -1892,6 +2707,21 @@ mp.observe_property('pause', 'bool', function(_, paused)
 end)
 
 mp.register_script_message('refresh', function()
+    if graph_state ~= 'absent' then
+        -- Rechecking shader/adapter status must not revoke an already bound
+        -- VF or its one-time preparation approval.
+        publish_hq_state()
+        if state ~= 'starting' then schedule_evaluate(0.1) end
+        return
+    end
+    prepared_specs = {}
+    prepared_benchmarks = {}
+    prepared_device_identities = {}
+    prepared_devices = {}
+    auto_retry_disabled_specs = {}
+    set_native_if_changed('user-data/video-enhancement/ai-probe', '')
+    canceled_generation = -1
+    background:reset()
     blocked_generation = -1
     blocked_reason = nil
     blocked_protected = false
@@ -1907,43 +2737,43 @@ mp.register_script_message('set-backend', function(value, silent)
         local ready = runtime_ready('nvidia_hq')
         local supported, reason = hq_gpu_support()
         if not hq_pack_present() or not ready then
-            if not quiet then mp.osd_message('高端依赖包未完整安装，已保持当前安全后端', 3) end
+            if not quiet then mp.osd_message(i18n.t('高端依赖包未完整安装，已保持当前安全后端'), 3) end
             publish_hq_state()
             return
         elseif not supported then
-            if not quiet then mp.osd_message(tostring(reason) .. '，已保持当前安全后端', 3) end
+            if not quiet then mp.osd_message(i18n.status(tostring(reason)) .. i18n.t('，已保持当前安全后端'), 3) end
             publish_hq_state()
             return
         end
     end
 
-    local changed = o.backend_mode ~= value
+    local previous_backend = desired_backend()
+    local previous_hq_mode = o.hq_processing_mode
+    local changes = {backend_mode=value}
+    if value == 'vulkan' then changes.hq_processing_mode = 'native' end
+    if next(changes) and not persist_options(changes) then return end
     o.backend_mode = value
-    if changed then persist_backend_mode(value) end
-    if value == 'vulkan' and o.hq_processing_mode ~= 'native' then
-        o.hq_processing_mode = 'native'
-        persist_hq_processing_mode(o.hq_processing_mode)
-    end
+    if changes.hq_processing_mode then o.hq_processing_mode = changes.hq_processing_mode end
     local target = desired_backend()
     if runtime_environment_backend and target ~= runtime_environment_backend then
         hq_restart_required = true
         publish_hq_state()
         if not quiet then
-            mp.osd_message('VF 后端已保存：' .. backend_mode_labels[value]
-                .. '\n重启播放器后生效，当前播放链保持稳定', 4)
+            mp.osd_message(i18n.t('VF 后端已保存：') .. i18n.t(backend_mode_labels[value])
+                .. i18n.t('\n重启播放器后生效，当前播放链保持稳定'), 4)
         end
         return
     end
 
     hq_restart_required = false
     publish_hq_state()
-    if not active then
+    if not active and (target ~= previous_backend or o.hq_processing_mode ~= previous_hq_mode) then
         blocked_generation = -1
         blocked_reason = nil
         blocked_protected = false
         schedule_evaluate(0.1)
     end
-    if not quiet then mp.osd_message('VF 后端：' .. backend_mode_labels[value], 2.5) end
+    if not quiet then mp.osd_message(i18n.t('VF 后端：') .. i18n.t(backend_mode_labels[value]), 2.5) end
 end)
 
 mp.register_script_message('set-hq-mode', function(value, silent)
@@ -1955,106 +2785,201 @@ mp.register_script_message('set-hq-mode', function(value, silent)
         if not ready then
             local missing_name = tostring(missing or '运行文件'):match('[^\\]+$') or '运行文件'
             if not quiet then
-                mp.osd_message('完整超分补帧依赖包未就绪：缺少 ' .. missing_name, 4)
+                mp.osd_message(i18n.t('完整超分补帧依赖包未就绪：缺少 ') .. missing_name, 4)
             end
             publish_hq_state()
             return
         elseif not supported then
-            if not quiet then mp.osd_message(tostring(reason), 3) end
+            if not quiet then mp.osd_message(i18n.status(tostring(reason)), 3) end
             publish_hq_state()
             return
         end
         -- Explicit full-package pipelines always use the TensorRT runtime.
         -- Persist both values as one user action; a loaded Vulkan/Python 3.12
         -- runtime is kept intact until the next process.
-        if o.backend_mode ~= 'nvidia_hq' then
-            o.backend_mode = 'nvidia_hq'
-            persist_backend_mode(o.backend_mode)
-        end
     end
 
     local changed = o.hq_processing_mode ~= value
+    local changes = {hq_processing_mode=value}
+    if value ~= 'native' then changes.backend_mode = 'nvidia_hq' end
+    if next(changes) and not persist_options(changes) then return end
+    if changes.backend_mode then o.backend_mode = changes.backend_mode end
     o.hq_processing_mode = value
-    if changed then persist_hq_processing_mode(value) end
     local target = desired_backend()
     if runtime_environment_backend and target ~= runtime_environment_backend then
         hq_restart_required = true
         publish_hq_state()
         if not quiet then
-            mp.osd_message('完整依赖方案已保存：' .. hq_processing_mode_labels[value]
-                .. '\n重启播放器后生效，当前播放链保持稳定', 4)
+            mp.osd_message(i18n.t('完整依赖方案已保存：') .. i18n.t(hq_processing_mode_labels[value])
+                .. i18n.t('\n重启播放器后生效，当前播放链保持稳定'), 4)
         end
         return
     end
     hq_restart_required = false
     publish_hq_state()
+    if not changed then
+        if not quiet then mp.osd_message(i18n.t('完整依赖方案：') .. i18n.t(hq_processing_mode_labels[value]), 3) end
+        return
+    end
     blocked_generation = -1
     blocked_reason = nil
     blocked_protected = false
-    if filter_present() then remove_filter() end
     schedule_evaluate(0.1)
     if not quiet then
-        mp.osd_message('完整依赖方案：' .. hq_processing_mode_labels[value], 3)
+        mp.osd_message(i18n.t('完整依赖方案：') .. i18n.t(hq_processing_mode_labels[value]), 3)
     end
+end)
+
+mp.register_script_message('set-hdr-vivid-mode', function(value)
+    value = hdr_policy.normalize(value)
+    local changed = o.hdr_vivid_mode ~= value
+    if not persist_ai_option('hdr_vivid_mode', value) then return end
+    o.hdr_vivid_mode = value
+    if changed and (mp.get_property_bool('video-params/hdr-vivid', false)
+        or active_plan and active_plan.vivid_compat) then
+        -- Explicit permission is separate from the AI mode and one-attempt
+        -- budget. Revoke pending work/approval before accepting new policy;
+        -- neither a canceled file nor a failed spec is silently retried.
+        invalidate_prepared_auto_pending()
+        background:reset()
+        if active_plan and active_plan.vivid_compat then
+            remove_filter()
+            -- Observer traffic during decoder reconfiguration may postpone
+            -- evaluation. A removed graph must stop claiming activity now.
+            publish('protected', '格式保护', select(2, hdr_policy.check()), false)
+        end
+        set_native_if_changed('user-data/video-enhancement/ai-probe', '')
+        set_native_if_changed('user-data/video-enhancement/ai-probe-verdict', 'unknown')
+    end
+    publish_hq_state()
+    schedule_evaluate(0.05)
+    mp.osd_message((value == 'hdr10'
+        and i18n.t('已允许普通 HDR 基底兼容补帧\n不应用 Vivid 专属动态映射；需另行开启 AI 补帧')
+        or i18n.t('HDR Vivid：保持原有处理，不启用 AI 补帧'))
+, 5)
 end)
 
 mp.register_script_message('show-diagnostics', function()
     local plan = active_plan or {}
+    local probe = trim(mp.get_property_native(
+        'user-data/video-enhancement/ai-probe') or '')
     local source_w = mp.get_property_number('video-params/w', 0) or 0
     local source_h = mp.get_property_number('video-params/h', 0) or 0
     local output_w = mp.get_property_number('video-out-params/w', 0) or 0
     local output_h = mp.get_property_number('video-out-params/h', 0) or 0
+    local filter_details = i18n.t('当前无托管 AI 滤镜')
+    local filters = mp.get_property_native('vf')
+    for _, filter in ipairs(type(filters) == 'table' and filters or {}) do
+        if type(filter) == 'table' and filter.label == 'yaozhi_ai' then
+            msg.info('AI 滤镜完整参数：' .. utils.format_json(filter))
+            filter_details = i18n.t('完整内容已写入日志（AI 滤镜完整参数）')
+        end
+    end
     local lines = {
-        '视频增强诊断',
-        '依赖：' .. tostring(mp.get_property_native(
-            'user-data/video-enhancement/hq-status') or '未检测'),
-        '能力码：' .. tostring(mp.get_property_native(
-            'user-data/video-enhancement/hq-capability-code') or '未检测'),
-        '策略：' .. tostring(hq_processing_mode_labels[o.hq_processing_mode]),
-        '请求：后端=' .. tostring(o.backend_mode) .. ' · 处理=' .. tostring(o.hq_processing_mode)
-            .. ' · 流畅=' .. tostring(mp.get_property_native(
-                'user-data/video-enhancement/smooth-mode') or 'auto'),
-        '实际后端：' .. tostring(plan.backend_label
-            or mp.get_property_native('user-data/video-enhancement/ai-backend') or '等待视频'),
-        '决策原因：' .. tostring(mp.get_property_native(
-            'user-data/video-enhancement/ai-reason-code') or '等待检测')
-            .. ' · ' .. tostring(mp.get_property_native(
-                'user-data/video-enhancement/ai-reason-detail') or '等待视频'),
-        string.format('尺寸：源 %d×%d → 推理 %d×%d → 输出 %d×%d',
+        i18n.t('视频增强诊断'),
+        i18n.t('起播格式：') .. i18n.status(tostring(mp.get_property_native('user-data/video-enhancement/ai-startup-format-state') or 'idle'))
+            .. ' · ' .. i18n.status(tostring(mp.get_property_native('user-data/video-enhancement/ai-startup-format-detail') or '')),
+        i18n.t('HDR Vivid 选择：') .. (o.hdr_vivid_mode == 'hdr10' and i18n.t('允许普通 HDR 基底兼容补帧（不应用 Vivid 动态映射）')
+            or i18n.t('默认保持原有处理')),
+        i18n.t('格式处理：') .. i18n.status(select(2, hdr_policy.check())),
+        i18n.t('普通 HDR 兼容补帧实际接入：') .. i18n.status(tostring(mp.get_property_native(
+            'user-data/video-enhancement/ai-hdr-compat-active') or 'no')),
+        i18n.t('依赖：') .. i18n.status(tostring(mp.get_property_native(
+            'user-data/video-enhancement/hq-status') or i18n.t('未检测'))),
+        i18n.t('能力码：') .. i18n.status(tostring(mp.get_property_native(
+            'user-data/video-enhancement/hq-capability-code') or i18n.t('未检测'))),
+        i18n.t('策略：') .. i18n.status(tostring(hq_processing_mode_labels[o.hq_processing_mode])),
+        i18n.t('请求：后端=') .. tostring(o.backend_mode) .. i18n.t(' · 处理=') .. tostring(o.hq_processing_mode)
+            .. i18n.t(' · 流畅=') .. mode(),
+        i18n.t('实际后端：') .. i18n.status(tostring(plan.backend_label
+            or mp.get_property_native('user-data/video-enhancement/ai-backend') or i18n.t('等待视频'))),
+        i18n.t('滤镜参数：') .. filter_details,
+        i18n.t('决策原因：') .. i18n.status(tostring(mp.get_property_native(
+            'user-data/video-enhancement/ai-reason-code') or i18n.t('等待检测')))
+            .. ' · ' .. i18n.status(tostring(mp.get_property_native(
+                'user-data/video-enhancement/ai-reason-detail') or i18n.t('等待视频'))),
+        string.format(i18n.t('尺寸：源 %d×%d → 推理 %d×%d → 输出 %d×%d'),
             source_w, source_h,
             plan.inference_width or source_w, plan.inference_height or source_h,
             output_w > 0 and output_w or (plan.output_width or source_w),
             output_h > 0 and output_h or (plan.output_height or source_h)),
-        '时间：' .. tostring(mp.get_property_native(
-            'user-data/video-enhancement/smooth-detail') or '等待视频'),
-        '空间：' .. tostring(mp.get_property_native(
-            'user-data/video-enhancement/superres-detail') or '等待视频'),
-        'Shader：' .. tostring(mp.get_property_native(
-            'user-data/video-enhancement/shader-ownership') or 'none')
-            .. ' · ' .. tostring(mp.get_property_native(
-                'user-data/video-enhancement/shader-active-roles') or '无')
-            .. ' · ' .. tostring(mp.get_property_native(
-                'user-data/video-enhancement/shader-active-stages') or '无'),
-        '保护：' .. tostring(mp.get_property_native(
-            'user-data/video-enhancement/ai-safety-limit') or '等待检测'),
-        '预热：' .. tostring(mp.get_property_native(
-            'user-data/video-enhancement/ai-warmup-phase') or 'idle')
-            .. ' · 总计 ' .. tostring(mp.get_property_native(
-                'user-data/video-enhancement/ai-warmup-seconds') or '-') .. 's'
-            .. ' · 建图 ' .. tostring(mp.get_property_native(
-                'user-data/video-enhancement/ai-graph-build-seconds') or '-') .. 's',
+        i18n.t('时间：') .. i18n.status(tostring(mp.get_property_native(
+            'user-data/video-enhancement/smooth-detail') or i18n.t('等待视频'))),
+        i18n.t('空间：') .. i18n.status(tostring(mp.get_property_native(
+            'user-data/video-enhancement/superres-detail') or i18n.t('等待视频'))),
+        'Shader：' .. i18n.status(tostring(mp.get_property_native(
+            'user-data/video-enhancement/shader-ownership') or 'none'))
+            .. ' · ' .. i18n.status(tostring(mp.get_property_native(
+                'user-data/video-enhancement/shader-active-roles') or i18n.t('无')))
+            .. ' · ' .. i18n.status(tostring(mp.get_property_native(
+                'user-data/video-enhancement/shader-active-stages') or i18n.t('无'))),
+        i18n.t('保护：') .. i18n.status(tostring(mp.get_property_native(
+            'user-data/video-enhancement/ai-safety-limit') or i18n.t('等待检测'))),
+        i18n.t('后台测速：') .. (probe ~= '' and probe or i18n.t('尚无当前规格结果')),
+        i18n.t('预热：') .. i18n.status(tostring(mp.get_property_native(
+            'user-data/video-enhancement/ai-warmup-phase') or 'idle'))
+            .. i18n.t(' · 总计 ') .. i18n.status(tostring(mp.get_property_native(
+                'user-data/video-enhancement/ai-warmup-seconds') or '-')) .. 's'
+            .. i18n.t(' · 建图 ') .. i18n.status(tostring(mp.get_property_native(
+                'user-data/video-enhancement/ai-graph-build-seconds') or '-')) .. 's',
     }
     local text = table.concat(lines, '\n')
     mp.osd_message(text, 8)
     msg.info(text:gsub('\n', ' | '))
 end)
 
+mp.register_script_message('enable-prepared', function()
+    if not loaded or graph_state ~= 'absent' or filter_present() then return end
+    if background:enable() then
+        publish_auto_status('manual')
+        -- An explicit manual action authorizes one new attempt after fallback.
+        blocked_generation = -1
+        blocked_reason = nil
+        blocked_protected = false
+        canceled_generation = -1
+        schedule_evaluate(0.05)
+    end
+end)
+mp.register_script_message('cancel-prepare', function()
+    local opening = mp.get_property_native('user-data/video-enhancement/ai-startup-format-state')
+    local pending_opening = o.enabled and loaded and graph_state == 'absent' and hdr_policy.startup_candidate()
+        and (mode() == 'auto' or mode() == 'quality')
+    if background.status ~= 'preparing' and background.status ~= 'ready'
+        and opening ~= 'waiting-frame' and opening ~= 'settling' and opening ~= 'replanning'
+        and not pending_opening then return end
+    canceled_generation = generation
+    publish_auto_status('blocked')
+    invalidate_prepared_auto_pending()
+    -- A completed worker has nothing to cancel. Keep its exact-spec result
+    -- ready for an explicit manual trial while blocking this file's auto path.
+    if background.status == 'preparing' then background:cancel('canceled') end
+    schedule_evaluate(0.05)
+end)
+mp.register_script_message('retry-prepare', function()
+    if graph_state ~= 'absent' or filter_present() then return end
+    hq_prepare_failure_generation = -1
+    hq_prepare_failure_reason = nil
+    prepared_specs = {}
+    prepared_benchmarks = {}
+    prepared_device_identities = {}
+    prepared_devices = {}
+    auto_retry_disabled_specs = {}
+    publish_auto_status('idle')
+    set_native_if_changed('user-data/video-enhancement/ai-probe', '')
+    canceled_generation = -1
+    blocked_generation = -1
+    blocked_reason = nil
+    blocked_protected = false
+    background:retry(); schedule_evaluate(0.05)
+end)
+mp.register_event('shutdown', function() background:reset() end)
+
 mp.register_script_message('rife-quality-ready', function(token)
-    local serial = tonumber(token)
-    if serial then finish_activation(serial, 'AI ready') end
+    if token == graph_token then finish_activation(token, 'AI ready') end
 end)
 
-mp.register_script_message('rife-spatial-blocked', function(reason)
+mp.register_script_message('rife-spatial-blocked', function(reason, token)
+    if token ~= graph_token then return end
     protect_current_file(trim(reason) ~= '' and reason
         or '空间画质不得倒退：已保留原有超分质量')
 end)
@@ -2070,6 +2995,7 @@ for _, property in ipairs({
     'user-data/alist/archive-inner',
     'speed',
     'audio-params',
+    'audio-out-params',
     'user-data/audio-passthrough/enabled',
     -- Do not observe the aggregate video-params table. HDR10+ updates dynamic
     -- metadata throughout playback, and every parent-table notification used
@@ -2080,6 +3006,9 @@ for _, property in ipairs({
     'video-params/primaries',
     'video-params/colormatrix',
     'video-params/hdr-vivid',
+    'video-params/hw-pixelformat',
+    'video-params/pixelformat',
+    'current-vo',
     'video-params/dolby-vision-profile',
     'current-tracks/video/dolby-vision-profile',
     'user-data/media-format/dolby-vision-profile',
@@ -2088,8 +3017,61 @@ for _, property in ipairs({
     'estimated-vf-fps',
 }) do
     mp.observe_property(property, 'native', function()
-        publish_hq_state()
-        if loaded and state ~= 'starting' then schedule_evaluate(0.2) end
+        if property == 'video-params/hdr-vivid' and hdr_policy.tracking
+            and mp.get_property_bool(property, false) then hdr_policy.target_vivid = true end
+        publish_hq_state(true)
+        local policy_or_source_changed = property == 'user-data/video-enhancement/smooth-mode'
+            or property == 'user-data/video-enhancement/superres-mode'
+            or property == 'user-data/video-enhancement/protect-4k'
+            or property == 'video-params/w' or property == 'video-params/h'
+            or property == 'video-params/gamma' or property == 'video-params/primaries'
+            or property == 'video-params/colormatrix' or property == 'video-params/hdr-vivid'
+            or property == 'video-params/hw-pixelformat' or property == 'video-params/pixelformat'
+            or property == 'current-vo' or property:find('dolby-vision-profile', 1, true) ~= nil
+        if policy_or_source_changed or property == 'speed' then invalidate_prepared_auto_pending() end
+        -- Most observer updates during VF creation are feedback from that same
+        -- creation and must not recursively evaluate it. Explicit AI policy or
+        -- real source geometry changes are different: a user may disable AI
+        -- while the first graph is still verifying, and that choice must win.
+        if loaded and (state ~= 'starting' or policy_or_source_changed) then
+            if property == 'estimated-vf-fps' and o.auto_enable_prepared
+                and background.status == 'ready'
+                and (prepared_specs[background.key] == 'safe' or prepared_specs[background.key] == 'slow') then
+                -- The validated CFR/exact spec is checked by evaluate.
+                -- Ordinary per-frame estimator noise must neither restart
+                -- the stable window nor postpone its already queued check.
+                if not prepared_auto_pending then schedule_evaluate(0.2, true) end
+                return
+            end
+            schedule_evaluate(property == 'video-params/hdr-vivid' and 0.05 or 0.2)
+        end
+    end)
+end
+
+-- Only the first real decoded-frame observation can wake a waiting opener;
+-- later frame-info updates do not re-evaluate the AI policy on every frame.
+mp.observe_property('video-frame-info', 'native', function()
+    hdr_policy.observe_frame()
+end)
+
+-- Only changes which can authorize or interrupt the trial get an extra
+-- observer. An outstanding stability check uses the one existing evaluate
+-- timer, and a paused/cache-bound video waits for a real state change.
+for _, property in ipairs({
+    'user-data/video-enhancement/native-clock-guard',
+    'user-data/video-enhancement/sync-managed',
+    'video-sync', 'interpolation', 'pause', 'paused-for-cache', 'seeking', 'core-idle',
+}) do
+    mp.observe_property(property, 'native', function(_, value)
+        if loaded and graph_state == 'absent' and value == 'external'
+            and (property == 'user-data/video-enhancement/sync-managed'
+                or property == 'user-data/video-enhancement/native-clock-guard') then
+            -- Another script can later republish managed timing. That does not
+            -- authorize a new automatic AI graph after this file's takeover.
+            prepared_auto_external_generation = generation
+        end
+        invalidate_prepared_auto_pending()
+        if loaded and graph_state == 'absent' then schedule_evaluate(0.2) end
     end)
 end
 
@@ -2116,12 +3098,15 @@ for _, property in ipairs({'fullscreen', 'window-maximized', 'osd-dimensions'}) 
         local previous = presentation_values[property]
         presentation_values[property] = signature
         if previous ~= nil and previous ~= signature then
+            invalidate_prepared_auto_pending()
+            if loaded and graph_state == 'absent' then schedule_evaluate(0.2) end
             reset_guard_for_presentation_change(property .. ' changed')
         end
     end)
 end
 
 mp.add_periodic_timer(math.max(0.5, o.guard_interval), monitor_guard)
+mp.add_periodic_timer(0.25, monitor_background_pressure)
 publish_seek_recovery(false)
 publish_hq_state()
 publish(o.enabled and 'idle' or 'unavailable',

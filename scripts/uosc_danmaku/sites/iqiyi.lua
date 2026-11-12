@@ -1,3 +1,5 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
+local Color = require("modules/color")
 local msg = require('mp.msg')
 local utils = require('mp.utils')
 local inflate = require('modules/inflate')
@@ -31,6 +33,7 @@ local function get_tvid_from_url(url, callback)
     call_cmd_async(build_curl_args(api), function(err, out)
         if err or not out or out == '' then
             msg.warn('Iqiyi decode request failed: ' .. tostring(err))
+            callback(nil)
             return
         end
         local data = utils.parse_json(out)
@@ -54,6 +57,7 @@ local function get_video_info(tvid, callback)
     call_cmd_async(build_curl_args(api), function(err, out)
         if err or not out or out == '' then
             msg.warn('Iqiyi baseinfo request failed: ' .. tostring(err))
+            callback(nil)
             return
         end
         local data = utils.parse_json(out)
@@ -71,9 +75,25 @@ local function extract_tags(xml, tag)
 end
 
 local function parse_xml_and_append(xml, contents, total_files)
-    local danmaku = extract_tags(xml, 'content')
-    local showTime = extract_tags(xml, 'showTime')
-    local color = extract_tags(xml, 'color')
+    local danmaku, showTime, color = {}, {}, {}
+    -- Keep optional colour fields attached to their own bulletInfo. Separate
+    -- global tag lists shift later colours when one comment omits <color>.
+    for entry in (xml or ''):gmatch('<bulletInfo[^>]*>(.-)</bulletInfo>') do
+        local text = extract_tags(entry, 'content')[1]
+        if text then
+            danmaku[#danmaku + 1] = text
+            showTime[#danmaku] = extract_tags(entry, 'showTime')[1] or ''
+            color[#danmaku] = extract_tags(entry, 'color')[1] or ''
+        end
+    end
+    if #danmaku == 0 then
+        danmaku = extract_tags(xml, 'content')
+        showTime = extract_tags(xml, 'showTime')
+        color = extract_tags(xml, 'color')
+        -- Legacy fragments without record boundaries cannot safely associate
+        -- a partial colour list; keep missing colours instead of mislabelling.
+        if #color ~= #danmaku then color = {} end
+    end
 
     if #danmaku == 0 then return end
     local step = math.ceil(#danmaku * (total_files or 1) / 10000)
@@ -82,7 +102,7 @@ local function parse_xml_and_append(xml, contents, total_files)
     for i = 1, #danmaku, step do
         local content = {}
         local timepoint = tonumber(showTime[i]) or 0
-        local col = tonumber((color[i] or ''), 16) or 16777215
+        local col = Color.normalize(color[i], "hex") or ""
         local txt = danmaku[i] or ''
         content.c = string.format('%s,%s,%s,25,,,', timepoint, col, 1)
         content.m = txt
@@ -156,7 +176,7 @@ end
 
 local function save_output_and_load(output_table, source_url)
     if #output_table == 0 then
-        show_message('未获取到任何弹幕', 3)
+        show_message(i18n.t('未获取到任何弹幕'), 3)
         return
     end
     local final_json_str = utils.format_json(output_table)
@@ -171,10 +191,8 @@ local function build_args_for_server(server, referer)
         'Accept: */*',
     }
     local args = build_curl_args(server.url, headers)
-    local last = args[#args]
-    args[#args] = '--output'
+    table.insert(args, '--output')
     table.insert(args, server.zfile)
-    table.insert(args, last)
     return args
 end
 
@@ -217,7 +235,7 @@ end
 local function process_iqiyi_with_tvid(tvid, url, callback)
     get_video_info(tvid, function(videoInfo)
         if not videoInfo then
-            show_message('获取爱奇艺视频信息失败', 3)
+            show_message(i18n.t('获取爱奇艺视频信息失败'), 3)
             callback(false)
             return
         end
@@ -281,7 +299,7 @@ function load_danmaku_for_iqiyi(path, callback)
 
     get_tvid_from_url(url, function(tvid)
         if not tvid then
-            show_message('获取爱奇艺 tvid 失败', 3)
+            show_message(i18n.t('获取爱奇艺 tvid 失败'), 3)
             callback(false)
             return
         end

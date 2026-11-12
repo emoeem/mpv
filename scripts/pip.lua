@@ -26,6 +26,10 @@ end
 publish_pip_state()
 local original_options = {}
 
+local function managed_ontop()
+    return mp.get_property('user-data/ontop-mode', '') ~= ''
+end
+
 -- save original window properties
 local function save_original_options()
     original_options.fullscreen   = mp.get_property_bool("fullscreen")
@@ -47,7 +51,9 @@ local function restore_original_options()
     if original_options.window_maximized ~= nil then mp.set_property_bool("window-maximized", original_options.window_maximized) end
     if original_options.force_window_position ~= nil then mp.set_property_bool("force-window-position", original_options.force_window_position) end
     if original_options.border        ~= nil then mp.set_property_bool("border",        original_options.border)        end
-    if original_options.ontop         ~= nil then mp.set_property_bool("ontop",         original_options.ontop)         end
+    if original_options.ontop ~= nil and not managed_ontop() then
+        mp.set_property_bool("ontop", original_options.ontop)
+    end
     if original_options.keepaspect_window ~= nil then mp.set_property_bool("keepaspect-window", original_options.keepaspect_window) end
     if original_options.window_scale  ~= nil then mp.set_property("window_scale", original_options.window_scale) end
     if original_options.autofit       ~= nil then mp.set_property("autofit", original_options.autofit) end
@@ -76,12 +82,13 @@ local function enable_pip()
     if pip_enabled then return end
 
     save_original_options()
+    mp.set_property_bool('user-data/pip/active', true)
 
     mp.set_property_bool("fullscreen",   false)   -- exit fullscreen if necessary
     mp.set_property_bool("window-minimized", false)
     mp.set_property_bool("force-window-position", false)
     mp.set_property_bool("border",       false)   -- remove decorations
-    mp.set_property_bool("ontop",        true)    -- keep above other windows
+    if not managed_ontop() then mp.set_property_bool("ontop", true) end
     mp.set_property_bool("keepaspect-window", true)
     mp.set_property("autofit", o.autofit)
     mp.set_property("autofit-larger", "")
@@ -101,6 +108,7 @@ local function disable_pip()
     cancel_geometry_timer()
     restore_original_options()
     pip_enabled = false
+    mp.set_property_bool('user-data/pip/active', false)
     publish_pip_state()
     mp.osd_message("画中画：关闭")
 end
@@ -132,3 +140,6 @@ end)
 
 -- binding
 mp.add_key_binding(nil, "toggle-pip", toggle_pip)
+mp.register_event('shutdown', function()
+    if pip_enabled then mp.set_property_bool('user-data/pip/active', false) end
+end)

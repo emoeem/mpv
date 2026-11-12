@@ -44,6 +44,11 @@
 | 截图裁剪/长截图 | Yaozhi `mpv-cropscreen.lua` | 可移植，但当前已有截图链；暂不重复引入 |
 | WebDAV/AList 快捷入口 | Yaozhi `webdav_shortcut.lua` | Windows HTTP/文件浏览耦合，Linux 侧暂不移植 |
 | YouTube 登录辅助 | Yaozhi `youtube-account.lua` | 可脚本化，但当前 Linux 在线媒体已使用本机 Cookie 路径，不引入专用浏览器方案 |
+| Yaozhi i18n 双语层（2026-11-13 引入） | `yaozhi-i18n.lua`/`yaozhi-persistence.lua` + `script-opts/yaozhi-language.conf` + `en.json` | 纯 Lua 可用；persistence 打 Linux 原子写回退补丁；默认 zh-CN 界面零变化 |
+| 弹幕新模块（2026-11-13 随 V1.0.9-2 引入） | `source_cache`/`blackbar`/`title_display`/`remote` + 站点六件 | 纯 Lua，无 Windows 依赖；Native ASS 路径在 Yaozhi 私有核心外自动回退 Overlay |
+| 网络切轨恢复 | `audio-switch-guard.lua`（2026-11-13 随 audio-passthrough 引入） | 纯 Lua 有界恢复事务，Linux 可用 |
+| 字幕搜索链 | `sub-assrt.lua` + `subtitle-{request,output,remote,cat,search-query,search-session}.lua` + `yaozhi-channel.lua` | 纯 Lua 可用（2026-11-13 整取） |
+| 弹幕现场诊断 | `danmaku-diagnostics.lua`（默认关闭，`CTRL+SHIFT+D`） | 纯属性观察；Yaozhi 私有属性观察不到即为空，无副作用 |
 
 ### ③ Shader / VapourSynth —— Linux 已有能力
 
@@ -76,6 +81,13 @@
 | `display-info.dll` 相关 | DLL + Windows 显示器接口 | 不移植 |
 | Yaozhi Windows `mpv.exe` | 自编译 Windows core | 不作为 Linux 播放核心 |
 | Yaozhi 便携 JRE / `libbluray` Windows 运行时 | Windows 便携包结构 | Linux 不复制运行时 |
+| `stats-system.lua` | 第 4 行 `assert(ffi.os == 'Windows')`，Linux load 即断言失败 | 不引入；`stats.lua` 经 pcall 引用，缺失时优雅降级（2026-11-13） |
+| `network-connections.lua` / `online-media-link.lua` / `online-media-maintenance.lua` | 硬依赖 `online-media/runtime/python.exe` Windows 内嵌运行时 | 不引入；`online-media.lua` 保持本地系统 python3 路径 |
+| `cache-maintenance.lua` / `douyu-account.lua` | 依赖 Windows python.exe + Douyu/维护 helper | 不引入 |
+| `av3a-playback.lua` / `av3a-preselections.lua` | 依赖 Yaozhi 私有核心的 AV3A 属性/选项 | 上游核心恒不生效，不引入 |
+| `disc-menu.lua` 的 BD-J 路径 | 依赖 Windows JRE `jvm.dll` | 不引入 |
+| `etlp-startup.lua` / `file-browser-new-window.lua` | 与 Yaoplayer.exe 前端 IPC/子进程耦合 | 无前端时自动跳过，但无意义，不引入 |
+| `mpv.conf` 的 `no-title-bar`/`media-controls`/`window-corners`/`snap-window`/命名管道 IPC | Yaozhi 私有选项或 Windows 系统特性 | 不移植（2026-11-13 复核） |
 
 ## 最终架构
 

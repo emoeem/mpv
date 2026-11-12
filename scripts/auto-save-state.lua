@@ -93,19 +93,43 @@ local function handle_pause(_, pause)
     end
 end
 
+local function premature_eof(eof)
+    if not eof or not path or path:find('^%a[%w.+-]-://')
+        or path:find('^%a[%w.+-]-:%?') then return false end
+    -- on_unload runs before the demuxer is destroyed, so these still describe
+    -- this file. Do not infer completion for live/unknown-length sources or
+    -- intentional playback limits; retain their existing EOF behavior.
+    if not mp.get_property_bool('seekable', false)
+        or not mp.get_property_bool('options/rebase-start-time', true)
+        or mp.get_property('play-direction', 'forward') ~= 'forward'
+        or mp.get_property('options/end', 'none') ~= 'none'
+        or mp.get_property('options/length', 'none') ~= 'none'
+        or mp.get_property('options/frames', 'all') ~= 'all'
+        or mp.get_property_number('ab-loop-b') ~= nil then return false end
+    local duration = mp.get_property_number('duration')
+    local position = mp.get_property_number('time-pos')
+    if not duration or not position or duration ~= duration or position ~= position
+        or duration <= 0 or duration >= math.huge or position <= 0
+        or position >= duration then return false end
+    return position / duration * 100 < o.percent_pos and duration - position > 2
+end
+
 -- save watch-later-config when file unloading
 local function save_or_delete()
     if not can_delete then return end
     cancel_safe_save()
     local eof = mp.get_property_bool("eof-reached")
     local percent_pos = mp.get_property_number("percent-pos")
-    if eof or percent_pos and (percent_pos == 0 or percent_pos >= o.percent_pos) then
+    local early_eof = premature_eof(eof)
+    if (eof and not early_eof)
+        or percent_pos and (percent_pos == 0 or percent_pos >= o.percent_pos) then
         can_delete = true
         if path ~= nil then
             msg.debug("deleting state: percent_pos=0 or eof")
             mp.commandv("delete-watch-later-config", path)
         end
     elseif path ~= nil then
+        if early_eof then msg.warn("preserving state after EOF before expected end") end
         save(true)
     end
     reset()

@@ -1,6 +1,8 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 local msg = require('mp.msg')
 local utils = require("mp.utils")
 local unpack = unpack or table.unpack
+local TitleDisplay = require('modules/title_display')
 
 input_loaded, input = pcall(require, "mp.input")
 uosc_available = false
@@ -13,6 +15,16 @@ local SEARCH_CONNECT_TIMEOUT = 3
 local SEARCH_REQUEST_TIMEOUT = 8
 local SEARCH_UI_COALESCE = 0.12
 local EXTRA_SEARCH_KEY = "__extra_search"
+
+-- Keep the source choice in each menu callback, never in sticky global state.
+local function search_ui(anime_only, include_extra)
+    if anime_only then
+        return i18n.t("动漫弹幕搜索"), i18n.t("动漫补充源；无结果时可返回普通弹幕搜索"), "search-anime-proxy-event"
+    end
+    return i18n.t("在此处输入片名"), include_extra
+        and i18n.t("直接搜片名；|ds / |dy 可精确筛选电视剧或电影")
+        or i18n.t("使用enter或ctrl+enter进行搜索"), "search-anime-event"
+end
 
 local function request_is_current(generation, menu_type)
     return not request_cancelled
@@ -27,7 +39,7 @@ local function strip_loading_from_latest_menu_anime()
     if not parsed or type(parsed) ~= "table" then return end
     local function is_loading_item(it)
         if not it or type(it) ~= "table" then return false end
-        if it.title == "加载数据中..." then return true end
+        if it.title == "加载数据中..." or it.title == i18n.t("加载数据中...") then return true end
         if it.italic == true and it.icon == "spinner" then return true end
         return false
     end
@@ -112,8 +124,8 @@ local function search_progress_footnote(ctx, complete)
     if not ctx.total_servers or ctx.total_servers <= 1 then return base end
     local completed = math.min(ctx.total_servers, math.max(0, ctx.completed_count or 0))
     local progress = complete
-        and string.format("搜索完成 %d/%d", completed, ctx.total_servers)
-        or string.format("搜索 %d/%d · 仍在继续", completed, ctx.total_servers)
+        and string.format(i18n.t("搜索完成 %d/%d"), completed, ctx.total_servers)
+        or string.format(i18n.t("搜索 %d/%d · 仍在继续"), completed, ctx.total_servers)
     return base ~= "" and (base .. "　｜　" .. progress) or progress
 end
 
@@ -191,7 +203,10 @@ local function make_handle_response(ctx)
                 ctx.server_items[server] = ctx.server_items[server] or {}
             else
                 for _, anime in ipairs(data.animes) do
-                    local key = anime.bangumiId or (anime.animeTitle and anime.animeTitle:gsub("%s+", " ") or nil)
+                    local item_key = anime.bangumiId or
+                        (anime.animeTitle and anime.animeTitle:gsub("%s+", " ") or nil)
+                    -- Mirror-local bangumi IDs need not share an ID namespace.
+                    local key = item_key and (server .. ':' .. tostring(item_key))
                     if key and not ctx.seen[key] then
                         ctx.seen[key] = true
                         ctx.server_items[server] = ctx.server_items[server] or {}
@@ -204,8 +219,19 @@ local function make_handle_response(ctx)
                                 hint = note
                             end
                         end
+                        local display_title, provider = TitleDisplay.anime(anime.animeTitle)
+                        if provider then
+                            local kind = type(anime.typeDescription) == 'string'
+                                and anime.typeDescription:match('^%s*(.-)%s*$') or ''
+                            local node = note
+                            if not node or node == '' then
+                                node = server:match('^https?://api%.dandanplay%.net') and i18n.t('官方')
+                                    or server:match('^https?://([^/]+)') or i18n.t('备用节点')
+                            end
+                            hint = (kind ~= '' and (kind .. ' · ') or '') .. provider .. ' · ' .. node
+                        end
                         table.insert(ctx.server_items[server], {
-                            title = anime.animeTitle,
+                            title = display_title,
                             hint = hint,
                             value = { "script-message-to", mp.get_script_name(), "search-episodes-event", anime.animeTitle, anime.bangumiId, server },
                         })
@@ -241,7 +267,7 @@ local function make_handle_response(ctx)
 end
 
 -- 打开番剧数据匹配菜单
-function get_animes(query, include_extra, pending_generation)
+function get_animes(query, include_extra, pending_generation, anime_only)
     local request_generation = pending_generation
     if request_generation then
         -- 快速连续提交时，较早的零延迟定时器可能晚于新搜索触发；
@@ -252,28 +278,13 @@ function get_animes(query, include_extra, pending_generation)
         request_generation = active_request_generation
     end
     local encoded_query = url_encode(query)
-    local all_metas = get_api_server_list(options.api_server, true)
-    local server_hint = ""
-    local server_metas = {}
-    if filter_note and filter_note ~= "" then
-        local matched = {}
-        for _, m in ipairs(all_metas) do
-            if m.note and m.note == filter_note then
-                table.insert(matched, m)
-            end
-        end
-        if #matched > 0 then
-            server_metas = { matched[1] }  -- 只取第一个匹配的
-            server_note = "服务器【" .. filter_note .. "】"
-        else
-            show_message("未找到备注为【" .. filter_note .. "】的服务器，将使用全部服务器", 3)
-            msg.info("未找到备注为【" .. filter_note .. "】的服务器，将使用全部服务器")
-            server_metas = all_metas
-        end
-    else
-        server_metas = all_metas
+    local server_setting = options.api_server
+    if anime_only then server_setting = options.anime_api_server end
+    local server_metas = get_api_server_list(server_setting, true)
+    if anime_only and #server_metas == 0 then
+        show_message(i18n.t("动漫补充源未启用"), 3)
+        return
     end
-
     local servers = {}
     local server_notes = {}
     for _, m in ipairs(server_metas) do
@@ -283,7 +294,7 @@ function get_animes(query, include_extra, pending_generation)
         end
     end
 
-    local has_extra = include_extra
+    local has_extra = not anime_only and include_extra
         and type(make_extra_search_request_args) == "function"
         and type(parse_extra_search_response) == "function"
     local request_sources = {}
@@ -303,16 +314,15 @@ function get_animes(query, include_extra, pending_generation)
     local total_count = 0
     request_cancelled = false
 
-    local message = server_hint .. "加载数据中..."
+    local message = "加载数据中..."
     local menu_type = "menu_anime"
-    local menu_title = "在此处输入片名"
-    local footnote = include_extra and "直接搜片名；|ds / |dy 可精确筛选电视剧或电影" or "使用enter或ctrl+enter进行搜索"
-    local menu_cmd = { "script-message-to", mp.get_script_name(), "search-anime-event" }
+    local menu_title, footnote, event = search_ui(anime_only, include_extra)
+    local menu_cmd = { "script-message-to", mp.get_script_name(), event }
 
     local initial_message = message
     local initial_footnote = footnote
     if total_servers and total_servers > 1 then
-        initial_footnote = footnote .. string.format("　｜　搜索 0/%d", total_servers)
+        initial_footnote = footnote .. string.format(i18n.t("　｜　搜索 0/%d"), total_servers)
     end
     if uosc_available then
         active_request_type = menu_type
@@ -375,8 +385,8 @@ function get_episodes(animeTitle, bangumiId, api_server)
 
     local message = "加载数据中..."
     local menu_type = "menu_episodes"
-    local menu_title = "输入集数快速定位"
-    local footnote = "可立即输入集数，剧集载入后自动定位"
+    local menu_title = i18n.t("输入集数快速定位")
+    local footnote = i18n.t("可立即输入集数，剧集载入后自动定位")
     local episode_menu_options = {
         search_style = "palette",
         search_debounce = 0,
@@ -395,7 +405,9 @@ function get_episodes(animeTitle, bangumiId, api_server)
         show_message(message, 30)
     end
 
-    local args = make_danmaku_request_args("GET", url)
+    local args = make_danmaku_request_args("GET", url, nil, nil, {
+        connect_timeout = 3, max_time = 10, fail_http = true,
+    })
 
     if args == nil then
         return
@@ -405,15 +417,8 @@ function get_episodes(animeTitle, bangumiId, api_server)
         if not request_is_current(request_generation, menu_type) then return end
         active_request_cancel = nil
 
-        table.insert(items, {
-            title = "↩️ 返回搜索结果",
-            value = { "script-message-to", mp.get_script_name(), "open-latest-menu-anime", latest_menu_anime },
-            keep_open = false,
-            selectable = true,
-        })
-
         if err then
-            local message = "获取数据失败"
+            local message = i18n.t("剧集加载失败，请换源或重试")
             if uosc_available then
                 update_menu_uosc(menu_type, menu_title, message, footnote,
                     nil, nil, nil, nil, true)
@@ -426,16 +431,23 @@ function get_episodes(animeTitle, bangumiId, api_server)
 
         local response = utils.parse_json(stdout)
         if not response or not response.bangumi or not response.bangumi.episodes then
-            local message = "无结果"
+            local message = i18n.t("无结果")
             if uosc_available then
                 update_menu_uosc(menu_type, menu_title, message, footnote,
                     nil, nil, nil, nil, true)
             else
                 show_message(message, 3)
             end
-            msg.info(message)
+            msg.info("无结果")
             return
         end
+
+        table.insert(items, {
+            title = i18n.t("← 返回搜索结果"),
+            value = { "script-message-to", mp.get_script_name(), "open-latest-menu-anime", latest_menu_anime },
+            keep_open = false,
+            selectable = true,
+        })
 
         for _, episode in ipairs(response.bangumi.episodes) do
             table.insert(items, {
@@ -449,24 +461,8 @@ function get_episodes(animeTitle, bangumiId, api_server)
             })
         end
 
-        -- ====== 新增：更新 latest_menu_anime ======
-        if latest_menu_anime and latest_menu_anime ~= "" then
-            local menu_table = utils.parse_json(latest_menu_anime)
-            if menu_table and type(menu_table.items) == "table" then
-                for i, back_item in ipairs(menu_table.items) do
-                    if type(back_item.value) == "table" and
-                    back_item.value[5] == bangumiId and back_item.value[6] == api_server then
-                        menu_table.items[i].footnote = mp.get_property("filename")
-                        menu_table.items[i].items = { unpack(items, 2) }
-                        break
-                    end
-                end
-                latest_menu_anime = utils.format_json(menu_table)
-            end
-        end
-
         if uosc_available then
-            footnote = "输入集数定位，回车加载　｜　" .. tostring(mp.get_property("filename") or "")
+            footnote = i18n.t("输入集数定位，回车加载　｜　") .. tostring(mp.get_property("filename") or "")
             update_menu_uosc(menu_type, menu_title, items, footnote,
                 nil, nil, nil, nil, true, episode_menu_options)
         elseif input_loaded then
@@ -485,7 +481,7 @@ local function make_menu_uosc_props(menu_type, menu_title, menu_item, menu_footn
     local items = {}
     if type(menu_item) == "string" then
         table.insert(items, {
-            title = menu_item,
+            title = i18n.text(menu_item),
             value = "",
             italic = true,
             keep_open = true,
@@ -548,18 +544,16 @@ function update_menu_uosc(menu_type, menu_title, menu_item, menu_footnote, menu_
     return json_props
 end
 
-local function show_search_loading_menu(query, include_extra)
+local function show_search_loading_menu(query, include_extra, anime_only)
     if not uosc_available then return end
 
-    local footnote = include_extra
-        and "直接搜片名；|ds / |dy 可精确筛选电视剧或电影"
-        or "使用enter或ctrl+enter进行搜索"
+    local title, footnote, event = search_ui(anime_only, include_extra)
     update_menu_uosc(
         "menu_anime",
-        "在此处输入片名",
+        title,
         "加载数据中...",
         footnote,
-        { "script-message-to", mp.get_script_name(), "search-anime-event" },
+        { "script-message-to", mp.get_script_name(), event },
         query,
         "spinner",
         { "script-message-to", mp.get_script_name(), "cancel-active-request", "menu_anime" }
@@ -575,7 +569,7 @@ function open_menu_select(menu_items, is_time)
     end
     mp.commandv('script-message-to', 'console', 'disable')
     input.select({
-        prompt = is_time and '筛选:' or '选择:',
+        prompt = is_time and i18n.t('筛选:') or i18n.t('选择:'),
         items = item_titles,
         submit = function(id)
             input.terminate()
@@ -596,63 +590,83 @@ function open_menu_select(menu_items, is_time)
 end
 
 -- 打开弹幕输入搜索菜单
-function open_input_menu_get()
+function open_input_menu_get(anime_only)
     mp.commandv('script-message-to', 'console', 'disable')
     local title = parse_title()
+    local _, _, event = search_ui(anime_only)
     input.get({
-        prompt = '片名:',
+        prompt = anime_only and i18n.t('动漫片名:') or i18n.t('片名:'),
         default_text = title,
         cursor_position = title and #title + 1,
         submit = function(text)
             input.terminate()
-            mp.commandv("script-message-to", mp.get_script_name(), "search-anime-event", text)
+            mp.commandv("script-message-to", mp.get_script_name(), event, text)
         end
     })
 end
 
-function open_input_menu_uosc()
-    local items = {}
+local function append_association_items(items)
+    local current = type(get_danmaku_load_status) == 'function' and get_danmaku_load_status() or {}
+    local count = type(COMMENTS) == 'table' and #COMMENTS or 0
+    local phase = current.phase
+    local title = phase == 'matching' and i18n.t('正在匹配弹幕')
+        or (phase == 'loading' or phase == 'downloading') and i18n.t('正在下载弹幕')
+        or phase == 'error' and (count > 0 and i18n.t('本次加载暂失败 · 已保留之前弹幕') or i18n.t('弹幕暂时加载失败'))
+        or phase == 'empty' and (count > 0 and i18n.t('本次来源无有效弹幕 · 已保留之前弹幕') or i18n.t('当前来源没有可显示的弹幕'))
+        or count > 0 and (i18n.t('已加载 ') .. count .. i18n.t(' 条弹幕'))
+        or (DANMAKU.anime and DANMAKU.episode) and i18n.t('已关联，尚未加载弹幕')
+        or i18n.t('尚未匹配弹幕')
+    items[#items + 1] = {title = title, hint = i18n.text(current.message or ''),
+        bold = true, keep_open = true, selectable = false}
+    if not (DANMAKU.anime and DANMAKU.episode) then return end
+    local anime, provider = TitleDisplay.anime(DANMAKU.anime)
+    local episode = TitleDisplay.episode(DANMAKU.episode)
+    items[#items + 1] = {
+        title = i18n.t('关联内容：') .. anime .. (episode ~= '' and (' · ' .. episode) or ''),
+        hint = TitleDisplay.source(DANMAKU.source, provider),
+        keep_open = true, selectable = false,
+    }
+end
 
-    if DANMAKU.anime and DANMAKU.episode then
-        local episode = DANMAKU.episode:gsub("%s.-$","")
-        episode = episode:match("^(第.*[话回集]+)%s*") or episode
-        items[#items + 1] = {
-            title = string.format("已关联弹幕：%s-%s", DANMAKU.anime, episode),
-            bold = true,
-            italic = true,
-            keep_open = true,
-            selectable = false,
-        }
-    end
+function open_input_menu_uosc(anime_only)
+    local items = {}
+    append_association_items(items)
 
     items[#items + 1] = {
-        title = "直接搜片名；同名结果可加 |ds 或 |dy 精确筛选",
+        title = anime_only and i18n.t("152468 动漫补充源；选择番剧后再选集加载")
+            or i18n.t("直接搜片名；同名结果可加 |ds 或 |dy 精确筛选"),
         align = "center",
         muted = true,
         keep_open = true,
         selectable = false,
     }
 
+    local title, footnote, event = search_ui(anime_only)
     local menu_props = {
         type = "menu_danmaku",
-        title = "在此处输入片名",
+        title = title,
         search_style = "palette",
         search_debounce = "submit",
         search_suggestion = parse_title(),
-        on_search = { "script-message-to", mp.get_script_name(), "search-anime-event" },
-        footnote = "使用enter或ctrl+enter进行搜索",
+        on_search = { "script-message-to", mp.get_script_name(), event },
+        footnote = footnote,
         items = items
     }
     local json_props = utils.format_json(menu_props)
     mp.commandv("script-message-to", "uosc", "open-menu", json_props)
 end
 
-function open_input_menu()
+function open_input_menu(anime_only)
+    perform_cancel_active_request()
+    if anime_only and #get_api_server_list(options.anime_api_server) == 0 then
+        show_message(i18n.t("动漫补充源未启用"), 3)
+        return
+    end
     if uosc_available then
-        open_input_menu_uosc()
+        open_input_menu_uosc(anime_only)
     elseif input_loaded then
         mp.add_timeout(0.01, function()
-            open_input_menu_get()
+            open_input_menu_get(anime_only)
         end)
     end
 end
@@ -665,7 +679,7 @@ function open_add_menu_get()
     local function rebuild_menu_log(select_num)
         deal_value = {}
         menu_log = {
-            { text = "【既有弹幕源】", style = "{\\c&H00CCFF&\\b1}" },
+            { text = i18n.t("【既有弹幕源】"), style = "{\\c&H00CCFF&\\b1}" },
             { text = "----------------------------", style = "{\\c&H888888&}" }
         }
 
@@ -675,22 +689,22 @@ function open_add_menu_get()
                 if source.from == "api_server" then
                     serial = serial + 1
                     local action = source.blocked and "unblock" or "block"
-                    local text = string.format("  [%02d] %s [来源：弹幕服务器%s]  ", serial, url,
-                        source.blocked and "（已屏蔽）" or "（未屏蔽）")
+                    local text = string.format(i18n.t("  [%02d] %s [来源：弹幕服务器%s]  "), serial, url,
+                        source.blocked and i18n.t("（已屏蔽）") or i18n.t("（未屏蔽）"))
                     local style = (tonumber(select_num) == serial) and "{\\c&HFFDE7F&\\b1}" or (action == "unblock" and "{\\c&H4C4CC3&\\b0}" or "{\\c&HCCCCCC&\\b0}")
                     deal_value[serial] = {value = url, action = action}
                     table.insert(menu_log, {text = text, style = style})
                 else
                     serial = serial + 1
                     local action1 = source.blocked and "unblock" or "block"
-                    local text1 = string.format("  [%02d] %s [来源：用户添加]%s  ", serial, url, source.blocked and " (已屏蔽)" or "（未屏蔽）")
+                    local text1 = string.format(i18n.t("  [%02d] %s [来源：用户添加]%s  "), serial, url, source.blocked and i18n.t(" (已屏蔽)") or i18n.t("（未屏蔽）"))
                     local style1 = (tonumber(select_num) == serial) and "{\\c&HFFDE7F&\\b1}" or (action1 == "unblock" and "{\\c&H4C4CC3&\\b0}" or "{\\c&HCCCCCC&\\b0}")
                     deal_value[serial] = {value = url, action = action1}
                     table.insert(menu_log, {text = text1, style = style1})
 
                     serial = serial + 1
                     local action2 = "delete"
-                    local text2 = string.format("  [%02d] %s [来源：用户添加] (删除)  ", serial, url)
+                    local text2 = string.format(i18n.t("  [%02d] %s [来源：用户添加] (删除)  "), serial, url)
                     local style2 = (tonumber(select_num) == serial) and "{\\c&HFFDE7F&\\b1}" or "{\\c&HCCCCCC&\\b0}"
                     deal_value[serial] = {value = url, action = action2}
                     table.insert(menu_log, {text = text2, style = style2})
@@ -699,7 +713,7 @@ function open_add_menu_get()
         end
 
         if serial == 0 then
-            table.insert(menu_log, { text = "        无", style = "" })
+            table.insert(menu_log, { text = i18n.t("        无"), style = "" })
         end
     end
 
@@ -717,7 +731,7 @@ function open_add_menu_get()
         else
             table.insert(display, { text = "\n", style = "" })
             table.insert(display, {
-                text = "提示: 输入【选项数字】可屏蔽或删除既有弹幕源",
+                text = i18n.t("提示: 输入【选项数字】可屏蔽或删除既有弹幕源"),
                 style = "{\\c&H999999&}"
             })
         end
@@ -728,16 +742,16 @@ function open_add_menu_get()
     -- 获取操作提示
     local function get_hint(action)
         local hints = {
-            block = "按回车执行，屏蔽该弹幕源",
-            unblock = "按回车执行，解除该弹幕源的屏蔽",
-            delete = "按回车执行，删除该弹幕源"
+            block = i18n.t("按回车执行，屏蔽该弹幕源"),
+            unblock = i18n.t("按回车执行，解除该弹幕源的屏蔽"),
+            delete = i18n.t("按回车执行，删除该弹幕源")
         }
-        return hints[action] or "按回车执行，获取输入源地址url的弹幕"
+        return hints[action] or i18n.t("按回车执行，获取输入源地址url的弹幕")
     end
 
     input.get({
         keep_open = true,
-        prompt = "请在此输入源地址url: ",
+        prompt = i18n.t("请在此输入源地址url: "),
         opened = function() show_menu() end,
         edited = function(text)
             text = text:gsub("^%s*(.-)%s*$", "%1")
@@ -752,7 +766,7 @@ function open_add_menu_get()
             local hint = get_hint(event and event.action)
 
             show_menu({
-                { text = string.format("已输入: %s", text), style = "{\\c&HCCCCCC&}" },
+                { text = string.format(i18n.t("已输入: %s"), text), style = "{\\c&HCCCCCC&}" },
                 { text = hint, style = "{\\c&H999999&}" }
             }, text)
         end,
@@ -781,28 +795,26 @@ function open_add_menu_uosc()
     local sources = {}
     for url, source in pairs(DANMAKU.sources) do
         if source.data then
-            local count = #source.data  -- 弹幕条数
-            local count_text = string.format("（%d条）弹幕", count)
             local item = {title = utf8_sub(url, 1, 100), value = url, keep_open = true,}
             if source.from == "api_server" then
                 if source.blocked then
-                    item.hint = "来源：弹幕服务器（已屏蔽）"
-                    item.actions = {{icon = "check", name = "unblock", label = "解除屏蔽" .. count_text},}
+                    item.hint = i18n.t("来源：弹幕服务器（已屏蔽）")
+                    item.actions = {{icon = "check", name = "unblock", label = i18n.t("解除屏蔽")},}
                 else
-                    item.hint = "来源：弹幕服务器（未屏蔽）"
-                    item.actions = {{icon = "not_interested", name = "block", label = "屏蔽" .. count_text},}
+                    item.hint = i18n.t("来源：弹幕服务器（未屏蔽）")
+                    item.actions = {{icon = "not_interested", name = "block", label = i18n.t("屏蔽")},}
                 end
             else
-                item.hint = "来源：用户添加"
+                item.hint = i18n.t("来源：用户添加")
                 if source.blocked then
                     item.actions = {
-                        {icon = "check", name = "unblock", label = "解除屏蔽" .. count_text},
-                        {icon = "delete", name = "delete", label = "删除" .. count_text},
+                        {icon = "check", name = "unblock", label = i18n.t("解除屏蔽")},
+                        {icon = "delete", name = "delete", label = i18n.t("删除")},
                     }
                 else
                     item.actions = {
-                        {icon = "not_interested", name = "block", label = "屏蔽" .. count_text},
-                        {icon = "delete", name = "delete", label = "删除" .. count_text},
+                        {icon = "not_interested", name = "block", label = i18n.t("屏蔽")},
+                        {icon = "delete", name = "delete", label = i18n.t("删除")},
                     }
                 end
             end
@@ -811,11 +823,11 @@ function open_add_menu_uosc()
     end
     local menu_props = {
         type = "menu_source",
-        title = "在此输入源地址url",
+        title = i18n.t("在此输入源地址url"),
         search_style = "palette",
         search_debounce = "submit",
         on_search = { "script-message-to", mp.get_script_name(), "add-source-event" },
-        footnote = "使用enter或ctrl+enter进行添加",
+        footnote = i18n.t("使用enter或ctrl+enter进行添加"),
         items = sources,
         item_actions_place = "outside",
         callback = {mp.get_script_name(), 'setup-danmaku-source'},
@@ -850,10 +862,10 @@ function open_content_menu(pos)
                 local delay_label_suffix = nil
                 local delay_num = delay and tonumber(delay)
                 if delay_num and math.abs(delay_num) > 0 then
-                    delay_label_suffix = string.format("已存在延迟: %+0.1fs", delay_num)
+                    delay_label_suffix = string.format(i18n.t("已存在延迟: %+0.1fs"), delay_num)
                 end
 
-                local adjust_label = '调整弹幕延迟'
+                local adjust_label = i18n.t('调整弹幕延迟')
                 if delay_label_suffix then
                     adjust_label = adjust_label .. '（' .. delay_label_suffix .. '）'
                 end
@@ -865,7 +877,7 @@ function open_content_menu(pos)
                         {
                             name = 'block_source',
                             icon = 'block',
-                            label = '屏蔽对应弹幕源'
+                            label = i18n.t('屏蔽对应弹幕源')
                         },
                         {
                             name = 'adjust_delay',
@@ -882,8 +894,8 @@ function open_content_menu(pos)
 
     local menu_props = {
         type = "menu_content",
-        title = "弹幕内容",
-        footnote = "使用 / 打开搜索",
+        title = i18n.t("弹幕内容"),
+        footnote = i18n.t("使用 / 打开搜索"),
         items = items,
         item_actions_place = "outside",
         callback = {mp.get_script_name(), 'handle-danmaku-content-action'},
@@ -898,20 +910,20 @@ function open_content_menu(pos)
 end
 
 local menu_items_config = {
-    bold = { title = "粗体", hint = options.bold, original = options.bold,
+    bold = { title = i18n.t("粗体"), hint = options.bold, original = options.bold,
         footnote = "true / false", },
-    fontsize = { title = "大小", hint = options.fontsize, original = options.fontsize,
+    fontsize = { title = i18n.t("大小"), hint = options.fontsize, original = options.fontsize,
         scope = { min = 0, max = math.huge }, footnote = "请输入整数(>=0)", },
-    outline = { title = "描边", hint = options.outline, original = options.outline,
-        scope = { min = 0.0, max = 4.0 }, footnote = "输入范围：(0.0-4.0)" },
-    shadow = { title = "阴影", hint = options.shadow, original = options.shadow,
+    outline = { title = i18n.t("描边"), hint = options.outline, original = options.outline,
+        scope = { min = 0.0, max = 4.0 }, footnote = i18n.t("输入范围：(0.0-4.0)") },
+    shadow = { title = i18n.t("阴影"), hint = options.shadow, original = options.shadow,
         scope = { min = 0, max = math.huge }, footnote = "请输入整数(>=0)", },
-    scrolltime = { title = "速度", hint = options.scrolltime, original = options.scrolltime,
+    scrolltime = { title = i18n.t("速度"), hint = options.scrolltime, original = options.scrolltime,
         scope = { min = 1, max = math.huge }, footnote = "请输入整数(>=1)", },
-    opacity = { title = "透明度", hint = options.opacity, original = options.opacity,
-        scope = { min = 0, max = 1 }, footnote = "输入范围：0（完全透明）到1（不透明）", },
-    displayarea = { title = "弹幕显示范围", hint = options.displayarea, original = options.displayarea,
-        scope = { min = 0.0, max = 1.0 }, footnote = "显示范围(0.0-1.0)", },
+    opacity = { title = i18n.t("透明度"), hint = options.opacity, original = options.opacity,
+        scope = { min = 0, max = 1 }, footnote = i18n.t("输入范围：0（完全透明）到1（不透明）"), },
+    displayarea = { title = i18n.t("弹幕显示范围"), hint = options.displayarea, original = options.displayarea,
+        scope = { min = 0.0, max = 1.0 }, footnote = i18n.t("显示范围(0.0-1.0)"), },
 }
 -- 创建一个包含键顺序的表，这是样式菜单的排布顺序
 local ordered_keys = {"bold", "fontsize", "outline", "shadow", "scrolltime", "opacity", "displayarea"}
@@ -949,7 +961,7 @@ local function save_style_option(key, value)
     local file = io.open(config_path, "wb")
     if not file then
         msg.error("无法保存弹幕样式配置：" .. tostring(config_path))
-        show_message("无法保存弹幕样式配置", 3)
+        show_message(i18n.t("无法保存弹幕样式配置"), 3)
         return false
     end
     file:write(content)
@@ -957,6 +969,115 @@ local function save_style_option(key, value)
     msg.info(("已保存弹幕样式：%s=%s"):format(key, serialized))
     return true
 end
+
+-- Defaults and persisted state are available even before the first video.
+local Color = require("modules/color")
+local COLOR_PROPERTY = "user-data/uosc_danmaku/smart-color"
+local COLOR_PERCENT_PROPERTY = "user-data/uosc_danmaku/smart-color-percent"
+local FORCE_WHITE_PROPERTY = "user-data/uosc_danmaku/force-white"
+options.smart_color_percent = Color.percentage(options.smart_color_percent)
+mp.set_property_bool(COLOR_PROPERTY, options.smart_color)
+mp.set_property_number(COLOR_PERCENT_PROPERTY, options.smart_color_percent)
+mp.set_property_bool(FORCE_WHITE_PROPERTY, options.force_white)
+
+local function color_switch_status()
+    return options.smart_color and i18n.t('● 开启') or i18n.t('○ 关闭')
+end
+
+local function color_status()
+    if options.force_white then return i18n.t('全白') end
+    if not options.smart_color or options.smart_color_percent == 0 then return i18n.t('原生弹幕源') end
+    return i18n.t('智能补色 · ') .. options.smart_color_percent .. '%'
+end
+
+local function refresh_colors()
+    refresh_danmaku_colors()
+end
+
+local function open_color_menu(update)
+    local items = {
+        {title=i18n.t('源自带的彩色也变为白色'), selectable=false, muted=true},
+        {title=i18n.t('全白弹幕'), hint=options.force_white and i18n.t('● 开启') or i18n.t('○ 关闭'), keep_open=true,
+            value={'script-message-to', mp.get_script_name(), 'toggle-force-white', 'menu'}},
+        {title=i18n.t('智能补色'), hint=color_switch_status(), keep_open=true,
+            value={'script-message-to', mp.get_script_name(), 'toggle-smart-color', 'menu'}},
+        {title=i18n.t('彩色比例'), hint=options.smart_color_percent == 0 and i18n.t('原生弹幕源') or options.smart_color_percent .. '%',
+            value={'script-message-to', mp.get_script_name(), 'open-color-percentage'}},
+    }
+    if uosc_available then
+        mp.commandv('script-message-to', 'uosc', update and 'update-menu' or 'open-menu', utils.format_json({
+            type='menu_color', title=i18n.t('弹幕颜色 · ') .. color_status(), search_style='disabled', items=items,
+            footnote=i18n.t('全白优先；关闭后恢复原色与补色比例'),
+        }))
+    elseif input_loaded then
+        input.select({prompt=i18n.t('弹幕颜色'), items={i18n.t('全白弹幕：') .. (options.force_white and i18n.t('开启') or i18n.t('关闭')),
+            i18n.t('智能补色：')..color_switch_status(), i18n.t('彩色比例：')..options.smart_color_percent..'%'},
+            submit=function(id)
+                local selected = ({items[2], items[3], items[4]})[id + 1]
+                if selected then mp.commandv(unpack(selected.value)) end
+            end})
+    end
+end
+
+local function open_color_percentage(update, error_text)
+    if uosc_available then
+        local items = {}
+        for _, value in ipairs({0,25,50,75,100}) do
+            items[#items + 1] = {title=value .. '%',
+                active=options.smart_color_percent==value,
+                hint=value==0 and i18n.t('原生弹幕源') or (value==25 and i18n.t('默认') or nil), keep_open=true,
+                value={'script-message-to',mp.get_script_name(),'set-smart-color-percent',tostring(value),'menu'}}
+        end
+        mp.commandv('script-message-to','uosc',update and 'update-menu' or 'open-menu',utils.format_json({
+            type='menu_color_percent', title=i18n.t('彩色比例 · ')..options.smart_color_percent..'%',
+            search_style='palette', search_debounce='submit', items=items,
+            on_search={'script-message-to',mp.get_script_name(),'submit-color-percentage'},
+            footnote=error_text or (i18n.t('0% 为原生弹幕源；全白模式优先；输入 0–100 回车保存')),
+        }))
+    elseif input_loaded then
+        input.get({prompt=i18n.t('彩色比例（0–100）：'), default_text=tostring(options.smart_color_percent),
+            submit=function(text) mp.commandv('script-message-to',mp.get_script_name(),'set-smart-color-percent',text,'menu') end})
+    end
+end
+
+mp.register_script_message('open-color-menu', function() open_color_menu() end)
+mp.register_script_message('open-color-percentage', function() open_color_percentage() end)
+mp.register_script_message('submit-color-percentage', function(text)
+    mp.commandv('script-message-to',mp.get_script_name(),'set-smart-color-percent',text,'menu')
+end)
+mp.register_script_message('toggle-force-white', function(view)
+    local enabled = not options.force_white
+    if not save_style_option('force_white', enabled) then return end
+    options.force_white = enabled
+    mp.set_property_bool(FORCE_WHITE_PROPERTY, enabled)
+    refresh_colors()
+    show_message(enabled and i18n.t('弹幕颜色：全白（包括源自带彩色）') or
+        (i18n.t('弹幕颜色：') .. color_status()), 2)
+    if view then open_color_menu(true) end
+end)
+mp.register_script_message('set-smart-color-percent', function(text, view)
+    local value=tonumber(text)
+    if not value or value~=value or value<0 or value>100 or value~=math.floor(value) then
+        if view then open_color_percentage(true,i18n.t('请输入 0–100 的整数')) else show_message(i18n.t('彩色比例请输入 0–100 的整数'),2) end
+        return
+    end
+    if value~=options.smart_color_percent then
+        if not save_style_option('smart_color_percent',value) then return end
+        options.smart_color_percent=value
+        mp.set_property_number(COLOR_PERCENT_PROPERTY,value)
+        refresh_colors()
+    end
+    if view then open_color_percentage(true) end
+end)
+mp.register_script_message("toggle-smart-color", function(view)
+    local enabled = not options.smart_color
+    if not save_style_option("smart_color", enabled) then return end
+    options.smart_color = enabled
+    refresh_colors()
+    mp.set_property_bool(COLOR_PROPERTY, enabled)
+    show_message(enabled and i18n.t("彩色弹幕：原始颜色 + 智能补色") or i18n.t("彩色弹幕：仅原始颜色"), 2)
+    if view then open_color_menu(true) end
+end)
 
 -- 设置弹幕样式菜单
 function open_style_menu_get(query, indicator)
@@ -980,7 +1101,7 @@ function open_style_menu_get(query, indicator)
 
     local function build_menu(source)
         menu_log = {
-            { text = "【弹幕样式菜单】", style = "{\\c&H00CCFF&\\b1}" },
+            { text = i18n.t("【弹幕样式菜单】"), style = "{\\c&H00CCFF&\\b1}" },
             { text = ("-"):rep(33), style = "{\\c&H888888&}" }
         }
 
@@ -988,7 +1109,7 @@ function open_style_menu_get(query, indicator)
         for _, key in ipairs(ordered_keys) do
             serial = serial + 1
             local config = menu_items_config[key]
-            local text = string.format("  [%02d] %s   [目前：%s] ", serial, config.title, config.hint)
+            local text = string.format(i18n.t("  [%02d] %s   [目前：%s] "), serial, config.title, config.hint)
             text = config.hint ~= config.original and text .. "⟳" or text
             local style = serial == select_num and "{\\c&HFFDE7F&}" or "{\\c&HCCCCCC&}"
             local item_config = { text = text, style = style }
@@ -998,11 +1119,11 @@ function open_style_menu_get(query, indicator)
         table.insert(menu_log, { text = ("-"):rep(33), style = "{\\c&H888888&}" })
         if select_num == 0 then
             table.insert(menu_log, {
-                text = "注: 样式更改会自动保存到配置文件",
+                text = i18n.t("注: 样式更改会自动保存到配置文件"),
                 style = "{\\c&HFFDE7F&}"
             })
             table.insert(menu_log, {
-                text = "提示: 输入【w】可上移选项，【s】可下移选项",
+                text = i18n.t("提示: 输入【w】可上移选项，【s】可下移选项"),
                 style = "{\\c&H999999&}"
             })
         else
@@ -1010,24 +1131,24 @@ function open_style_menu_get(query, indicator)
             local config = menu_items_config[select_query]
             local suffix = ""
             if config and config.hint ~= config.original then
-                suffix = "（输入\\r恢复默认配置）"
+                suffix = i18n.t("（输入\\r恢复默认配置）")
             end
-            input_text = string.format("已输入%s: %s", suffix, input_text)
+            input_text = string.format(i18n.t("已输入%s: %s"), suffix, input_text)
 
-            local scope = config and config.footnote or ""
-            local hint_text = select_query == "bold" and "提示: 输入【y】切换状态" or "提示: " .. scope
+            local scope = config and i18n.t(config.footnote) or ""
+            local hint_text = select_query == "bold" and i18n.t("提示: 输入【y】切换状态") or i18n.t("提示: ") .. scope
             local hint_style = "{\\c&H999999&}"
             if source and source:lower() == "\\r" then
-                hint_text = string.format("提示: 回车将恢复默认配置 < %s >", config.original)
+                hint_text = string.format(i18n.t("提示: 回车将恢复默认配置 < %s >"), config.original)
             end
             if indicator == "refresh" or indicator == "updata" then
                 indicator = ""
-                hint_text = "提示: 样式更改成功"
+                hint_text = i18n.t("提示: 样式更改成功")
                 hint_style = "{\\c&HFFDE7F&}"
                 mp.add_timeout(1.5, build_menu)
             elseif indicator == "error" then
                 indicator = ""
-                hint_text = "提示: 输入非数字字符或范围出错"
+                hint_text = i18n.t("提示: 输入非数字字符或范围出错")
                 hint_style = "{\\c&H4C4CC3&}"
                 mp.add_timeout(1.5, build_menu)
             end
@@ -1040,7 +1161,7 @@ function open_style_menu_get(query, indicator)
 
     input.get({
         keep_open = true,
-        prompt = "请在此输入操作（w/s|上移/下移）: ",
+        prompt = i18n.t("请在此输入操作（w/s|上移/下移）: "),
         opened = function() build_menu() end,
         edited = function(text)
             text = text:gsub("^%s*(.-)%s*$", "%1")
@@ -1092,23 +1213,23 @@ function open_style_menu_uosc(actived, status)
         local config = menu_items_config[key]
         local item_config = {
             title = config.title,
-            hint = "目前：" .. tostring(config.hint),
+            hint = i18n.t("目前：") .. tostring(config.hint),
             active = key == actived,
             keep_open = true,
             selectable = true,
         }
         if config.hint ~= config.original then
             local original_str = tostring(config.original)
-            item_config.actions = {{icon = "refresh", name = key, label = "恢复默认配置 < " .. original_str .. " >"}}
+            item_config.actions = {{icon = "refresh", name = key, label = i18n.t("恢复默认配置 < ") .. original_str .. " >"}}
         end
         table.insert(items, item_config)
     end
 
     local menu_props = {
         type = "menu_style",
-        title = "弹幕样式",
+        title = i18n.t("弹幕样式"),
         search_style = "disabled",
-        footnote = "样式更改会自动保存到配置文件",
+        footnote = i18n.t("样式更改会自动保存到配置文件"),
         item_actions_place = "outside",
         items = items,
         callback = { mp.get_script_name(), 'setup-danmaku-style'},
@@ -1119,19 +1240,19 @@ function open_style_menu_uosc(actived, status)
         -- msg.info(status)
         if status == "updata" then
             -- "updata" 模式会保留输入框文字
-            menu_props.title = "  " .. menu_items_config[actived]["footnote"]
+            menu_props.title = "  " .. i18n.t(menu_items_config[actived]["footnote"])
             actions = "update-menu"
         elseif status == "refresh" then
             -- "refresh" 模式会清除输入框文字
-            menu_props.title = "  " .. menu_items_config[actived]["footnote"]
+            menu_props.title = "  " .. i18n.t(menu_items_config[actived]["footnote"])
         elseif status == "error" then
-            menu_props.title = "输入非数字字符或范围出错"
+            menu_props.title = i18n.t("输入非数字字符或范围出错")
             -- 创建一个定时器，在1秒后触发回调函数，删除搜索栏错误信息
             mp.add_timeout(1.0, function() open_style_menu_uosc(actived, "updata") end)
         end
         menu_props.search_style = "palette"
         menu_props.search_debounce = "submit"
-        menu_props.footnote = menu_items_config[actived]["footnote"] or ""
+        menu_props.footnote = i18n.t(menu_items_config[actived]["footnote"]) or ""
         menu_props.on_search = { "script-message-to", mp.get_script_name(), "setup-danmaku-style", actived }
     end
 
@@ -1147,7 +1268,7 @@ function open_style_menu(actived, status)
             open_style_menu_get(actived, status)
         end)
     else
-        show_message("无支持可用的 UI框架，不支持使用该功能", 3)
+        show_message(i18n.t("无支持可用的 UI框架，不支持使用该功能"), 3)
     end
 end
 
@@ -1158,26 +1279,26 @@ function open_delay_from_time_get(source, time, status)
 
     local function build_menu(query, input_text)
         menu_log = {
-            { text = "【从该时间起调整弹幕延迟】", style = "{\\c&H00CCFF&\\b1}" },
+            { text = i18n.t("【从该时间起调整弹幕延迟】"), style = "{\\c&H00CCFF&\\b1}" },
             { text = ("-"):rep(33), style = "{\\c&H888888&}" }
         }
 
         table.insert(menu_log, { text = "\n", style = "" })
-        local hint_text = "提示：请输入数字，单位（秒）/ 或者按照形如\"14m15s\"的格式输入分钟数加秒数"
+        local hint_text = i18n.t("提示：请输入数字，单位（秒）/ 或者按照形如\"14m15s\"的格式输入分钟数加秒数")
         local hint_style = "{\\c&H999999&}"
         if status == "error" then
-            hint_text = "提示: 输入非数字字符或范围出错"
+            hint_text = i18n.t("提示: 输入非数字字符或范围出错")
             hint_style = "{\\c&H4C4CC3&}"
         end
 
-        table.insert(menu_log, { text = input_text and ("已输入：" .. input_text) or "", style = "{\\c&HCCCCCC&}" })
+        table.insert(menu_log, { text = input_text and (i18n.t("已输入：") .. input_text) or "", style = "{\\c&HCCCCCC&}" })
         table.insert(menu_log, { text = hint_text, style = hint_style })
         input.set_log(menu_log)
     end
 
     input.get({
         keep_open = true,
-        prompt = "请输入要设置的延迟（秒或 XmYs）: ",
+        prompt = i18n.t("请输入要设置的延迟（秒或 XmYs）: "),
         opened = function() build_menu() end,
         edited = function(text)
             text = text:gsub("^%s*(.-)%s*$", "%1")
@@ -1203,22 +1324,22 @@ end
 
 function open_delay_from_time_uosc(source, time, status)
     if not uosc_available then
-        show_message("无uosc UI框架，不支持使用该功能", 2)
+        show_message(i18n.t("无uosc UI框架，不支持使用该功能"), 2)
         return
     end
 
     local menu_props = {
         type = "menu_delay_from_time",
-        title = "从该时间起调整弹幕延迟",
+        title = i18n.t("从该时间起调整弹幕延迟"),
         search_style = "palette",
         search_debounce = "submit",
-        footnote = "请输入数字，单位（秒）/ 或者按照形如\"14m15s\"的格式输入分钟数加秒数",
+        footnote = i18n.t("请输入数字，单位（秒）/ 或者按照形如\"14m15s\"的格式输入分钟数加秒数"),
         items = {},
         on_search = { "script-message-to", mp.get_script_name(), "setup-content-delay", tostring(time), tostring(source) },
     }
 
     if status == "error" then
-    menu_props.title = "输入非数字字符或范围出错"
+    menu_props.title = i18n.t("输入非数字字符或范围出错")
     mp.add_timeout(1.0, function() open_delay_from_time_uosc(source, time) end)
     end
 
@@ -1234,7 +1355,7 @@ function open_delay_from_time(source, time, status)
             open_delay_from_time_get(source, time, status)
         end)
     else
-        show_message("无支持可用的 UI框架，不支持使用该功能", 3)
+        show_message(i18n.t("无支持可用的 UI框架，不支持使用该功能"), 3)
     end
 end
 
@@ -1252,7 +1373,7 @@ function open_delay_menu_get(source, status)
 
     local function build_menu(query, text)
         menu_log = {
-            { text = "【弹幕源延迟菜单】", style = "{\\c&H00CCFF&\\b1}" },
+            { text = i18n.t("【弹幕源延迟菜单】"), style = "{\\c&H00CCFF&\\b1}" },
             { text = ("-"):rep(33), style = "{\\c&H888888&}" }
         }
 
@@ -1270,7 +1391,7 @@ function open_delay_menu_get(source, status)
                         end
                     end
                 end
-                local hint = "当前弹幕源延迟: " .. string.format("%.1f", delay + 1e-10) .. "秒"
+                local hint = i18n.t("当前弹幕源延迟: ") .. string.format("%.1f", delay + 1e-10) .. i18n.t("秒")
                 local text = string.format("  [%02d] %s   [%s] ", serial, url, hint)
                 local style = (serial == select_num) and "{\\c&HFFDE7F&}" or "{\\c&HCCCCCC&}"
                 table.insert(menu_log, { text = text, style = style })
@@ -1278,29 +1399,29 @@ function open_delay_menu_get(source, status)
             end
         end
         if serial == 0 then
-            table.insert(menu_log, { text = "        无", style = "" })
+            table.insert(menu_log, { text = i18n.t("        无"), style = "" })
         end
 
         table.insert(menu_log, { text = ("-"):rep(33), style = "{\\c&H888888&}" })
         if select_num == 0 then
             table.insert(menu_log, { text = "\n", style = "" })
             table.insert(menu_log, {
-                text = "提示: 输入【w】可上移选项，【s】可下移选项",
+                text = i18n.t("提示: 输入【w】可上移选项，【s】可下移选项"),
                 style = "{\\c&H999999&}"
             })
         else
-            local input_text = "已输入：" .. (text ~= nil and text or "")
+            local input_text = i18n.t("已输入：") .. (text ~= nil and text or "")
 
-            local hint_text = "提示：请输入数字，单位（秒）/ 或者按照形如\"14m15s\"的格式输入分钟数加秒数"
+            local hint_text = i18n.t("提示：请输入数字，单位（秒）/ 或者按照形如\"14m15s\"的格式输入分钟数加秒数")
             local hint_style = "{\\c&H999999&}"
             if status == "refresh" then
                 status = ""
-                hint_text = "提示: 样式更改成功"
+                hint_text = i18n.t("提示: 样式更改成功")
                 hint_style = "{\\c&HFFDE7F&}"
                 mp.add_timeout(1.5, build_menu)
             elseif status == "error" then
                 status = ""
-                hint_text = "提示: 输入非数字字符或范围出错"
+                hint_text = i18n.t("提示: 输入非数字字符或范围出错")
                 hint_style = "{\\c&H4C4CC3&}"
                 mp.add_timeout(1.5, build_menu)
             end
@@ -1314,7 +1435,7 @@ function open_delay_menu_get(source, status)
 
     input.get({
         keep_open = true,
-        prompt = "请在此输入操作（w/s|上移/下移）: ",
+        prompt = i18n.t("请在此输入操作（w/s|上移/下移）: "),
         opened = function() build_menu() end,
         edited = function(text)
             text = text:gsub("^%s*(.-)%s*$", "%1")
@@ -1350,7 +1471,7 @@ end
 
 function open_delay_menu_uosc(source_url, status)
     if not uosc_available then
-        show_message("无uosc UI框架，不支持使用该功能", 2)
+        show_message(i18n.t("无uosc UI框架，不支持使用该功能"), 2)
         return
     end
 
@@ -1367,7 +1488,7 @@ function open_delay_menu_uosc(source_url, status)
                 end
             end
             local item = {title = utf8_sub(url, 1, 100), value = url, keep_open = true,}
-            item.hint = "当前弹幕源延迟:" .. string.format("%.1f", delay + 1e-10) .. "秒"
+            item.hint = i18n.t("当前弹幕源延迟:") .. string.format("%.1f", delay + 1e-10) .. i18n.t("秒")
             item.active = url == source_url
             table.insert(sources, item)
         end
@@ -1375,18 +1496,18 @@ function open_delay_menu_uosc(source_url, status)
 
     local menu_props = {
         type = "menu_delay",
-        title = "弹幕源延迟设置",
+        title = i18n.t("弹幕源延迟设置"),
         search_style = "disabled",
         items = sources,
         callback = {mp.get_script_name(), 'setup-source-delay'},
     }
     if source_url ~= nil then
         if status == "error" then
-            menu_props.title = "输入非数字字符或范围出错"
+            menu_props.title = i18n.t("输入非数字字符或范围出错")
             -- 创建一个定时器，在1秒后触发回调函数，删除搜索栏错误信息
             mp.add_timeout(1.0, function() open_delay_menu_uosc(source_url) end)
         else
-            menu_props.title = "请输入数字，单位（秒）/ 或者按照形如\"14m15s\"的格式输入分钟数加秒数"
+            menu_props.title = i18n.t("请输入数字，单位（秒）/ 或者按照形如\"14m15s\"的格式输入分钟数加秒数")
         end
         menu_props.search_style = "palette"
         menu_props.search_debounce = "submit"
@@ -1405,59 +1526,40 @@ function open_delay_menu(source, status)
             open_delay_menu_get(source, status)
         end)
     else
-        show_message("无支持可用的 UI框架，不支持使用该功能", 3)
+        show_message(i18n.t("无支持可用的 UI框架，不支持使用该功能"), 3)
     end
 end
 
 -- 总集合弹幕菜单
 local total_menu_items_config = {
-    { title = "弹幕搜索", action = "open_search_danmaku_menu" },
-    { title = "从源添加弹幕", action = "open_add_source_menu" },
-    { title = "弹幕源延迟设置", action = "open_source_delay_menu" },
-    { title = "弹幕样式", action = "open_danmaku_style_menu" },
-    { title = "弹幕内容", action = "open_content_danmaku_menu" },
+    { title = i18n.t("弹幕搜索"), action = "open_search_danmaku_menu" },
+    { title = i18n.t("动漫弹幕搜索（152468）"), action = "open_anime_danmaku_menu", anime_only = true },
+    { title = i18n.t("从源添加弹幕"), action = "open_add_source_menu" },
+    { title = i18n.t("弹幕源延迟设置"), action = "open_source_delay_menu" },
+    { title = i18n.t("弹幕样式"), action = "open_danmaku_style_menu" },
+    { title = i18n.t("彩色弹幕"), action = "open-color-menu" },
+    { title = i18n.t("弹幕内容"), action = "open_content_danmaku_menu" },
 }
-
-function toggle_smart_color()
-    options.smart_color = not options.smart_color
-    save_style_option("smart_color", options.smart_color)
-    if refresh_danmaku_renderer then refresh_danmaku_renderer() end
-    show_message(options.smart_color and "弹幕智能补色：开启" or "弹幕智能补色：关闭", 2)
-end
 
 function open_add_total_menu_uosc()
     local items = {}
-
-    if DANMAKU.anime and DANMAKU.episode then
-        local episode = DANMAKU.episode:gsub("%s.-$","")
-        episode = episode:match("^(第.*[话回集]+)%s*") or episode
-        items[#items + 1] = {
-            title = string.format("已关联弹幕：%s-%s", DANMAKU.anime, episode),
-            bold = true,
-            italic = true,
-            keep_open = true,
-            selectable = false,
-        }
-    end
+    append_association_items(items)
 
     for _, config in ipairs(total_menu_items_config) do
+        if not config.anime_only or #get_api_server_list(options.anime_api_server) > 0 then
         table.insert(items, {
             title = config.title,
+            hint = config.action == 'open-color-menu' and color_status() or nil,
             value = { "script-message-to", mp.get_script_name(), config.action },
             keep_open = false,
             selectable = true,
         })
+        end
     end
-    table.insert(items, {
-        title = options.smart_color and "智能补色：开启" or "智能补色：关闭",
-        value = { "script-message-to", mp.get_script_name(), "toggle-smart-color" },
-        keep_open = false,
-        selectable = true,
-    })
 
     local menu_props = {
         type = "menu_total",
-        title = "弹幕设置",
+        title = i18n.t("弹幕设置"),
         search_style = "disabled",
         items = items,
     }
@@ -1467,14 +1569,16 @@ end
 
 function open_add_total_menu_select()
     local item_titles, item_values = {}, {}
-    for i, config in ipairs(total_menu_items_config) do
-        item_titles[i] = config.title
-        item_values[i] = { "script-message-to", mp.get_script_name(), config.action }
+    for _, config in ipairs(total_menu_items_config) do
+        if not config.anime_only or #get_api_server_list(options.anime_api_server) > 0 then
+            item_titles[#item_titles + 1] = config.title
+            item_values[#item_values + 1] = { "script-message-to", mp.get_script_name(), config.action }
+        end
     end
 
     mp.commandv('script-message-to', 'console', 'disable')
     input.select({
-        prompt = '选择:',
+        prompt = i18n.t('选择:'),
         items = item_titles,
         submit = function(id)
             local cmd = item_values[id]
@@ -1507,7 +1611,7 @@ function refresh_danmaku_button()
             -- Highlight means that danmaku is actually available and enabled,
             -- not merely that automatic loading/searching is switched on.
             active = is_on and has_comments,
-            tooltip = "弹幕菜单",
+            tooltip = i18n.t("弹幕菜单"),
             command = "script-message open_add_total_menu",
             secondary_command = "script-message toggle_danmaku",
         })
@@ -1527,7 +1631,7 @@ mp.commandv(
     "danmaku",
     utils.format_json({
         icon = "search",
-        tooltip = "弹幕搜索",
+        tooltip = i18n.t("弹幕搜索"),
         command = "script-message open_search_danmaku_menu",
     })
 )
@@ -1539,7 +1643,7 @@ mp.commandv(
     "danmaku_source",
     utils.format_json({
         icon = "add_box",
-        tooltip = "从源添加弹幕",
+        tooltip = i18n.t("从源添加弹幕"),
         command = "script-message open_add_source_menu",
     })
 )
@@ -1551,7 +1655,7 @@ mp.commandv(
     "danmaku_styles",
     utils.format_json({
         icon = "palette",
-        tooltip = "弹幕样式",
+        tooltip = i18n.t("弹幕样式"),
         command = "script-message open_danmaku_style_menu",
     })
 )
@@ -1563,7 +1667,7 @@ mp.commandv(
     "danmaku_delay",
     utils.format_json({
         icon = "more_time",
-        tooltip = "弹幕源延迟设置",
+        tooltip = i18n.t("弹幕源延迟设置"),
         command = "script-message open_source_delay_menu",
     })
 )
@@ -1577,12 +1681,12 @@ end)
 
 local initial_state = mp.get_property_bool("user-data/uosc_danmaku/danmaku-switch-on", false) and "on" or "off"
 mp.commandv("script-message-to", "uosc", "set", "show_danmaku", initial_state)
-mp.register_script_message("set", function(prop, value)
-    if prop ~= "show_danmaku" then
-        return
-    end
+function set_danmaku_enabled(value)
+    local desired = value == true or value == 'on'
+    if ENABLED == desired and mp.get_property_bool(DANMAKU_SWITCH_ON, false) == desired then return end
+    if type(cancel_danmaku_auto_load) == 'function' then cancel_danmaku_auto_load() end
 
-    if value == "on" then
+    if desired then
         ENABLED = true
         if COMMENTS == nil then
             set_danmaku_visibility(true)
@@ -1593,12 +1697,17 @@ mp.register_script_message("set", function(prop, value)
             show_danmaku_func()
         end
     else
-        show_message("关闭弹幕", 2)
+        show_message(i18n.t("关闭弹幕"), 2)
         ENABLED = false
         hide_danmaku_func()
     end
 
-    toggle_danmaku_switch(value)
+    toggle_danmaku_switch(desired and 'on' or 'off')
+end
+
+mp.register_script_message("set", function(prop, value)
+    if prop ~= "show_danmaku" then return end
+    set_danmaku_enabled(value)
 end)
 
 -- 右键弹幕按钮：双向切换弹幕开关
@@ -1609,27 +1718,41 @@ mp.register_script_message("toggle_danmaku", function()
 end)
 
 -- 注册函数给 uosc 按钮使用
-mp.register_script_message("search-anime-event", function(query)
+local function submit_anime_search(query, anime_only)
     perform_cancel_active_request()
     query = tostring(query or ""):gsub("^%s*(.-)%s*$", "%1")
     if query == "" then return end
 
-    local name, class = query:match("^(.-)%s*|%s*(.-)%s*$")
+    if anime_only and #get_api_server_list(options.anime_api_server) == 0 then
+        show_message(i18n.t("动漫补充源未启用"), 3)
+        return
+    end
+    local name, class
+    if not anime_only then name, class = query:match("^(.-)%s*|%s*(.-)%s*$") end
     active_request_generation = active_request_generation + 1
     local pending_generation = active_request_generation
     request_cancelled = false
     active_request_type = "menu_anime"
-    show_search_loading_menu(query, not (name and class))
+    show_search_loading_menu(query, not anime_only and not (name and class), anime_only)
     mp.add_timeout(0.01, function()
         if pending_generation ~= active_request_generation then return end
         if name and class then
             query_extra(name, class)
         else
-            get_animes(query, true, pending_generation)
+            get_animes(query, not anime_only, pending_generation, anime_only)
         end
     end)
-end)
+end
 
+mp.register_script_message("search-anime-event", function(query)
+    submit_anime_search(query, false)
+end)
+mp.register_script_message("search-anime-proxy-event", function(query)
+    submit_anime_search(query, true)
+end)
+mp.register_script_message("open_anime_danmaku_menu", function()
+    open_input_menu(true)
+end)
 mp.register_script_message("search-episodes-event", function(animeTitle, bangumiId, api_server)
     perform_cancel_active_request()
     if uosc_available then
@@ -1640,10 +1763,51 @@ mp.register_script_message("search-episodes-event", function(animeTitle, bangumi
 end)
 
 mp.register_script_message("load-danmaku", function(animeTitle, episodeTitle, episodeId, api_server, episodeNumber)
+    if danmaku_remote_desktop_selection then danmaku_remote_desktop_selection() end
+    local previous = {
+        anime = DANMAKU.anime,
+        episode = DANMAKU.episode,
+        source = DANMAKU.source,
+        extra = DANMAKU.extra,
+        api_server = DANMAKU.api_server,
+        sources = {},
+    }
+    local had_source = false
+    for url, source in pairs(DANMAKU.sources) do
+        if source.data and (source.association or source.from == 'api_server') then
+            previous.sources[url] = source
+            had_source = true
+        end
+    end
     ENABLED = true
     DANMAKU.anime = animeTitle
     DANMAKU.episode = episodeTitle
-    set_episode_id(episodeId, true, api_server, episodeNumber)
+    set_episode_id(episodeId, true, api_server, episodeNumber, {
+        on_complete = function(success)
+            if success then return end
+            DANMAKU.anime = had_source and previous.anime or nil
+            DANMAKU.episode = had_source and previous.episode or nil
+            DANMAKU.source = had_source and previous.source or nil
+            DANMAKU.extra = had_source and previous.extra or nil
+            DANMAKU.api_server = had_source and previous.api_server or nil
+            if not had_source then
+                show_message(i18n.t('所选弹幕源暂不可用，请换一条搜索结果'), 4)
+                return
+            end
+            for url, source in pairs(previous.sources) do
+                DANMAKU.sources[url] = source
+                if source.association then add_source_to_history(url, source) end
+            end
+            local restored = load_danmaku(true, true)
+            if restored and restored > 0 then
+                show_loaded(true)
+                if danmaku_remote_status then danmaku_remote_status('error', '所选弹幕源暂不可用，已保留之前的弹幕') end
+                show_message(i18n.t('所选弹幕源暂不可用，已保留之前的弹幕'), 4)
+            else
+                show_message(i18n.t('所选弹幕源暂不可用，请换一条搜索结果'), 4)
+            end
+        end,
+    })
 end)
 
 mp.register_script_message("add-source-event", function(query)

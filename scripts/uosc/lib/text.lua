@@ -216,7 +216,7 @@ end
 
 local normalized_text_width
 do
-	---@type {wrap: integer; bold: boolean; italic: boolean, rotate: number; size: number}
+	---@type {wrap: integer; bold: boolean; italic: boolean, rotate: number; size: number; font?: string}
 	local bounds_opts = {wrap = 2, bold = false, italic = false, rotate = 0, size = 0}
 
 	---Measure text width and normalize to a font size of 1
@@ -226,8 +226,10 @@ do
 	---@param bold boolean
 	---@param italic boolean
 	---@param horizontal boolean
+	---@param font string|nil
 	---@return number, integer
-	normalized_text_width = function(text, size, bold, italic, horizontal)
+	normalized_text_width = function(text, size, bold, italic, horizontal, font)
+		bounds_opts.font = font
 		bounds_opts.bold, bounds_opts.italic, bounds_opts.rotate = bold, italic, horizontal and 0 or -90
 		local x1, y1 = nil, nil
 		size = size / 0.8
@@ -302,16 +304,17 @@ end
 
 local character_width
 do
-	---@type {[boolean]: {[string]: {[1]: number, [2]: integer}}}
+	---@type {[string]: {[boolean]: {[string]: {[1]: number, [2]: integer}}}}
 	local char_width_cache = {}
 
 	---Get measured width of character
 	---@param char string
 	---@param bold boolean
+	---@param font string|nil
 	---@return number, integer
-	character_width = function(char, bold)
+	character_width = function(char, bold, font)
 		---@type {[string]: {[1]: number, [2]: integer}}
-		local char_widths = get_cache_stage(char_width_cache, bold)
+		local char_widths = get_cache_stage(get_cache_stage(char_width_cache, font), bold)
 		local width_px = char_widths[char]
 		if width_px and no_remeasure_required(width_px[2]) then return width_px[1], width_px[2] end
 
@@ -346,13 +349,13 @@ do
 		if measured_char == enclosing_char then
 			enclosing_char = ''
 		else
-			enclosing_width = 2 * character_width(enclosing_char, bold)
+			enclosing_width = 2 * character_width(enclosing_char, bold, font)
 		end
 		local width_ratio, width, px = nil, nil, nil
 		repeat
 			char_count = next_char_count
 			local str = enclosing_char .. measured_char:rep(char_count) .. enclosing_char
-			width, px = normalized_text_width(str, size, bold, false, horizontal)
+			width, px = normalized_text_width(str, size, bold, false, horizontal, font)
 			width = width - enclosing_width
 			width_ratio = width * size / (horizontal and osd_width or osd_height)
 			next_char_count = math.min(math.floor(char_count / width_ratio * 0.9), 100)
@@ -369,14 +372,15 @@ end
 ---Calculate text width from individual measured characters
 ---@param text string|number
 ---@param bold boolean
+---@param font string|nil
 ---@return number, integer
-local function character_based_width(text, bold)
+local function character_based_width(text, bold, font)
 	local max_width = 0
 	local min_px = math.huge
 	for line in tostring(text):gmatch('([^\n]*)\n?') do
 		local total_width = 0
 		for _, char in utf8_iter(line) do
-			local width, px = character_width(char, bold)
+			local width, px = character_width(char, bold, font)
 			total_width = total_width + width
 			if px < min_px then min_px = px end
 		end
@@ -389,11 +393,12 @@ end
 ---@param text string|number
 ---@param bold boolean
 ---@param italic boolean
+---@param font string|nil
 ---@return number, integer
-local function whole_text_width(text, bold, italic)
+local function whole_text_width(text, bold, italic, font)
 	text = tostring(text)
 	local size, horizontal = fit_on_screen(text)
-	return normalized_text_width(ass_escape(text), size * 0.9, bold, italic, horizontal)
+	return normalized_text_width(ass_escape(text), size * 0.9, bold, italic, horizontal, font)
 end
 
 ---Scale normalized width to real width based on font size and italic
@@ -418,30 +423,34 @@ do
 	---Calculate width of text with the given opts
 	---@param text string|number
 	---@return number
-	---@param opts {size: number; bold?: boolean; italic?: boolean}
+	---@param opts {size: number; font?: string; bold?: boolean; italic?: boolean}
 	function text_width(text, opts)
 		if not text or text == '' then return 0 end
 
 		---@type boolean, boolean
 		local bold, italic = opts.bold or options.font_bold, opts.italic or false
+		-- The menu can use a different font from the toolbar. Measure the same
+		-- font that ass:txt renders, and never reuse another font's glyph widths.
+		local font = opts.font or config.font
+		local font_cache = get_cache_stage(width_cache, font)
 
 		if not config.refine.text_width then
 			---@type {[string|number]: {[1]: number, [2]: integer}}
-			local text_width = get_cache_stage(width_cache, bold)
+			local text_width = get_cache_stage(font_cache, bold)
 			local width_px = text_width[text]
 			if width_px and no_remeasure_required(width_px[2]) then return normalized_to_real(width_px[1], opts) end
 
-			local width, px = character_based_width(text, bold)
-			width_cache[bold][text] = {width, px}
+			local width, px = character_based_width(text, bold, font)
+			font_cache[bold][text] = {width, px}
 			return normalized_to_real(width, opts)
 		else
 			---@type {[string|number]: {[1]: number, [2]: integer}}
-			local text_width = get_cache_stage(get_cache_stage(width_cache, bold), italic)
+			local text_width = get_cache_stage(get_cache_stage(font_cache, bold), italic)
 			local width_px = text_width[text]
 			if width_px and no_remeasure_required(width_px[2]) then return width_px[1] * opts.size end
 
-			local width, px = whole_text_width(text, bold, italic)
-			width_cache[bold][italic][text] = {width, px}
+			local width, px = whole_text_width(text, bold, italic, font)
+			font_cache[bold][italic][text] = {width, px}
 			return width * opts.size
 		end
 	end
@@ -498,7 +507,7 @@ do
 			local before_removed_width = 0
 			for char_start, char in utf8_iter(text_line) do
 				local char_end = char_start + #char - 1
-				local char_width = character_width(char, bold) * scale_factor
+				local char_width = character_width(char, bold, opts.font or config.font) * scale_factor
 				line_width = line_width + char_width
 				if (char_end == #text_line) or itable_has(wrap_at_chars, char) then
 					local remove = itable_has(remove_when_wrap, char)

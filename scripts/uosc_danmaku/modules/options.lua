@@ -3,33 +3,39 @@ local opt = require("mp.options")
 -- 选项
 options = {
     -- 指定弹幕服务器地址，自定义服务需兼容 dandanplay 的 api
-    -- 可指定多个用逗号分隔的有序 api_server 列表
+    -- 多节点搜索与匹配会并发；顺序用于结果分组，并非严格逐一备用
     -- 支持每项使用 '|' 或 '#' 分隔备注，例如: "https://a.example.com|备用A" 或 "https://b.example.com#备用B"
     api_server = "https://danmu.cynn.top/cynnsq|炊烟袅袅,https://api.dandanplay.net",
+    -- 仅供显式动漫搜索及其历史关联使用；不进入普通搜索、哈希匹配或站点解析列表。
+    -- 设为空可停用该入口及已移除源的直接历史访问。
+    anime_api_server = "https://danmaku-api.152468.xyz|152468",
     -- 指定 b 站和爱腾优的弹幕获取的兜底服务器地址，主要用于获取非动画弹幕
-    -- 当前使用：https://dmku.hls.one
-    -- 按顺序尝试链接解析代理；后续节点只在前一节点失败时使用。
-    fallback_server = "https://dmku.hls.one,https://danmaku-api.152468.xyz",
+    -- 默认停用已失效或协议不符的旧 ac=dm 公益兜底；站点原生与 v2 解析仍保留
+    -- 自定义兜底须支持 /?ac=dm&url=；v2 兼容服务应配置在 api_server。
+    fallback_server = "",
     -- 设置 tmdb 的 API Key，用于获取非动画条目的中文信息(当搜索内容非中文时)
     -- 可以在 https://www.themoviedb.org 注册后去个人账号设置界面获取
     -- 注意：自定义此参数时还需要对获取到的 API Key 进行 base64 编码
     tmdb_api_key = "NmJmYjIxOTZkNzIyN2UyMTIzMGM3Y2YzZjQ4MDNkZGM=",
-    -- 自动加载弹幕开关
     auto_load = false,
     -- 自动加载失败后，严格按片名和集数搜索影视库并自动关联。只在高置信时执行。
     auto_search_associate = false,
     auto_search_strict = true,
     -- 自动关联英文片名时是否尝试通过 TMDB 转换中文名。默认关闭，避免客户版外网依赖和等待。
     auto_search_tmdb = false,
-    auto_load_delay = 1.0,
-    -- 自动加载可能支持的 url 视频文件实现弹幕关联记忆和继承，配合播放列表食用效果最佳
-    autoload_for_url = false,
-    -- 当自动弹幕加载失败时，自动弹出搜索框让用户手动搜索
+    auto_load_delay = 0.25,
+    -- 当自动弹幕加载失败时，自动弹出搜索框让用户手动搜索（EmoPlay 保留的上游 d8c1cd8 特性）
     auto_fallback_search = false,
-    -- 自动加载播放文件同目录下同名的 xml 格式的弹幕文件
     autoload_local_danmaku = false,
-    -- 播放结束时自动保存弹幕为xml文件
+    autoload_for_url = false,
     save_danmaku = false,
+    -- 关闭时还原原色；开启后为普通白色和缺色弹幕补色，保留非白色。
+    smart_color = true,
+    -- Override every authored colour with white; turning this off restores the
+    -- source colours and the saved smart-fill percentage without reparsing.
+    force_white = false,
+    -- Percentage of ordinary white or uncoloured comments to supplement (0-100).
+    smart_color_percent = 25,
     user_agent = "mpv_danmaku/1.0",
     proxy = "",
     -- 可选：向 HTTP 请求传递 cookie.txt 文件路径
@@ -38,20 +44,19 @@ options = {
     vf_fps = false,
     -- 设置要使用的 fps 滤镜参数
     fps = "60/1.001",
-    -- 弹幕渲染模式：overlay 独立刷新，不修改源视频帧率；auto 保留为兼容模式
-    render_mode = "overlay",
+    -- auto 优先 Native ASS，旧核心黑边/第二字幕占用时回退；overlay 强制兼容路径
+    render_mode = "auto",
     fullscreen_blackbar = true,
-    -- overlay 兼容模式的最高刷新率，实际不会超过显示器刷新率
-    overlay_fps = 60,
-    -- 低帧率 overlay 使用显示同步重复绘制视频帧，让 60Hz 弹幕更新真正可见
+    -- 0=自动：显示器整数分频且不超过约120Hz；144→72、165→82.5、240/360→120；正值=手动上限
+    overlay_fps = 0,
+    -- 自动档持续过载时降低整数分频；正常档预算充足并稳定后恢复，新片源重新评估
+    overlay_adaptive_fps = true,
+    -- 手动上限是否按显示器整数分频；自动档始终分频，不接管video-sync或改变音频速度
     overlay_display_sync = true,
     -- 指定合并重复弹幕的时间间隔的容差值，单位为秒。默认值: -1，表示禁用
     merge_tolerance = -1,
     -- 合并重复弹幕时是否强制合并类型和颜色不同的弹幕。默认值: false，表示仅合并类型和颜色相同的弹幕
     merge_without_style = false,
-    -- 智能补色：对白色原色弹幕按稳定哈希抽取柔和色，原有非白颜色保持不变
-    smart_color = true,
-    smart_color_percent = 25,
     -- 指定弹幕关联历史记录文件的路径，支持绝对路径和相对路径
     history_path = "~~/danmaku-history.json",
     open_search_danmaku_menu_key = "Ctrl+d",

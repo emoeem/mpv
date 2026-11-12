@@ -88,8 +88,6 @@ local function get_hint_reserve(menu, item, fixed_columns, available_width, item
 end
 
 local function get_responsive_width_bounds(menu)
-	if menu.type == 'recent_menu' then return nil, nil end
-
 	local scale = math.max(state.scale, 0.01)
 	local logical_display_width = display.width / scale
 	local logical_content_width = (
@@ -99,7 +97,13 @@ local function get_responsive_width_bounds(menu)
 	) / scale
 	local minimum_width, maximum_width
 
-	if is_file_navigation_menu(menu) then
+	if menu.type == 'recent_menu' then
+		-- Yaozhi 1.0.9-2 近期播放适配：长片名不应把历史菜单撑成整窗面板；
+		-- 窄窗口可以把更多宽度留给可读的片名与日期。
+		maximum_width = math.min(logical_display_width * 0.82,
+			math.max(logical_display_width * 0.70, 600), 1000)
+		minimum_width = math.min(logical_content_width, maximum_width)
+	elseif is_file_navigation_menu(menu) then
 		-- Directory titles are often much longer than the visible file rows.
 		-- Size from row content and let the centered title ellipsize instead of
 		-- turning the browser into a wide empty panel.
@@ -554,6 +558,11 @@ function Menu:update_dimensions()
 	local min_width = math.min(self.min_width, width_available)
 
 	for _, menu in ipairs(self.all) do
+		-- Yaozhi 1.0.9-2 近期播放适配：历史菜单只有外侧一个删除按钮，两侧各预留
+		-- 一个按钮位即可，不再用通用的六行间距挤压窄窗口。
+		local menu_width_available = menu.type == 'recent_menu'
+			and display.width - math.max(margin * 2, self.scroll_step * 2) - self.padding * 2
+			or width_available
 		local width = math.max(menu.search and menu.search.max_width or 0, menu.max_width)
 		local preferred_width, maximum_width = get_responsive_width_bounds(menu)
 		if maximum_width then width = math.min(width, maximum_width) end
@@ -562,7 +571,12 @@ function Menu:update_dimensions()
 			menu.min_width_px and round(menu.min_width)
 			or round(menu.min_width * state.scale)
 		) or min_width
-		menu.width = round(clamp(math.min(menu_min_width, width_available), width, width_available))
+		if menu.type == 'recent_menu' and maximum_width then
+			-- 调整已打开历史菜单的窗口尺寸时，producer 的最小宽度（或旧搜索宽度）
+			-- 不得绕过视口上限。
+			menu_min_width = math.min(menu_min_width, maximum_width)
+		end
+		menu.width = round(clamp(math.min(menu_min_width, menu_width_available), width, menu_width_available))
 		local title_height = (menu.is_root and menu.title or menu.search) and
 			self.scroll_step + self.separator_size + 1 or 0
 		if menu == self.current and menu.parent_menu then title_height = title_height + self.scroll_step end

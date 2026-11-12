@@ -1,5 +1,8 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
+local Color = require("modules/color")
 local msg = require('mp.msg')
 local utils = require('mp.utils')
+local SourceCache = require('modules/source_cache')
 
 local user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
@@ -31,6 +34,9 @@ local function build_curl_args(target_url)
         'curl',
         '-L',
         '-s',
+        '--connect-timeout', '4',
+        '--max-time', '20',
+        '--fail',
         '--user-agent',
         user_agent,
         target_url,
@@ -61,7 +67,7 @@ local function parse_segment_to_output(seg_json, output_table, segment_url)
             time_ms = segment_start_ms + raw_offset_ms
         end
         local time = time_ms / 1000
-        local color = 16777215
+        local color = ""
         local mode = 1
 
         local style = item['content_style']
@@ -72,10 +78,7 @@ local function parse_segment_to_output(seg_json, output_table, segment_url)
             if type(style) == 'table' then
                 -- 将 hex 颜色字符串（"#FF1964" 或 "FF1964"）转为整数
                 local function parse_color(col)
-                    if type(col) ~= 'string' then return nil end
-                    local hex = col:gsub('^#', '')
-                    if not hex:match('^%x%x%x%x%x%x$') then return nil end
-                    return hex_to_int_color('#' .. hex)
+                    return Color.normalize(col, "hex")
                 end
                 -- 优先取渐变颜色数组的第一个颜色
                 if style['gradient_colors'] and type(style['gradient_colors']) == 'table' and #style['gradient_colors'] > 0 then
@@ -95,19 +98,22 @@ local function parse_segment_to_output(seg_json, output_table, segment_url)
             end
         end
 
-        local c_param = string.format('%s,%s,%s,25,,,', time, color, mode)
-        table.insert(output_table, {c = c_param, m = item['content'] or ''})
+        table.insert(output_table, {time = time, color = Color.normalize(color),
+            type = mode, size = 25, text = item['content'] or ''})
     end
 end
 
 -- 保存并加载最终弹幕 JSON
 local function save_output_and_load(output_table, source_url)
     if #output_table == 0 then
-        show_message('未获取到任何弹幕', 3)
+        show_message(i18n.t('未获取到任何弹幕'), 3)
         return
     end
-    local final_json_str = utils.format_json(output_table)
-    save_danmaku_json(source_url, final_json_str)
+    -- Segment responses are already Lua tables. Encoding the whole episode
+    -- and immediately parsing it again doubled allocation on first display.
+    local source = DANMAKU.sources[source_url] or {from = 'user_custom'}
+    source.data = output_table
+    DANMAKU.sources[source_url] = source
     load_danmaku(true)
 end
 
@@ -126,6 +132,15 @@ function load_danmaku_for_tencent(path, callback)
         return
     end
 
+    local cached_path = SourceCache.path('tencent', vid)
+    local cached = SourceCache.read(cached_path, vid)
+    if cached then
+        msg.info('复用本集完整弹幕缓存')
+        save_output_and_load(cached, url)
+        callback(true)
+        return
+    end
+
     local api_base = 'https://dm.video.qq.com/barrage/base/' .. vid
     local api_segment_base = 'https://dm.video.qq.com/barrage/segment/' .. vid .. '/'
 
@@ -140,7 +155,7 @@ function load_danmaku_for_tencent(path, callback)
 
         local base_json = utils.parse_json(out)
         if not base_json or not base_json['segment_index'] then
-            show_message('好像没有弹幕哦', 3)
+            show_message(i18n.t('好像没有弹幕哦'), 3)
             callback(false)
             return
         end
@@ -163,7 +178,7 @@ function load_danmaku_for_tencent(path, callback)
         end
 
         if #segments == 0 then
-            show_message('没有找到弹幕分段', 3)
+            show_message(i18n.t('没有找到弹幕分段'), 3)
             callback(false)
             return
         end
@@ -190,46 +205,31 @@ function load_danmaku_for_tencent(path, callback)
             end
         end
 
-        local function try_load_segment(seg_url)
-            local args = build_curl_args(seg_url)
-            local res = mp.command_native({name = 'subprocess', args = args, capture_stdout = true, capture_stderr = true})
-            if res.status ~= 0 then return false end
-            local seg_json = utils.parse_json(res.stdout)
-            if not seg_json or not seg_json['barrage_list'] then return false end
-            parse_segment_to_output(seg_json, output_table, seg_url)
-            return true
+        local function finish()
+            local ok = #output_table > 0
+            save_output_and_load(output_table, url)
+            callback(ok)
+            if ok and cached_path and next(failed_segments) == nil then
+                SourceCache.save_later(cached_path, vid, output_table)
+            end
         end
 
-        local function retry_failed()
+        local function retry_failed(attempt)
             local retry_list = {}
             for url, _ in pairs(failed_segments) do
                 table.insert(retry_list, url)
             end
-            if #retry_list == 0 then return end
-
-            msg.info(string.format('重试 %d 个失败分段...', #retry_list))
-            local retried = 0
-            for _, seg_url in ipairs(retry_list) do
-                if try_load_segment(seg_url) then
-                    retried = retried + 1
-                else
-                    -- 第二次重试
-                    if try_load_segment(seg_url) then
-                        retried = retried + 1
-                    end
-                end
-            end
-            msg.info(string.format('重试成功 %d/%d 个分段', retried, #retry_list))
-        end
-
-        local function final_cb()
-            retry_failed()
-            local ok = #output_table > 0
-            save_output_and_load(output_table, url)
-            callback(ok)
+            if #retry_list == 0 or attempt > 2 then finish(); return end
+            failed_segments = {}
+            -- Use the same cancellable request queue as the first attempt.
+            -- A slow retry must never block the Lua/UI thread in subprocess.
+            parallel_requests(retry_list, build_args_fn, per_response_cb,
+                function() retry_failed(attempt + 1) end,
+                {concurrency = 3, per_request_timeout = 20})
         end
 
         -- 并行请求 segments（降低并发避免被限流）
-        parallel_requests(segments, build_args_fn, per_response_cb, final_cb, {concurrency = 3, per_request_timeout = 20})
+        parallel_requests(segments, build_args_fn, per_response_cb,
+            function() retry_failed(1) end, {concurrency = 3, per_request_timeout = 20})
     end)
 end

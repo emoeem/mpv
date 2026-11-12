@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 local mp = require 'mp'
 local msg = require 'mp.msg'
 local options = require 'mp.options'
@@ -9,39 +10,57 @@ local o = {
     passthrough_audio_buffer = 1.0,
 }
 options.read_options(o, 'audio_passthrough')
+package.path = package.path .. ';' .. (mp.command_native({'expand-path', '~~/script-modules/?.lua'}) or '')
+local audio_switch_guard = require('audio-switch-guard').new(mp, msg)
 
 local startup_audio_buffer = mp.get_property('audio-buffer', '0.2')
+local startup_audio_exclusive = mp.get_property('audio-exclusive', 'no')
+local startup_audio_channels = mp.get_property('audio-channels', 'auto-safe')
 
 local config_path = mp.command_native({
     'expand-path',
     '~~/script-opts/audio_passthrough.conf',
 })
 
+-- User mode remains persistent. Failed output chains are suppressed only in memory.
+local pcm_fallbacks = {}
+local last_audio_signature = ''
+local last_audio_device = mp.get_property('audio-device', 'auto')
+local function audio_chain_key()
+    local track = mp.get_property_native('current-tracks/audio')
+    if track and track.id then
+        last_audio_signature = tostring(track.id) .. ':' .. tostring(track.codec or '')
+    end
+    -- Reload briefly clears current-tracks/audio/aid; retain the chain identity
+    -- so its own recovery notifications cannot immediately re-enable bitstream.
+    return mp.get_property('audio-device', 'auto') .. '\31' .. last_audio_signature
+end
+
 local modes = {
     off = {
-        label = '关闭',
-        detail = '普通音频输出',
+        label = i18n.t('关闭'),
+        detail = i18n.t('普通音频输出'),
         spdif = '',
         exclusive = 'no',
         channels = 'auto-safe',
     },
     home = {
-        label = '开启直通',
-        detail = '推荐',
+        label = i18n.t('开启直通'),
+        detail = i18n.t('推荐'),
         spdif = 'ac3,eac3,truehd,dts,dts-hd',
         exclusive = 'yes',
         channels = '7.1,5.1,stereo',
     },
     dolby = {
-        label = '仅 Dolby',
-        detail = '兼容',
+        label = i18n.t('仅 Dolby'),
+        detail = i18n.t('兼容'),
         spdif = 'ac3,eac3,truehd',
         exclusive = 'yes',
         channels = '7.1,5.1,stereo',
     },
     dts = {
-        label = '仅 DTS',
-        detail = '兼容',
+        label = i18n.t('仅 DTS'),
+        detail = i18n.t('兼容'),
         spdif = 'dts,dts-hd',
         exclusive = 'yes',
         channels = '7.1,5.1,stereo',
@@ -65,7 +84,7 @@ end
 local function output_device_label()
     local device = mp.get_property('audio-device', 'auto')
     if device == 'auto' or device == '' then
-        return 'PipeWire 默认'
+        return i18n.t('Windows 默认')
     end
     local list = mp.get_property_native('audio-device-list') or {}
     for _, item in ipairs(list) do
@@ -78,13 +97,13 @@ end
 
 local function current_audio_label()
     local track = mp.get_property_native('current-tracks/audio')
-    if not track then return '未加载音轨' end
+    if not track then return i18n.t('未加载音轨') end
     local codec = track.codec or mp.get_property('audio-codec-name', '')
     local channels = track['audio-channels'] or track['demux-channel-count']
     local parts = {}
     if codec and codec ~= '' then parts[#parts + 1] = tostring(codec) end
     if channels then parts[#parts + 1] = tostring(channels) .. 'ch' end
-    return #parts > 0 and table.concat(parts, ' · ') or '当前音轨'
+    return #parts > 0 and table.concat(parts, ' · ') or i18n.t('当前音轨')
 end
 
 local function current_passthrough_codec()
@@ -108,7 +127,8 @@ local function mode_accepts_current_codec(mode)
 end
 
 local function is_passthrough_format(format)
-    return tostring(format or ''):lower():find('spdif-', 1, true) == 1
+    format = tostring(format or ''):lower()
+    return format:find('spdif-', 1, true) == 1 or format:find('iec61937', 1, true) ~= nil
 end
 
 local function set_property_if_changed(name, value)
@@ -128,6 +148,16 @@ local function publish_state(mode)
     mp.set_property('user-data/audio-passthrough/label', preset.label)
     mp.set_property('user-data/audio-passthrough/detail', preset.detail)
     mp.set_property('user-data/audio-passthrough/enabled', mode ~= 'off' and 'yes' or 'no')
+    local fallback = mode ~= 'off' and pcm_fallbacks[audio_chain_key()] == true
+    mp.set_property('user-data/audio-passthrough/fallback', fallback and 'yes' or 'no')
+    if fallback then
+        mp.set_property('user-data/audio-passthrough/detail',
+            i18n.t('当前音轨临时回退普通输出，直通偏好已保留'))
+    end
+    mp.set_property('user-data/audio-passthrough/active',
+        mode ~= 'off' and not fallback
+            and is_passthrough_format(mp.get_property('audio-out-params/format', ''))
+            and 'yes' or 'no')
     mp.set_property('user-data/audio-passthrough/device', output_device_label())
     mp.set_property('user-data/audio-passthrough/audio', current_audio_label())
 end
@@ -141,7 +171,7 @@ local function persist_mode(mode)
     file:write(
         '# 音频直通：off/home/dolby/dts\n'
             .. '# home=开启直通，dolby=仅 Dolby，dts=仅 DTS。\n'
-            .. '# 通过“杳知 > 音频直通”维护；请确保 PipeWire 默认输出设备为 HDMI/eARC 回音壁或功放。\n'
+            .. '# 通过“杳知 > 音频直通”维护；请确保 Windows 默认输出设备为 HDMI/eARC 回音壁或功放。\n'
             .. string.format('mode=%s\n', mode)
             .. string.format('show_osd=%s\n', o.show_osd and 'yes' or 'no')
             .. string.format('reload_current=%s\n', o.reload_current and 'yes' or 'no')
@@ -181,6 +211,7 @@ end
 
 local function schedule_passthrough_check(delay)
     if normalize_mode(o.mode) == 'off' then return end
+    if pcm_fallbacks[audio_chain_key()] then return end
     if passthrough_check_timer then passthrough_check_timer:kill() end
 
     local wait = math.max(delay or 0.2, passthrough_check_not_before - mp.get_time())
@@ -193,6 +224,7 @@ end
 run_passthrough_check = function()
     local mode = normalize_mode(o.mode)
     if mode == 'off' or not media_loaded() then return end
+    if pcm_fallbacks[audio_chain_key()] then return end
 
     local eligible, codec = mode_accepts_current_codec(mode)
     if not eligible then return end
@@ -247,6 +279,8 @@ end
 
 local function arm_audio_switch_sync(aid)
     clear_audio_switch_sync()
+    audio_switch_guard.arm(aid)
+    if not audio_switch_guard.is_local_source() then return end
     pending_audio_switch = {
         aid = tostring(aid),
         started = mp.get_time(),
@@ -255,7 +289,8 @@ local function arm_audio_switch_sync(aid)
         audio_switch_sync_timer = nil
         local pending = pending_audio_switch
         pending_audio_switch = nil
-        if not pending or not media_loaded() then return end
+        if not pending or not media_loaded()
+            or not audio_switch_guard.is_local_source() then return end
 
         local current = mp.get_property_native('aid')
         if not valid_aid(current) or tostring(current) ~= pending.aid then return end
@@ -281,6 +316,9 @@ local function reload_audio_chain()
 
     local track = mp.get_property_native('current-tracks/audio')
     local aid = track and track.id
+    if aid and not audio_switch_guard.is_local_source() then
+        audio_switch_guard.arm(aid)
+    end
 
     command_quiet('ao-reload')
     if aid then
@@ -290,7 +328,11 @@ local function reload_audio_chain()
             command_quiet('set', 'aid', tostring(aid))
         end)
         schedule_reload_step(0.12, function()
-            command_quiet('seek', '0', 'relative+exact')
+            if audio_switch_guard.is_local_source()
+                and mp.get_property_bool('seekable', false)
+                and not mp.get_property_bool('seeking', false) then
+                command_quiet('seek', '0', 'relative+exact')
+            end
         end)
         schedule_reload_step(0.18, function()
             command_quiet('ao-reload')
@@ -304,7 +346,8 @@ end
 
 local function apply_mode(mode, show_osd, reload_now)
     mode = normalize_mode(mode)
-    local preset = mode_data(mode)
+    local effective_mode = pcm_fallbacks[audio_chain_key()] and 'off' or mode
+    local preset = mode_data(effective_mode)
 
     if mode == 'off' then
         clear_passthrough_check()
@@ -314,12 +357,14 @@ local function apply_mode(mode, show_osd, reload_now)
     end
 
     set_property_if_changed('audio-spdif', preset.spdif)
-    set_property_if_changed('audio-exclusive', preset.exclusive)
-    set_property_if_changed('audio-channels', preset.channels)
-    if mode == 'off' then
-        set_property_if_changed('audio-buffer', startup_audio_buffer)
-    else
+    -- WASAPI already requests exclusive mode for IEC61937. Forcing it on
+    -- here also switches unrelated AAC/PCM to exclusive HDMI output.
+    set_property_if_changed('audio-exclusive', startup_audio_exclusive)
+    set_property_if_changed('audio-channels', startup_audio_channels)
+    if mode_accepts_current_codec(effective_mode) then
         set_property_if_changed('audio-buffer', o.passthrough_audio_buffer)
+    else
+        set_property_if_changed('audio-buffer', startup_audio_buffer)
     end
     publish_state(mode)
 
@@ -333,9 +378,9 @@ local function apply_mode(mode, show_osd, reload_now)
 
     if show_osd and o.show_osd then
         if mode == 'off' then
-            mp.osd_message('音频直通已关闭 · 普通输出', 2.4)
+            mp.osd_message(i18n.t('音频直通已关闭 · 普通输出'), 2.4)
         else
-            mp.osd_message('音频直通已开启 · ' .. preset.label, 2.4)
+            mp.osd_message(i18n.t('音频直通已开启 · ') .. preset.label, 2.4)
         end
     end
 end
@@ -350,17 +395,16 @@ fallback_to_pcm = function(codec, output_format)
         reapply_timer = nil
     end
 
-    o.mode = 'off'
-    persist_mode('off')
-    apply_mode('off', false, true)
+    pcm_fallbacks[audio_chain_key()] = true
+    apply_mode(normalize_mode(o.mode), false, true)
 
     msg.warn(string.format(
-        'passthrough failed for %s: audio output is %s; switched to PCM',
+        'passthrough failed for %s: audio output is %s; current chain uses PCM, preference retained',
         tostring(codec or 'unknown'),
         tostring(output_format or 'unavailable')
     ))
     if o.show_osd then
-        mp.osd_message('当前设备不支持此音轨直通，已自动切回普通输出', 3.5)
+        mp.osd_message(i18n.t('当前音轨已回退普通输出，直通偏好已保留'), 3.5)
     end
 end
 
@@ -378,6 +422,7 @@ end
 mp.register_script_message('set', function(mode)
     mode = normalize_mode(mode)
     o.mode = mode
+    pcm_fallbacks = {}
     persist_mode(mode)
     apply_mode(mode, true, true)
 end)
@@ -385,16 +430,24 @@ end)
 mp.register_script_message('toggle', function()
     local mode = normalize_mode(o.mode) == 'off' and 'home' or 'off'
     o.mode = mode
+    pcm_fallbacks = {}
     persist_mode(mode)
     apply_mode(mode, true, true)
 end)
 
-mp.observe_property('audio-device', 'native', function()
+mp.observe_property('audio-device', 'native', function(_, value)
+    if value ~= nil and tostring(value) ~= last_audio_device then
+        last_audio_device = tostring(value)
+        pcm_fallbacks = {}
+        mark_passthrough_settling(0.8)
+        schedule_reapply(0.05, false)
+    end
     publish_state(normalize_mode(o.mode))
 end)
 
 mp.observe_property('current-tracks/audio', 'native', function()
     publish_state(normalize_mode(o.mode))
+    schedule_reapply(0.01, false)
     if normalize_mode(o.mode) ~= 'off' then
         mark_passthrough_settling(0.8)
         schedule_passthrough_check(0.8)
@@ -402,6 +455,7 @@ mp.observe_property('current-tracks/audio', 'native', function()
 end)
 
 mp.observe_property('audio-out-params/format', 'string', function(_, format)
+    publish_state(normalize_mode(o.mode))
     if normalize_mode(o.mode) ~= 'off' and format and format ~= '' then
         schedule_passthrough_check(0.25)
     end
@@ -422,6 +476,10 @@ mp.observe_property('aid', 'native', function(_, value)
 end)
 
 mp.register_event('start-file', function()
+    pcm_fallbacks = {}
+    last_audio_signature = ''
+    clear_reload_timers()
+    clear_passthrough_check()
     audio_switch_sync_ready = false
     last_aid = nil
     clear_audio_switch_sync()

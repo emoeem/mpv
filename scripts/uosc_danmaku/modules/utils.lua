@@ -1,4 +1,7 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 local utils = require("mp.utils")
+local persistence = dofile(mp.command_native({'expand-path', '~~/script-modules/yaozhi-persistence.lua'}))
+local persistence_msg = require("mp.msg")
 local unpack = unpack or table.unpack
 
 -- from http://lua-users.org/wiki/LuaUnicode
@@ -465,13 +468,7 @@ end
 
 --读history 和 写history
 function read_file(file_path)
-    local file = io.open(file_path, "r") -- 打开文件，"r"表示只读模式
-    if not file then
-        return nil
-    end
-    local content = file:read("*all") -- 读取文件所有内容
-    file:close()                      -- 关闭文件
-    return content
+    return persistence.read(file_path)
 end
 
 -- 应用额外的自定义标题替换规则
@@ -493,13 +490,57 @@ function title_replace(title)
     return title
 end
 
-function write_json_file(file_path, data)
-    local file = io.open(file_path, "w")
-    if not file then
-        return
+local next_persistence_notice = 0
+local function json_save_failed(err)
+    persistence_msg.error('弹幕历史保存失败，原文件已保留：' .. tostring(err))
+    local now = mp.get_time()
+    if now >= next_persistence_notice then
+        next_persistence_notice = now + 5
+        mp.osd_message(i18n.t('弹幕设置本次未保存，原历史记录已保留'), 4)
     end
-    file:write(utils.format_json(data)) -- 将 Lua 表转换为 JSON 并写入
-    file:close()
+end
+
+function write_json_file(file_path, data)
+    local serialized, bytes = pcall(utils.format_json, data)
+    if not serialized or type(bytes) ~= 'string' then
+        json_save_failed(bytes or 'JSON serialization failed')
+        return false
+    end
+    local ok, err = persistence.update(file_path, function(previous, missing)
+        if not missing then
+            local document = previous:gsub('^\239\187\191', '')
+            if not document:match('^%s*{') or type(utils.parse_json(document)) ~= 'table' then
+                return nil, 'Existing history is not a valid JSON object'
+            end
+        end
+        return bytes
+    end)
+    if not ok then json_save_failed(err) elseif err then persistence_msg.warn(tostring(err)) end
+    return ok == true
+end
+
+-- All history read/modify/write paths must use this transaction, including
+-- migrations and asynchronous rollback. A malformed file is never an empty one.
+function update_json_file(file_path, mutate)
+    local committed_document
+    local ok, err = persistence.update(file_path, function(previous, missing)
+        local history = {}
+        if not missing then
+            local document = previous:gsub('^\239\187\191', '')
+            history = utils.parse_json(document)
+            if type(history) ~= 'table' or not document:match('^%s*{') then
+                return nil, 'Existing history is not a valid JSON object'
+            end
+        end
+        local changed = mutate(history, previous, missing)
+        if changed == false then committed_document = previous or '{}'; return committed_document end
+        local bytes = utils.format_json(history)
+        if type(bytes) ~= 'string' then return nil, 'JSON serialization failed' end
+        committed_document = bytes
+        return bytes
+    end)
+    if not ok then json_save_failed(err) elseif err then persistence_msg.warn(tostring(err)) end
+    return ok == true, ok and committed_document or nil
 end
 
 -- 拆分字符串中的字符和数字
@@ -612,6 +653,19 @@ function get_parent_directory(path)
     return dir
 end
 
+-- Strip only recognised media suffixes; a title's trailing .S01E01 is not an extension.
+local media_extensions = {}
+for ext in ("mp4 mkv avi mov m4v mp4v webm flv rm rmvb ts m2ts mts mpeg mpg wmv "
+    .. "mkv3d mk3d vob iso y4m mpeg2 mpeg4 ogm ogv asf 3gp 3g2 m2v m1v"):gmatch("%S+") do
+    media_extensions[ext] = true
+end
+function strip_media_extension(name)
+    if type(name) ~= 'string' then return name end
+    local suffix = name:match('%.([^%.]+)$')
+    if suffix and media_extensions[suffix:lower()] then return name:sub(1, -#suffix - 2) end
+    return name
+end
+
 -- 获取播放文件标题信息
 function parse_title()
     local path = mp.get_property("path")
@@ -660,6 +714,8 @@ function parse_title()
         local ftitle = url_decode(title)
         local name, class = ftitle:match("^(.-)%s*|%s*(.-)%s*$")
         if name then ftitle = name end
+        ftitle = strip_media_extension(ftitle)
+        title = ftitle
         local format_title = format_filename(ftitle)
         if format_title then
             media_title, season, episode = format_title:match("^(.-)%s*[sS](%d+)[eE](%d+)")
@@ -784,14 +840,18 @@ function invalidate_danmaku_requests()
     for _, cancel in pairs(pending) do pcall(cancel) end
 end
 
-function begin_danmaku_association()
+function begin_danmaku_association(request_options)
     invalidate_danmaku_requests()
     -- Replace the selected primary source, preserving deliberate user additions
     -- and each source's delay/filter settings for the current video.
     for url, source in pairs(DANMAKU.sources) do
         if source.association then
             DANMAKU.sources[url] = nil
-            remove_source_from_history(url)
+            -- A remote selection is committed only after playable comments
+            -- arrive. Cancelling it must not delete the previous association.
+            if not (request_options and request_options.defer_history) then
+                remove_source_from_history(url)
+            end
         elseif source.from == 'api_server' then
             if source.from_history then source.data = nil else DANMAKU.sources[url] = nil end
         end
@@ -837,6 +897,36 @@ end
 
 -- 异步执行命令
 -- 同时返回 abort 函数，用于取消异步命令
+local curl_without_compression = {}
+
+local function curl_command(args)
+    local name = tostring(args[1] or ''):gsub('\\', '/'):match('([^/]+)$')
+    return name and (name:lower() == 'curl' or name:lower() == 'curl.exe')
+end
+
+local function curl_args(args, identity)
+    local result, i = {}, 1
+    while i <= #args do
+        local arg = args[i]
+        local header = (arg == '-H' or arg == '--header') and args[i + 1]
+        local inline = arg:match('^%-%-header=(.*)') or arg:match('^%-H(.+)')
+        if identity and arg == '--compressed' then
+            -- curl adds Accept-Encoding itself only when compression is enabled.
+        elseif identity and header and header:lower():match('^%s*accept%-encoding%s*:') then
+            i = i + 1
+        elseif not (identity and inline and inline:lower():match('^%s*accept%-encoding%s*:')) then
+            result[#result + 1] = arg
+        end
+        i = i + 1
+    end
+    result[#result + 1] = '--show-error'
+    if identity then
+        result[#result + 1] = '--header'
+        result[#result + 1] = 'Accept-Encoding: identity'
+    end
+    return result
+end
+
 function call_cmd_async(args, callback)
     -- 标记异步开始
     mark_async_start()
@@ -853,27 +943,56 @@ function call_cmd_async(args, callback)
         if settle() and abort_signal then mp.abort_async_command(abort_signal) end
     end
     release = track_request(abort)
+    local is_curl = curl_command(args)
+    local compressed = false
+    for _, arg in ipairs(args) do if arg == '--compressed' then compressed = true end end
+    local identity = is_curl and compressed and curl_without_compression[args[1]] or false
+    local function run()
     abort_signal = mp.command_native_async({
         name = 'subprocess',
         capture_stderr = true,
         capture_stdout = true,
         playback_only = true,
-        args = args,
+        args = is_curl and compressed and curl_args(args, identity) or args,
     }, function(success, result, error)
-        if not settle() or generation ~= request_generation then return end
+        if settled or generation ~= request_generation then return end
+
+        local stderr = result and type(result.stderr) == 'string' and result.stderr or ''
+        -- This is a local option-parsing failure: no HTTP request was sent.
+        -- Never retry a network/HTTP failure, or other curl exit-code 2 errors.
+        if is_curl and compressed and not identity and result and result.status == 2
+            and stderr:find('option %-%-compressed:')
+            and stderr:find("the installed libcurl version doesn't support this", 1, true)
+        then
+            if not curl_without_compression[args[1]] then
+                mp.msg.warn('curl 不支持响应解压，已自动改用未压缩传输；后续请求复用此能力结果')
+            end
+            curl_without_compression[args[1]] = true
+            identity = true
+            run()
+            return
+        end
+        if not settle() then return end
 
         if not success or not result or result.status ~= 0 then
             local exit_code = (result and result.status or 'unknown')
-            local message = error or (
-                result and ((result.stdout or '') .. (result.stderr or ''))
-            ) or ''
-            callback('Calling failed. Exit code: ' .. exit_code .. ' Error: ' .. message, {})
+            local message = stderr ~= '' and stderr or error or (result and result.error_string) or ''
+            if not is_curl then
+                message = error or (result and ((result.stdout or '') .. stderr)) or ''
+            end
+            local prefix = is_curl and 'curl 请求失败' or 'Calling failed'
+            if is_curl and (not result or result.status == -1 or result.error_string == 'init' or error == 'init') then
+                prefix = 'curl 无法启动，请检查程序是否存在及 PATH'
+            end
+            callback(prefix .. '. Exit code: ' .. exit_code .. ' Error: ' .. message, {})
             return
         end
 
         local json = result and type(result.stdout) == 'string' and result.stdout or ''
         return callback(nil, json)
     end)
+    end
+    run()
 
     return abort
 end

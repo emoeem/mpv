@@ -19,6 +19,14 @@ local function positive(value)
     return number ~= nil and number > 0
 end
 
+local function first_positive(...)
+    for i = 1, select('#', ...) do
+        local value = select(i, ...)
+        value = tonumber(value)
+        if value and value > 0 then return value end
+    end
+end
+
 local function append_value(parts, value)
     if type(value) == 'string' or type(value) == 'number' then
         parts[#parts + 1] = tostring(value)
@@ -55,6 +63,10 @@ local function build_context(snapshot, track, extra, include_filename)
 end
 
 local function read_selected_track(kind)
+    if kind == 'video' then
+        local vid = mp.get_property_native('vid')
+        if vid == false or vid == 'no' then return {} end
+    end
     local current = mp.get_property_native('current-tracks/' .. kind, {})
     if type(current) == 'table' and current.type == kind then return current end
 
@@ -74,20 +86,23 @@ local function read_selected_track(kind)
 end
 
 local function read_snapshot()
+    local vid = mp.get_property_native('vid')
+    local video_enabled = vid ~= false and vid ~= 'no'
     return {
         filename = mp.get_property('filename', ''),
         media_title = mp.get_property('media-title', ''),
         path = mp.get_property('path', ''),
-        video_params = mp.get_property_native('video-params', {}),
-        video_frame_info = mp.get_property_native('video-frame-info', {}),
+        video_params = video_enabled and mp.get_property_native('video-params', {}) or {},
+        video_frame_info = video_enabled and mp.get_property_native('video-frame-info', {}) or {},
         audio_params = mp.get_property_native('audio-params', {}),
+        audio_out_params = mp.get_property_native('audio-out-params', {}),
         video_track = read_selected_track('video'),
         audio_track = read_selected_track('audio'),
         video_codec = mp.get_property('video-codec', ''),
-        detected_dv_profile = mp.get_property_number(
-            'user-data/media-format/dolby-vision-profile', 0),
-        detected_dv_level = mp.get_property_number(
-            'user-data/media-format/dolby-vision-level', 0),
+        detected_dv_profile = video_enabled and mp.get_property_number(
+            'user-data/media-format/dolby-vision-profile', 0) or 0,
+        detected_dv_level = video_enabled and mp.get_property_number(
+            'user-data/media-format/dolby-vision-level', 0) or 0,
         audio_codec = mp.get_property('audio-codec', ''),
         hwdec = mp.get_property('hwdec-current', ''),
         fps = mp.get_property_number('estimated-vf-fps', 0),
@@ -98,12 +113,11 @@ local function read_snapshot()
 end
 
 local function dolby_vision_label(snapshot, context)
-    local track = snapshot.video_track or {}
-    local params = snapshot.video_params or {}
+    local track = type(snapshot.video_track) == 'table' and snapshot.video_track or {}
+    local params = type(snapshot.video_params) == 'table' and snapshot.video_params or {}
     local colormatrix = lower(params.colormatrix or params['color-matrix'])
-    local profile = tonumber(track['dolby-vision-profile'])
-        or tonumber(params['dolby-vision-profile'])
-        or tonumber(snapshot.detected_dv_profile)
+    local profile = first_positive(track['dolby-vision-profile'],
+        params['dolby-vision-profile'], snapshot.detected_dv_profile)
     local detected = positive(profile)
         or track['dolby-vision-level'] ~= nil
         or params['dolby-vision-level'] ~= nil
@@ -115,6 +129,61 @@ local function dolby_vision_label(snapshot, context)
         or contains(context, 'dvh1')
     if not detected then return nil end
     return profile and profile > 0 and ('Dolby Vision P' .. tostring(profile)) or 'Dolby Vision'
+end
+
+local function known_bool(value)
+    if type(value) == 'boolean' then return value end
+end
+
+local function dolby_vision_info(snapshot)
+    local track = type(snapshot.video_track) == 'table' and snapshot.video_track or {}
+    local params = type(snapshot.video_params) == 'table' and snapshot.video_params or {}
+    local frame = type(snapshot.video_frame_info) == 'table' and snapshot.video_frame_info or {}
+    local profile = first_positive(track['dolby-vision-profile'],
+        params['dolby-vision-profile'], snapshot.detected_dv_profile)
+    local level = first_positive(track['dolby-vision-level'],
+        params['dolby-vision-level'], snapshot.detected_dv_level)
+    local config_bl = known_bool(track['dolby-vision-config-bl-present'])
+    local config_el = known_bool(track['dolby-vision-config-el-present'])
+    local bl = known_bool(track['dolby-vision-group-bl-present'])
+    local el = known_bool(track['dolby-vision-group-el-present'])
+    if bl == nil then bl = config_bl end
+    if el == nil then el = config_el end
+    local config_rpu = known_bool(track['dolby-vision-config-rpu-present'])
+    local rpu = known_bool(frame['dolby-vision-rpu-present'])
+    -- Detailed badges require native evidence. Keep the existing filename
+    -- fallback confined to the legacy generic HDR/logo label.
+    local matrix = lower(params.colormatrix or params['color-matrix'])
+    if not profile and not level and bl ~= true and el ~= true
+        and config_rpu ~= true and rpu ~= true and matrix ~= 'dolbyvision' then
+        return nil
+    end
+    -- Enhancement type comes only from parsed native metadata. Neither P7,
+    -- a filename nor an EL configuration flag identifies MEL versus FEL.
+    local enhancement = frame['dolby-vision-el-type']
+    -- A per-track EL=false configuration can still have an explicitly
+    -- paired EL in another track; it must not override parsed frame evidence.
+    if profile ~= 7 or (enhancement ~= 'MEL' and enhancement ~= 'FEL') then
+        enhancement = nil
+    end
+    local components = {}
+    if bl == true then components[#components + 1] = 'BL' end
+    if el == true then components[#components + 1] = 'EL' end
+    if config_rpu == true or rpu == true then components[#components + 1] = 'RPU' end
+    local structure = table.concat(components, '+')
+    local details = {}
+    if profile then details[#details + 1] = 'P' .. tostring(profile) end
+    if level then details[#details + 1] = 'L' .. tostring(level) end
+    if enhancement then details[#details + 1] = enhancement end
+    if structure ~= '' then details[#details + 1] = structure end
+    return {
+        profile = profile, level = level,
+        label = profile and ('DV P' .. tostring(profile)) or 'DV',
+        enhancement_type = enhancement, rpu_present = rpu,
+        bl_present = bl, el_present = el, config_rpu_present = config_rpu,
+        config_bl_present = config_bl, config_el_present = config_el,
+        structure = structure, details = table.concat(details, ' · '),
+    }
 end
 
 local function has_hdr10_plus(track, params, context)
@@ -309,31 +378,63 @@ local function speaker_layout_label(value)
     return nil
 end
 
-local function detect_audio_layout(snapshot)
-    local params = type(snapshot.audio_params) == 'table' and snapshot.audio_params or {}
-    local track = type(snapshot.audio_track) == 'table' and snapshot.audio_track or {}
-    local candidates = {
-        params['hr-channels'], params.channels, params['channel-layout'],
-        track['demux-channel-layout'], track['channel-layout'],
-    }
-    for _, value in ipairs(candidates) do
-        local layout = direct_layout_label(value) or speaker_layout_label(value)
-        if layout then return layout end
-    end
-
-    local filename_layout = direct_layout_label(snapshot.filename)
-    if filename_layout then return filename_layout end
-
-    local count = tonumber(params['channel-count'])
-        or tonumber(snapshot.audio_channel_count)
-        or tonumber(snapshot.audio_channels)
-        or tonumber(track['demux-channel-count'])
-        or 0
+local function channel_count_label(value)
+    local count = tonumber(value) or 0
     if count == 8 then return '7.1' end
     if count == 6 then return '5.1' end
     if count == 2 then return '2.0' end
     if count == 1 then return '1.0' end
-    return count > 0 and (tostring(count) .. 'ch') or ''
+    return count > 0 and (tostring(count) .. 'ch') or nil
+end
+
+local function is_bitstream_format(value)
+    local format = lower(value)
+    return format:match('^spdif%-') ~= nil
+        or contains(format, 'iec61937')
+        or contains(format, 'bitstream')
+end
+
+local function first_layout(...)
+    for i = 1, select('#', ...) do
+        local value = select(i, ...)
+        local layout = direct_layout_label(value) or speaker_layout_label(value)
+        if layout then return layout end
+    end
+    return nil
+end
+
+local function detect_audio_layout(snapshot)
+    local params = type(snapshot.audio_params) == 'table' and snapshot.audio_params or {}
+    local out = type(snapshot.audio_out_params) == 'table' and snapshot.audio_out_params or {}
+    local track = type(snapshot.audio_track) == 'table' and snapshot.audio_track or {}
+    local output_format = out.format
+    if not output_format or output_format == '' then output_format = params.format end
+    if is_bitstream_format(output_format) then
+        -- A passthrough carrier is commonly stereo; its channel count is not
+        -- the movie's channel layout. Use only metadata from the selected track.
+        local source_layout = first_layout(
+            track['demux-channels'], track['demux-channel-layout'],
+            track['channel-layout'])
+        if source_layout then return source_layout end
+        return channel_count_label(track['demux-channel-count'])
+            or channel_count_label(track['audio-channels']) or ''
+    end
+
+    local layout = first_layout(
+        params['hr-channels'], params.channels, params['channel-layout'])
+    if layout then return layout end
+    local output_count = channel_count_label(params['channel-count'])
+        or channel_count_label(snapshot.audio_channel_count)
+        or channel_count_label(snapshot.audio_channels)
+    if output_count then return output_count end
+
+    layout = first_layout(
+        track['demux-channels'], track['demux-channel-layout'],
+        track['channel-layout'])
+    if layout then return layout end
+    return channel_count_label(track['demux-channel-count'])
+        or channel_count_label(track['audio-channels'])
+        or direct_layout_label(snapshot.filename) or ''
 end
 
 local function resolution_labels(width, height, interlaced)
@@ -397,6 +498,7 @@ function M.from_snapshot(snapshot)
         -- metadata detection, where containers may omit a brand marker.
         video_codec = detect_snapshot_video_codec(snapshot),
         dynamic_range = detect_dynamic_range(snapshot, video_context),
+        dolby_vision = dolby_vision_info(snapshot),
         fps = fps,
         fps_label = format_fps(fps),
         audio_codec = detect_audio_codec(

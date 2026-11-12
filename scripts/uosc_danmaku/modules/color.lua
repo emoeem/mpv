@@ -66,7 +66,8 @@ function M.percentage(value)
     return math.max(0, math.min(100, floor(n)))
 end
 
-function M.resolve(comment, enabled, percentage)
+function M.resolve(comment, enabled, percentage, force_white)
+    if force_white then return WHITE end
     local original = M.normalize(comment.color)
     if original ~= nil and original ~= WHITE then return original end
     if not enabled then return original or WHITE end
@@ -85,9 +86,9 @@ end
 
 -- Only replace our generated primary-colour tag. Position, timing, alpha,
 -- borders and the escaped source text stay byte-for-byte intact.
-function M.apply(event, enabled, percentage)
+function M.apply(event, enabled, percentage, force_white)
     if not event.color_source then return false end
-    local color = M.resolve(event.color_source, enabled, percentage)
+    local color = M.resolve(event.color_source, enabled, percentage, force_white)
     if color == event.render_color then return false end
     event.text = event.text:gsub('{\\c&H%x%x%x%x%x%x&}', M.tag(color), 1)
     event.render_color = color
@@ -97,8 +98,8 @@ function M.apply(event, enabled, percentage)
     return true
 end
 
-function M.recolor(events, enabled, percentage)
-    for _, event in ipairs(events or {}) do M.apply(event, enabled, percentage) end
+function M.recolor(events, enabled, percentage, force_white)
+    for _, event in ipairs(events or {}) do M.apply(event, enabled, percentage, force_white) end
 end
 
 return M

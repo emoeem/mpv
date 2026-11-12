@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 local mp = require 'mp'
 local utils = require 'mp.utils'
 
@@ -19,7 +20,7 @@ end
 local function open_menu()
     local lines = mp.get_property_native('sub-lines')
     if type(lines) ~= 'table' or #lines == 0 then
-        mp.osd_message('当前字幕无法读取字幕内容')
+        mp.osd_message(i18n.t('当前字幕无法读取字幕内容'))
         return
     end
 

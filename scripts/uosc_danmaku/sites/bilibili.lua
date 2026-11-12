@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 local msg = require('mp.msg')
 local utils = require("mp.utils")
 
@@ -239,7 +240,7 @@ function load_danmaku_for_bilibili(path, callback)
             if resolved_cid then
                 download_bilibili_danmaku(path, resolved_cid, true, callback)
             else
-                show_message("获取哔哩哔哩视频cid失败", 3)
+                show_message(i18n.t("获取哔哩哔哩视频cid失败"), 3)
                 msg.error("获取哔哩哔哩视频cid失败")
                 callback(false)
             end

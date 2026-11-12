@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 local utils = require 'mp.utils'
 local msg = require 'mp.msg'
 
@@ -34,6 +35,74 @@ local SourceOrder = {
     { name = "b 站", id = "bilibili1" },
 }
 
+local function select_extra_source(play_url, anime, episode, site, extra)
+    local path = mp.get_property('path')
+    local directory = path and get_danmaku_association_history_directory(path)
+    local source_path = path and get_source_history_path(path)
+    local previous = {
+        anime = DANMAKU.anime, episode = DANMAKU.episode,
+        source = DANMAKU.source, extra = DANMAKU.extra,
+        api_server = DANMAKU.api_server,
+        sources = {},
+    }
+    for url, source in pairs(DANMAKU.sources) do
+        if source.association or source.from == 'api_server' then
+            previous.sources[url] = source
+        end
+    end
+
+    begin_danmaku_association({defer_history = true})
+    DANMAKU.sources[play_url] = {from = 'user_custom', association = true}
+    ENABLED = true
+    DANMAKU.anime, DANMAKU.episode = anime, episode
+    DANMAKU.source, DANMAKU.extra = site, extra
+    DANMAKU.api_server = nil
+    -- Capture rollback data and commit association/source changes under one
+    -- lock. A lock-external snapshot can already be stale before our write.
+    local history_saved, history_snapshot = write_history(nil, nil, nil, nil, function(history)
+        local function copy(record)
+            return record ~= nil and utils.parse_json(utils.format_json(record)) or nil
+        end
+        previous.directory_record = directory and copy(history[directory]) or nil
+        previous.source_record = source_path and copy(history[source_path]) or nil
+        local record = source_path and history[source_path]
+        if type(record) == 'table' and type(record.sources) == 'table' then
+            for url, source in pairs(record.sources) do
+                if type(source) == 'table' and source.association then record.sources[url] = nil end
+            end
+        end
+        add_source_to_history(play_url, DANMAKU.sources[play_url], history)
+    end)
+
+    add_danmaku_source_online(play_url, true, function()
+        if mp.get_property('path') ~= path or DANMAKU.sources[play_url] == nil or
+            DANMAKU.anime ~= anime or DANMAKU.episode ~= episode then return end
+        DANMAKU.sources[play_url] = nil
+        for url, source in pairs(previous.sources) do DANMAKU.sources[url] = source end
+        DANMAKU.anime, DANMAKU.episode = previous.anime, previous.episode
+        DANMAKU.source, DANMAKU.extra = previous.source, previous.extra
+        DANMAKU.api_server = previous.api_server
+
+        if history_saved then update_json_file(HISTORY_PATH, function(history, latest)
+        -- Only revert our own snapshot. An asynchronous failure must never
+        -- overwrite another instance's newer selection or source settings.
+        if latest ~= history_snapshot then
+            msg.warn('弹幕历史已更新，跳过旧请求的历史回退')
+            return false
+        end
+        if directory then history[directory] = previous.directory_record end
+        if source_path then history[source_path] = previous.source_record end
+        end) end
+        local count = load_danmaku(true, true)
+        if count and count > 0 then
+            show_loaded(true)
+            show_message(i18n.t('所选弹幕源暂不可用，已保留之前的弹幕'), 4)
+        else
+            show_message(i18n.t('所选弹幕源暂不可用，请换一条搜索结果'), 4)
+        end
+    end, true)
+end
+
 local function load_extra_danmaku(url, episode, number, class, id, site, title, year)
     local play_url = nil
     if url:match("^.-%.html") then
@@ -50,23 +119,18 @@ local function load_extra_danmaku(url, episode, number, class, id, site, title, 
         play_url = url:gsub("%?bsource=360ogvys$",""):gsub("&.*$","")
     end
 
-    begin_danmaku_association()
-    DANMAKU.sources[play_url] = {from = 'user_custom', association = true}
-    ENABLED = true
-    DANMAKU.anime = title .. " (" .. year .. ")"
-    DANMAKU.episode = "第" .. episode .. "话"
-    DANMAKU.source = site
-    DANMAKU.extra = {
+    local extra = {
         id = id,
         site = site,
+        play_url = play_url,
         year = year,
         class = class,
         title = title,
         number = tonumber(number),
         episodenum = tonumber(episode),
     }
-    write_history()
-    add_danmaku_source(play_url, true)
+    select_extra_source(play_url, title .. " (" .. year .. ")",
+        "第" .. episode .. "话", site, extra)
 end
 
 local function query_tmdb(title, class, menu)
@@ -134,6 +198,14 @@ local function build_episode_rows(seriesPlaylinks, playlink)
     end
     if #rows == 0 then return nil end
     return rows
+end
+
+-- Reuse search-provided episode links without fetching the desktop menu.
+function get_extra_remote_episode_rows(id, site)
+    local cached = cached_series_playlinks[tostring(id)]
+    if cached and tostring(cached.seriesSite) == tostring(site) then
+        return build_episode_rows(cached.seriesPlaylinks, cached.playlink)
+    end
 end
 
 local function get_number(cat, id, site)
@@ -765,7 +837,7 @@ mp.register_script_message("get-extra-event", function(cat, id, playlink, source
     year = safe_command_text(year) or "未知年份"
     if not cat or not id or not playlink or not source_id or not title then
         msg.error("拒绝了格式异常的 360 弹幕来源")
-        mp.osd_message("弹幕来源数据异常，已取消加载", 3)
+        mp.osd_message(i18n.t("弹幕来源数据异常，已取消加载"), 3)
         return
     end
     if uosc_available then
@@ -777,19 +849,14 @@ mp.register_script_message("get-extra-event", function(cat, id, playlink, source
         else
             playlink = playlink:gsub("%?bsource=360ogvys$","")
         end
-        begin_danmaku_association()
-        DANMAKU.sources[playlink] = {from = 'user_custom', association = true}
-        DANMAKU.anime = title .. " (" .. year .. ")"
-        DANMAKU.episode = "电影"
-        DANMAKU.source = source_id
-        write_history()
-        add_danmaku_source(playlink, true)
+        select_extra_source(playlink, title .. " (" .. year .. ")", "电影", source_id, nil)
     else
         get_details(cat, id, source_id, title, year)
     end
 end)
 
 mp.register_script_message("add-extra-event", function(url, episode, number, class, id, site, title, year)
+    if danmaku_remote_desktop_selection then danmaku_remote_desktop_selection() end
     if uosc_available then
         mp.commandv("script-message-to", "uosc", "close-menu", "menu_details")
     end

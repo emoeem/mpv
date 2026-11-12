@@ -214,6 +214,8 @@ local o = {
 }
 
 (require 'mp.options').read_options(o)
+-- UI-only template; paths, filters and bookmark group identities stay unchanged.
+o.header_text = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"})).t(o.header_text)
 local utils = require 'mp.utils'
 local msg = require 'mp.msg'
 
@@ -294,7 +296,9 @@ local search_string = ''
 local search_active = false
 
 local incognito_mode = false
+mp.set_property_native('user-data/simplehistory/incognito', incognito_mode)
 local autosaved_entry = false
+local autosaved_line, last_written_line
 local incognito_auto_run_triggered = false
 
 local loadTriggered = false --1.1.5# to identify if load is triggered atleast once for idle option
@@ -311,6 +315,120 @@ local logTime = 0 --1.3# use logTime since seekTime is used in multiple places
 local filterName = 'all'
 local sortName
 local normalize_path = nil
+
+-- One lock covers the complete read/modify/write operation, including nested
+-- slot/group edits. UI success messages are released only after durable commit.
+local persistence = assert(dofile(mp.command_native({'expand-path', '~~/script-modules/yaozhi-persistence.lua'})))
+local log_transaction
+local count_log_args = select
+local original_info = msg.info
+local original_osd_message = mp.osd_message
+local original_set_osd_ass = mp.set_osd_ass
+local function log_effect(fn, ...)
+	if log_transaction then
+		local args = {n = count_log_args('#', ...), ...}
+		log_transaction.effects[#log_transaction.effects + 1] = function()
+			fn(unpack(args, 1, args.n))
+		end
+	else fn(...) end
+end
+local function log_info(...) log_effect(original_info, ...) end
+local function log_osd_message(...) log_effect(original_osd_message, ...) end
+local function log_set_osd_ass(...) log_effect(original_set_osd_ass, ...) end
+local function copy_log_state(value)
+	if type(value) ~= 'table' then return value end
+	local result = {}
+	for key, item in pairs(value) do result[key] = copy_log_state(item) end
+	return result
+end
+local function read_log_bytes()
+	if log_transaction then return log_transaction.bytes end
+	local bytes, err, code = persistence.read(log_fullpath)
+	if not bytes and code ~= 'missing' then msg.error('Could not read log: ' .. tostring(err)) end
+	return bytes
+end
+local function replace_log_entries(entries)
+	assert(log_transaction, 'Log modification outside a transaction')
+	local lines = {}
+	for _, entry in ipairs(entries or {}) do lines[#lines + 1] = entry.found_line .. log_transaction.newline end
+	log_transaction.bytes = table.concat(lines)
+end
+local function append_log_line(line)
+	assert(log_transaction, 'Log append outside a transaction')
+	local bytes = log_transaction.bytes
+	if bytes ~= '' and bytes:sub(-1) ~= '\n' then bytes = bytes .. log_transaction.newline end
+	log_transaction.bytes = bytes .. line .. log_transaction.newline
+end
+local function find_log_identity(entries, target)
+	if not target or not target.found_line then error('The selected log entry is unavailable; refresh the list') end
+	local expected = log_transaction.identities[target.found_line] or target.found_line
+	local found
+	for index, entry in ipairs(entries) do
+		if entry.found_line == expected then
+			if found then error('The selected log entry is ambiguous; refresh the list') end
+			found = index
+		end
+	end
+	if not found then error('The selected log entry changed; refresh the list') end
+	return found
+end
+local function change_log_line(entry, line)
+	local previous = entry.found_line
+	for identity, current in pairs(log_transaction.identities) do
+		if current == previous then log_transaction.identities[identity] = line end
+	end
+	log_transaction.identities[previous] = line
+	entry.found_line = line
+end
+local function mutate_log(fn, ...)
+	if log_transaction then return fn(...) end
+	local args = {n = count_log_args('#', ...), ...}
+	local state = {list_contents = copy_log_state(list_contents), list_highlight_cursor = copy_log_state(list_highlight_cursor), list_start = copy_log_state(list_start), list_cursor = copy_log_state(list_cursor), list_drawn = copy_log_state(list_drawn), list_pages = copy_log_state(list_pages), filePath = copy_log_state(filePath), fileTitle = copy_log_state(fileTitle), fileLength = copy_log_state(fileLength), seekTime = copy_log_state(seekTime), filterName = copy_log_state(filterName), sortName = copy_log_state(sortName), autosaved_entry = copy_log_state(autosaved_entry), autosaved_line = copy_log_state(autosaved_line), last_written_line = copy_log_state(last_written_line)}
+	local result, effects
+	local ok, err = persistence.update(log_fullpath, function(bytes)
+		local newline = bytes and bytes ~= '' and (bytes:find('\r\n', 1, true) and '\r\n' or '\n') or (is_windows and '\r\n' or '\n')
+		log_transaction = {bytes = bytes or '', newline = newline, effects = {}, identities = {}}
+		local worked, failure = pcall(function()
+			result = {fn(unpack(args, 1, args.n))}
+		end)
+		if not worked then return nil, failure end
+		effects = log_transaction.effects
+		return log_transaction.bytes
+	end)
+	log_transaction = nil
+	if not ok then
+		list_contents = state.list_contents
+		list_highlight_cursor = state.list_highlight_cursor
+		list_start = state.list_start
+		list_cursor = state.list_cursor
+		list_drawn = state.list_drawn
+		list_pages = state.list_pages
+		filePath = state.filePath
+		fileTitle = state.fileTitle
+		fileLength = state.fileLength
+		seekTime = state.seekTime
+		filterName = state.filterName
+		sortName = state.sortName
+		autosaved_entry = state.autosaved_entry
+		autosaved_line = state.autosaved_line
+		last_written_line = state.last_written_line
+		msg.error('Could not save log; existing data was kept: ' .. tostring(err))
+		if o.osd_messages then original_osd_message('Save failed; existing history/bookmarks were kept', 4) end
+		return nil, err
+	end
+	for _, effect in ipairs(effects or {}) do effect() end
+	-- Existing void functions stay usable as callbacks; callers may now check the
+	-- first result before setting autosaved state or reporting success.
+	if result and result[1] ~= nil then return unpack(result) end
+	return true
+end
+local function log_mutator(fn, requires_file)
+	return function(...)
+		if requires_file and not filePath then return fn(...) end
+		return mutate_log(fn, ...)
+	end
+end
+
 
 function starts_protocol(tab, val)
 	for index, element in ipairs(tab) do
@@ -437,7 +555,7 @@ function get_file()
 	-- 处理光盘播放模式（bd:// / dvd://）：
 	-- 注意：光盘协议下 path 可能为 nil（最常见的情况！）、bd://、dvd:// 或原始路径
 	-- 优先通过 auto_iso_loader 暴露的 user-data 获取，兜底通过 bluray-device/dvd-device
-	local iso_original_path = mp.get_property("user-data/auto-iso-loader/original-path")
+	local iso_original_path = mp.get_property_native("user-data/auto-iso-loader/original-path")
 	if utils.shared_script_property_get then
 		iso_original_path = iso_original_path or utils.shared_script_property_get("auto-iso-loader-original-path")
 	end
@@ -525,14 +643,15 @@ end
 ---------Start of LogManager---------
 --LogManager (Read and Format the List from Log)--
 function read_log(func)
-	local f = io.open(log_fullpath, "r")
-	if not f then return end
+	local bytes = read_log_bytes()
+	if not bytes then return end
 	local contents = {}
-	for line in f:lines() do
+	if bytes == '' then return contents end
+	for line in (bytes .. (bytes:sub(-1) == '\n' and '' or '\n')):gmatch('(.-)\n') do
+		line = line:gsub('\r$', '')
 		local item = func(line)
 		if item then table.insert(contents, item) end
 	end
-	f:close()
 	return contents
 end
 
@@ -550,7 +669,10 @@ function read_log_table()
 		dt = line:match('%[(.-)%]')
 		t = line:match(' | ' .. esc_string(log_time_text) .. '(%d*%.?%d*)(.*)$')
 		ln = line:match(' | ' .. esc_string(log_length_text) .. '(%d*%.?%d*)(.*)$')
-		if not p or p == "" or not tonumber(t) or not tonumber(ln) then return nil end
+		if not p or p == "" or not tonumber(t) or not tonumber(ln) then
+			if log_transaction then error("Malformed history row; existing data was kept") end
+			return nil
+		end
 		r = tonumber(ln) - tonumber(t)
 		l = line
 		line_pos = line_pos + 1
@@ -976,7 +1098,7 @@ function draw_list()
 		end
 	
 	end
-	mp.set_osd_ass(0, 0, osd_msg)
+	log_set_osd_ass(0, 0, osd_msg)
 end
 
 function list_empty_error_msg()
@@ -987,9 +1109,9 @@ function list_empty_error_msg()
 	else
 		msg_text = "History Empty"
 	end
-	msg.info(msg_text)
+	log_info(msg_text)
 	if o.osd_messages == true and not list_drawn then
-		mp.osd_message(msg_text)
+		log_osd_message(msg_text)
 	end
 end
 
@@ -1258,21 +1380,21 @@ function load(list_cursor, add_playlist, target_time)
 				list_close_and_trash_collection()
 			end
 			if o.osd_messages == true then
-				mp.osd_message('Loaded:\n' .. list_contents[#list_contents - list_cursor + 1].found_name.. o.time_seperator .. format_time(seekTime, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]))
+				log_osd_message('Loaded:\n' .. list_contents[#list_contents - list_cursor + 1].found_name.. o.time_seperator .. format_time(seekTime, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]))
 			end
-			msg.info('Loaded the below file:\n' .. list_contents[#list_contents - list_cursor + 1].found_name  .. ' | '.. format_time(seekTime))
+			log_info('Loaded the below file:\n' .. list_contents[#list_contents - list_cursor + 1].found_name  .. ' | '.. format_time(seekTime))
 		else
 			mp.commandv('loadfile', list_contents[#list_contents - list_cursor + 1].found_path, 'append-play')
 			if o.osd_messages == true then
-				mp.osd_message('Added into Playlist:\n'..list_contents[#list_contents - list_cursor + 1].found_name..' ')
+				log_osd_message('Added into Playlist:\n'..list_contents[#list_contents - list_cursor + 1].found_name..' ')
 			end
-			msg.info('Added the below file into playlist:\n' .. list_contents[#list_contents - list_cursor + 1].found_path)
+			log_info('Added the below file into playlist:\n' .. list_contents[#list_contents - list_cursor + 1].found_path)
 		end
 	else
 		if o.osd_messages == true then
-			mp.osd_message('File Doesn\'t Exist:\n' .. list_contents[#list_contents - list_cursor + 1].found_path)
+			log_osd_message('File Doesn\'t Exist:\n' .. list_contents[#list_contents - list_cursor + 1].found_path)
 		end
-		msg.info('The file below doesn\'t seem to exist:\n' .. list_contents[#list_contents - list_cursor + 1].found_path)
+		log_info('The file below doesn\'t seem to exist:\n' .. list_contents[#list_contents - list_cursor + 1].found_path)
 		return
 	end
 end
@@ -1298,24 +1420,34 @@ function list_add_playlist(action)
 		end
 		if o.osd_messages == true then
 			if file_ignored_total > 0 then
-				mp.osd_message('Added into Playlist '..#list_highlight_cursor - file_ignored_total..' Item/s\nIgnored '..file_ignored_total.. " Item/s That Do Not Exist")
+				log_osd_message('Added into Playlist '..#list_highlight_cursor - file_ignored_total..' Item/s\nIgnored '..file_ignored_total.. " Item/s That Do Not Exist")
 			else
-				mp.osd_message('Added into Playlist '..#list_highlight_cursor - file_ignored_total..' Item/s')
+				log_osd_message('Added into Playlist '..#list_highlight_cursor - file_ignored_total..' Item/s')
 			end
 		end
 		if file_ignored_total > 0 then
 			msg.warn('Ignored a total of '..file_ignored_total.. " Item/s that does not seem to exist")
 		end
-		msg.info('Added into playlist a total of '..#list_highlight_cursor - file_ignored_total..' item/s')
+		log_info('Added into playlist a total of '..#list_highlight_cursor - file_ignored_total..' item/s')
 	end
 end
 
-function delete_log_entry_specific(target_index, target_path, target_time)
+function delete_log_entry_specific(target_index, target_path, target_time, target_line)
 	local trigger_delete = false
 	list_contents = read_log_table()
 	if not list_contents or not list_contents[1] then return end
-	if target_index == 'last' then target_index = #list_contents end
-	if not target_index then return end
+	if target_line then
+		local found
+		for i, entry in ipairs(list_contents) do
+			if entry.found_line == target_line then
+				if found then error('The automatic history entry is ambiguous; existing data was kept') end
+				found = i
+			end
+		end
+		if not found then return end
+		target_index = found
+	elseif target_index == 'last' then target_index = #list_contents end
+	if not target_index or not list_contents[target_index] then return end
 	
 	if target_index and target_path and target_time then
 		if list_contents[target_index].found_path == target_path and tonumber(list_contents[target_index].found_time) == target_time then
@@ -1338,13 +1470,7 @@ function delete_log_entry_specific(target_index, target_path, target_time)
 	end
 	
 	if not trigger_delete then return end
-	local f = io.open(log_fullpath, "w+")
-	if list_contents ~= nil and list_contents[1] then
-		for i = 1, #list_contents do
-			f:write(("%s\n"):format(list_contents[i].found_line))
-		end
-	end
-	f:close()
+	replace_log_entries(list_contents)
 end
 
 function delete_log_entry(multiple, round, target_path, target_time, entry_limit)
@@ -1399,57 +1525,31 @@ function delete_log_entry(multiple, round, target_path, target_time, entry_limit
 	end
 	
 	if not trigger_delete then return end
-	local f = io.open(log_fullpath, "w+")
-	if list_contents ~= nil and list_contents[1] then
-		for i = 1, #list_contents do
-			f:write(("%s\n"):format(list_contents[i].found_line))
-		end
-	end
-	f:close()
+	replace_log_entries(list_contents)
 end
 
 function delete_log_entry_highlighted()
 	if not list_highlight_cursor or not list_highlight_cursor[1] then return end
-	list_contents = read_log_table()
-	if not list_contents or not list_contents[1] then return end
-	
-	local list_contents_length = #list_contents
-	
-	for i = 1, list_contents_length do
-		for j=1, #list_highlight_cursor do
-			if list_contents[list_contents_length+1-i] then
-				if list_contents[list_contents_length+1-i].found_sequence == list_highlight_cursor[j][2].found_sequence then
-					table.remove(list_contents, list_contents_length+1-i)
-				end
-			end
-		end
+	local entries = read_log_table() or {}
+	local indices = {}
+	for _, selected in ipairs(list_highlight_cursor) do
+		indices[find_log_identity(entries, selected[2])] = true
 	end
-	
-	msg.info("Deleted "..#list_highlight_cursor.." Item/s")
-	
+	for i = #entries, 1, -1 do if indices[i] then table.remove(entries, i) end end
+	replace_log_entries(entries)
+	log_info('Deleted ' .. #list_highlight_cursor .. ' Item/s')
+	list_contents = entries
 	list_unhighlight_all()
-	
-	local f = io.open(log_fullpath, "w+")
-	if list_contents ~= nil and list_contents[1] then
-		for i = 1, #list_contents do
-			f:write(("%s\n"):format(list_contents[i].found_line))
-		end
-	end
-	f:close()
-	
 end
 
 function delete_selected()
-	filePath = list_contents[#list_contents - list_cursor + 1].found_path
-	fileTitle = list_contents[#list_contents - list_cursor + 1].found_name
-	seekTime = tonumber(list_contents[#list_contents - list_cursor + 1].found_time)
-	if not filePath and not seekTime then
-		msg.info("Failed to delete")
-		return
-	end
-	delete_log_entry()
-	msg.info("Deleted \"" .. filePath .. "\" | " .. format_time(seekTime))
-	filePath, fileTitle, fileLength = get_file()
+	local selected = list_contents[#list_contents - list_cursor + 1]
+	local entries = read_log_table() or {}
+	local index = find_log_identity(entries, selected)
+	table.remove(entries, index)
+	replace_log_entries(entries)
+	list_contents = entries
+	log_info('Deleted "' .. selected.found_path .. '" | ' .. format_time(tonumber(selected.found_time)))
 end
 
 function list_delete(action)
@@ -1458,6 +1558,7 @@ function list_delete(action)
 	elseif action == 'highlight' then
 		delete_log_entry_highlighted()
 	end
+	log_effect(function()
 	get_list_contents()
 	if not list_contents or not list_contents[1] then
 		list_close_and_trash_collection()
@@ -1468,6 +1569,7 @@ function list_delete(action)
 	else
 		list_move_last()
 	end
+	end)
 end
 
 function get_total_duration(action)
@@ -1604,6 +1706,7 @@ end
 
 --LogManager (List Bind and Unbind)--
 function get_list_keybinds()
+	if not list_drawn then return end
 	bind_keys(o.list_ignored_keybind, 'ignore')
 	bind_keys(o.list_move_up_keybind, 'move-up', list_move_up, 'repeatable')
 	bind_keys(o.list_move_down_keybind, 'move-down', list_move_down, 'repeatable')
@@ -1690,8 +1793,9 @@ function unbind_list_keys()
 	unbind_keys(o.list_close_keybind, 'list-close')
 	unbind_keys(o.next_filter_sequence_keybind, 'list-filter-next')
 	unbind_keys(o.previous_filter_sequence_keybind, 'list-filter-previous')
+	unbind_keys(o.list_search_activate_keybind, 'list-search-activate')
 	unbind_keys(o.list_highlight_all_keybind, 'list-highlight-all')
-	unbind_keys(o.list_highlight_all_keybind, 'list-unhighlight-all')
+	unbind_keys(o.list_unhighlight_all_keybind, 'list-unhighlight-all')
 	unbind_keys(o.list_cycle_sort_keybind, 'list-cycle-sort')
 	
 	for i = 1, #o.list_move_up_keybind do
@@ -1740,6 +1844,8 @@ function unbind_list_keys()
 end
 
 function list_close_and_trash_collection()
+	list_drawn = false
+	search_active = false
 	if utils.shared_script_property_set then
 		utils.shared_script_property_set('simplehistory-menu-open', 'no')
 	end
@@ -1747,14 +1853,12 @@ function list_close_and_trash_collection()
 	if o.toggle_idlescreen then mp.commandv('script-message', 'osc-idlescreen', 'yes', 'no_osd') end
 	unbind_list_keys()
 	unbind_search_keys()
-	mp.set_osd_ass(0, 0, "")
-	list_drawn = false
+	log_set_osd_ass(0, 0, "")
 	list_cursor = 1
 	list_start = 0
 	filterName = 'all'
 	list_pages = {}
 	search_string = ''
-	search_active = false
 	list_highlight_cursor = {}
 	sortName = nil
 end
@@ -1762,6 +1866,7 @@ end
 
 --LogManager Search Feature--
 function list_search_exit()
+	if not list_drawn then return end
 	search_active = false
 	get_list_contents(filterName)
 	get_page_properties(filterName)
@@ -1771,6 +1876,7 @@ function list_search_exit()
 end
 
 function list_search_not_typing_mode(auto_triggered)
+	if not list_drawn then return end
 	if auto_triggered then
 		if search_string ~= '' and list_contents[1] then 
 			search_active = 'not_typing'
@@ -2044,6 +2150,7 @@ function unbind_search_keys()
 	mp.remove_key_binding('search_string_<')
 	
 	mp.remove_key_binding('search_string_del')
+	unbind_keys(o.list_search_not_typing_mode_keybind, 'search_string_not_typing')
 	if not search_active then
 		unbind_keys(o.list_close_keybind, 'search_exit')
 	end
@@ -2061,21 +2168,21 @@ function history_blacklist_check()
 	end
 	
 	if has_value(o.history_blacklist, filePath, nil) then
-		msg.info(blacklist_msg)
+		log_info(blacklist_msg)
 		return invertable_return[1]
 	elseif not starts_protocol(protocols, filePath) then
 		if has_value(o.history_blacklist, filePath:match('^(.-)([^\\/]-)%.([^\\/%.]-)%.?$'), nil) or 
 		has_value(o.history_blacklist, filePath:match('^(.-)([^\\/]-)%.([^\\/%.]-)%.?$'):gsub('\\$', ''), nil) then
-			msg.info(blacklist_msg)
+			log_info(blacklist_msg)
 			return invertable_return[1]
 		elseif has_value(o.history_blacklist, filePath:match('%.([^%.]+)$'), nil) or
 		has_value(o.history_blacklist, "."..filePath:match('%.([^%.]+)$'), nil) then
-			msg.info(blacklist_msg)
+			log_info(blacklist_msg)
 			return invertable_return[1]
 		else --1.1.2# check to add any subfolder after /* to blacklist. issue #70
 			for i=1, #o.history_blacklist do --1.1.2# loop through blacklisted items, if the blacklist ends with * and it is a match after subbing of the current filePath then log it. #and additionally if it is the exact same path then ignore it.
 				if string.lower(filePath):match(string.lower(o.history_blacklist[i])) and o.history_blacklist[i]:sub(-1,#o.history_blacklist[i]) == '*' and string.lower(o.history_blacklist[i]:sub(1,-2)) ~= string.lower(filePath):match("(.*[\\/])") then
-					msg.info(blacklist_msg)
+					log_info(blacklist_msg)
 					return invertable_return[1]
 				end
 			end
@@ -2084,7 +2191,7 @@ function history_blacklist_check()
 		if has_value(o.history_blacklist, filePath:match('(.-)(:)'), nil) or
 		has_value(o.history_blacklist, filePath:match('(.-:)'), nil) or
 		has_value(o.history_blacklist, filePath:match('(.-:/?/?)'), nil) then
-			msg.info(blacklist_msg)
+			log_info(blacklist_msg)
 			return invertable_return[1]
 		elseif filePath:find('https?://') == 1 then
 			local difchk_1, difchk_2 = filePath:match("(https?://)w?w?w?%.?([%w%.%:]*)")
@@ -2093,7 +2200,7 @@ function history_blacklist_check()
 			for i = 1, #different_checks do
 				if different_checks[i] and has_value(o.history_blacklist, different_checks[i], nil)
 				or different_checks[i]..'/' and has_value(o.history_blacklist, different_checks[i]..'/', nil) then
-					msg.info(blacklist_msg)
+					log_info(blacklist_msg)
 					return invertable_return[1]
 				end
 			end
@@ -2149,19 +2256,19 @@ function write_log(target_time, update_seekTime, entry_limit)
 	
 	delete_log_entry(false, true, filePath, math.floor(seekTime), entry_limit)
 
-	local f = io.open(log_fullpath, "a+")
+	local line
 	if o.file_title_logging == 'all' then
-		f:write(("[%s] \"%s\" | %s | %s | %s"):format(os.date(o.date_format), fileTitle, filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime)))
+		line = ("[%s] \"%s\" | %s | %s | %s"):format(os.date(o.date_format), fileTitle, filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime))
 	elseif o.file_title_logging == 'protocols' and (starts_protocol(o.logging_protocols, filePath)) then
-		f:write(("[%s] \"%s\" | %s | %s | %s"):format(os.date(o.date_format), fileTitle, filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime)))
+		line = ("[%s] \"%s\" | %s | %s | %s"):format(os.date(o.date_format), fileTitle, filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime))
 	elseif o.file_title_logging == 'protocols' and not (starts_protocol(o.logging_protocols, filePath)) then
-		f:write(("[%s] %s | %s | %s"):format(os.date(o.date_format), filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime)))
+		line = ("[%s] %s | %s | %s"):format(os.date(o.date_format), filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime))
 	else
-		f:write(("[%s] %s | %s | %s"):format(os.date(o.date_format), filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime)))
+		line = ("[%s] %s | %s | %s"):format(os.date(o.date_format), filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime))
 	end
 
-	f:write('\n')
-	f:close()
+	append_log_line(line)
+	last_written_line = line
 	
 	if not update_seekTime then
 		seekTime = prev_seekTime
@@ -2171,14 +2278,14 @@ end
 function history_incognito_mode()
 	if not incognito_mode then
 		incognito_mode = true
+		mp.set_property_native('user-data/simplehistory/incognito', incognito_mode)
 		if o.osd_messages == true then
-			mp.osd_message('无痕历史已开启\n本次播放不会写入历史记录')
+			log_osd_message('无痕历史已开启\n本次播放不会写入历史记录')
 		end
-		msg.info('无痕历史已开启')
+		log_info('无痕历史已开启')
 		
 		if o.delete_incognito_entry and autosaved_entry == true then
-			delete_log_entry_specific('last', filePath, 0)
-			autosaved_entry = 'autosaved-restore'
+			if delete_log_entry_specific('last', filePath, 0, autosaved_line) then autosaved_entry = 'autosaved-restore' end
 			if list_drawn then
 				get_list_contents()
 				select(0)
@@ -2186,17 +2293,16 @@ function history_incognito_mode()
 		end
 	else
 		incognito_mode = false
+		mp.set_property_native('user-data/simplehistory/incognito', incognito_mode)
 		if o.osd_messages == true then
-			mp.osd_message('无痕历史已关闭\n已恢复正常历史记录')
+			log_osd_message('无痕历史已关闭\n已恢复正常历史记录')
 		end
-		msg.info('无痕历史已关闭')
+		log_info('无痕历史已关闭')
 		
 		if o.restore_incognito_entry == 'always' then
-			history_fileonly_save()
-			autosaved_entry = true
+			if history_fileonly_save() then autosaved_entry, autosaved_line = true, last_written_line end
 		elseif o.restore_incognito_entry == 'deleted-restore' and autosaved_entry == 'autosaved-restore' then
-			history_fileonly_save()
-			autosaved_entry = true
+			if history_fileonly_save() then autosaved_entry, autosaved_line = true, last_written_line end
 			if list_drawn then
 				get_list_contents()
 				select(0)
@@ -2226,15 +2332,15 @@ function history_resume_option()
 			percentage = math.floor((logged_time / video_duration) * 100 + 0.5)
 			if o.resume_option == 'notification' then
 				if percentage > o.resume_option_threshold and percentage < (100-o.resume_option_threshold) or o.resume_option_threshold == 0 then
-					mp.osd_message('⌨ [' .. string.upper(o.history_resume_keybind[1]) .. '] Resumes To' .. o.time_seperator .. format_time(logged_time, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]),3)
+					log_osd_message('⌨ [' .. string.upper(o.history_resume_keybind[1]) .. '] Resumes To' .. o.time_seperator .. format_time(logged_time, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]),3)
 				end
 			elseif o.resume_option == 'force' then
 				if percentage > o.resume_option_threshold and percentage < (100-o.resume_option_threshold) or o.resume_option_threshold == 0 then
 					mp.commandv('seek', logged_time, 'absolute', 'exact')
 					if (o.osd_messages == true) then
-						mp.osd_message('Resumed To Last Played Position\n' .. o.time_seperator .. format_time(logged_time, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]))
+						log_osd_message('Resumed To Last Played Position\n' .. o.time_seperator .. format_time(logged_time, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]))
 					end
-					msg.info('Resumed to the last played position')
+					log_info('Resumed to the last played position')
 				end
 			end
 		end
@@ -2244,32 +2350,36 @@ end
 function history_save(target_time)
 	if filePath ~= nil then
 		if history_blacklist_check() then
-			return
+			return false
 		end
 		write_log(target_time, false, o.same_entry_limit)
+		log_effect(function()
 		if list_drawn then
 			get_list_contents()
 			select(0)
 		end
-		msg.info('Added the below into history\n' .. fileTitle .. o.time_seperator .. format_time(seekTime))
+		end)
+		log_info('Added the below into history\n' .. fileTitle .. o.time_seperator .. format_time(seekTime))
 	else
-		msg.info("Failed to add into history")
+		log_info("Failed to add into history")
 	end
 end
 
 function history_fileonly_save()
 	if filePath ~= nil then
 		if history_blacklist_check() then
-			return
+			return false
 		end
 		write_log(0, false)
+		log_effect(function()
 		if list_drawn then
 			get_list_contents()
 			select(0)
 		end
-		msg.info('Added the below into history\n' .. fileTitle .. o.time_seperator .. format_time(seekTime))
+		end)
+		log_info('Added the below into history\n' .. fileTitle .. o.time_seperator .. format_time(seekTime))
 	else
-		msg.info("Failed to add into history, no file found")
+		log_info("Failed to add into history, no file found")
 	end
 end
 
@@ -2290,14 +2400,14 @@ function history_resume()
 		if seekTime > 0 then
 			mp.commandv('seek', seekTime, 'absolute', 'exact')
 			if (o.osd_messages == true) then
-				mp.osd_message('Resumed To Last Played Position\n' .. o.time_seperator .. format_time(seekTime, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]))
+				log_osd_message('Resumed To Last Played Position\n' .. o.time_seperator .. format_time(seekTime, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]))
 			end
-			msg.info('Resumed to the last played position')
+			log_info('Resumed to the last played position')
 		else
 			if (o.osd_messages == true) then
-				mp.osd_message('No Resume Position Found For This Video')
+				log_osd_message('No Resume Position Found For This Video')
 			end
-			msg.info('No resume position found for this video')
+			log_info('No resume position found for this video')
 		end
 	end
 end
@@ -2312,6 +2422,16 @@ function history_load_last()
 	end
 end
 
+-- Keep complete user actions within one transaction. Nested helpers reuse it.
+delete_log_entry_specific = log_mutator(delete_log_entry_specific)
+delete_log_entry = log_mutator(delete_log_entry)
+delete_log_entry_highlighted = log_mutator(delete_log_entry_highlighted)
+delete_selected = log_mutator(delete_selected)
+list_delete = log_mutator(list_delete)
+write_log = log_mutator(write_log, true)
+history_save = log_mutator(history_save, true)
+history_fileonly_save = log_mutator(history_fileonly_save, true)
+
 mp.register_event('file-loaded', function()
 	list_close_and_trash_collection()
 	filePath, fileTitle, fileLength = get_file()
@@ -2323,8 +2443,7 @@ mp.register_event('file-loaded', function()
 	history_resume_option() --1.1.4# remove timeout, cant remember why I put it in first place
 	mark_chapter()
 	if not incognito_mode then
-		history_fileonly_save()
-		autosaved_entry = true
+		if history_fileonly_save() then autosaved_entry, autosaved_line = true, last_written_line end
 	end
 end)
 
@@ -2333,18 +2452,18 @@ mp.add_hook('on_unload', 9, function()--1.1.3# get the LogTime only when using o
 end)
 mp.register_event('end-file', function()--1.1.3# use end-file instead so that it doesn't cause crash while seeking
 	if not incognito_mode then
-		-- Some quit/unload paths can skip the on_unload hook or expose time-pos
-		-- only after the hook has run. Fall back to the live position here so
-		-- history never gets stuck at 00:00 when the video actually played.
-		local final_time = tonumber(logTime) or 0
-		if final_time <= 0 then
-			final_time = mp.get_property_number('time-pos') or 0
-		end
-		if autosaved_entry == true then delete_log_entry_specific('last', filePath, 0) end
-		history_save(final_time)
+		mutate_log(function()
+			-- 1e4ded5：end-file 钩子可能拿不到准确进度，回退实时 time-pos，避免历史卡在 00:00。
+			local final_time = tonumber(logTime) or 0
+			if final_time <= 0 then
+				final_time = mp.get_property_number('time-pos') or 0
+			end
+			if autosaved_entry == true then delete_log_entry_specific('last', filePath, 0, autosaved_line) end
+			history_save(final_time)
+		end)
 	end
-	autosaved_entry = false
-	logTime = 0 --1.1.3# reset logTime to 0
+	autosaved_entry, autosaved_line = false, nil
+	logTime = 0
 end)
 
 mp.observe_property("idle-active", "bool", function(_, v)

@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 -- 蓝光 / UHD 原盘标题列表。
 -- 只读取当前核心已经枚举的 edition-list，不接管 ISO 加载、DVD 回退或原盘菜单会话。
 local mp = require 'mp'
@@ -42,7 +43,7 @@ local function clear_pending_switch(state)
 end
 
 local function switch_label(target)
-    return '蓝光标题 ' .. string.format('%02d', target.ordinal)
+    return i18n.t('蓝光标题 ') .. string.format('%02d', target.ordinal)
 end
 
 local function begin_pending_switch(target)
@@ -57,7 +58,7 @@ local function begin_pending_switch(target)
     if o.osd_feedback then
         -- This must be visible before the synchronous native edition command.
         -- Cloud-drive mounts can block while libbluray seeks into another MPLS.
-        mp.osd_message('正在切换到' .. switch_label(target) .. '…',
+        mp.osd_message(i18n.t('正在切换到') .. switch_label(target) .. '…',
             math.max(2, tonumber(o.slow_feedback_delay) or 3))
     end
 
@@ -67,9 +68,9 @@ local function begin_pending_switch(target)
         math.max(1, tonumber(o.slow_feedback_delay) or 3), function()
             if pending_switch ~= expected then return end
             if o.osd_feedback then
-                local prefix = pending_switch.confirmed and '已选定' or '正在切换到'
+                local prefix = pending_switch.confirmed and i18n.t('已选定') or i18n.t('正在切换到')
                 mp.osd_message(prefix .. switch_label(pending_switch)
-                    .. '，原盘画面读取中…', 6)
+                    .. i18n.t('，原盘画面读取中…'), 6)
             end
         end)
     timeout_feedback_timer = mp.add_timeout(
@@ -81,7 +82,7 @@ local function begin_pending_switch(target)
                 pending_switch.ordinal))
             if o.osd_feedback then
                 mp.osd_message(switch_label(pending_switch)
-                    .. '读取较慢 · 请稍候，也可重新选择标题', 7)
+                    .. i18n.t('读取较慢 · 请稍候，也可重新选择标题'), 7)
             end
         end)
 end
@@ -117,7 +118,7 @@ local function check_switch_health()
     msg.info(string.format('[bluray-titles-menu] 标题 %02d 已%s',
         pending.ordinal, paused and '就绪（暂停）' or '恢复播放'))
     if o.osd_feedback then
-        mp.osd_message(switch_label(pending) .. (paused and '已就绪（暂停）' or '已开始播放'), 2)
+        mp.osd_message(switch_label(pending) .. (paused and i18n.t('已就绪（暂停）') or i18n.t('已开始播放')), 2)
     end
 end
 
@@ -185,7 +186,7 @@ local function format_title(ordinal)
     if o.title_format == 'index' then
         return string.format('%02d', ordinal)
     end
-    return string.format('标题 %02d', ordinal)
+    return string.format(i18n.t('标题 %02d'), ordinal)
 end
 
 local function status_item(title, hint)
@@ -207,14 +208,14 @@ local function open_menu()
     local selected_index
 
     if not active then
-        items[1] = status_item('当前未打开蓝光原盘',
-            '请先打开本地或网盘蓝光 / UHD ISO')
+        items[1] = status_item(i18n.t('当前未打开蓝光原盘'),
+            i18n.t('请先打开本地或网盘蓝光 / UHD ISO'))
     elseif #titles == 0 then
-        items[1] = status_item('当前原盘没有可切换标题',
-            '标题仍在读取时可稍后重新打开此页面')
+        items[1] = status_item(i18n.t('当前原盘没有可切换标题'),
+            i18n.t('标题仍在读取时可稍后重新打开此页面'))
     else
         for _, title in ipairs(titles) do
-            local hint = title.duration or '时长未知'
+            local hint = title.duration or i18n.t('时长未知')
             items[#items + 1] = {
                 title = format_title(title.ordinal),
                 hint = hint,
@@ -228,7 +229,7 @@ local function open_menu()
     publish_state(titles)
     local menu = {
         type = MENU_TYPE,
-        title = '蓝光标题列表',
+        title = i18n.t('蓝光标题列表'),
         fixed_columns = true,
         uniform_title_size = true,
         min_width = 380,
@@ -236,8 +237,8 @@ local function open_menu()
         selected_index = selected_index or 1,
         callback = {mp.get_script_name(), 'menu-event'},
         footnote = active
-            and '选择标题后直接切换 · 不重新扫描或重载 ISO'
-            or '仅读取当前原盘信息，不接管 ISO 加载与 DVD 回退',
+            and i18n.t('选择标题后直接切换 · 不重新扫描或重载 ISO')
+            or i18n.t('仅读取当前原盘信息，不接管 ISO 加载与 DVD 回退'),
         items = items,
     }
     local current_type = mp.get_property_native('user-data/uosc/menu/type')
@@ -258,7 +259,7 @@ local function switch_title(id)
         end
     end
     if not selected then
-        mp.osd_message('该蓝光标题已不可用', 3)
+        mp.osd_message(i18n.t('该蓝光标题已不可用'), 3)
         return
     end
 
@@ -267,7 +268,7 @@ local function switch_title(id)
         tonumber(mp.get_property_native('current-edition')) == selected.id then
         clear_pending_switch('ready')
         if o.osd_feedback then
-            mp.osd_message('当前已是' .. switch_label(selected), 2)
+            mp.osd_message(i18n.t('当前已是') .. switch_label(selected), 2)
         end
         return
     end
@@ -278,7 +279,7 @@ local function switch_title(id)
         clear_pending_switch('failed')
         msg.error('[bluray-titles-menu] 原生标题切换失败：' .. tostring(err))
         if o.osd_feedback then
-            mp.osd_message(switch_label(selected) .. '切换失败', 4)
+            mp.osd_message(switch_label(selected) .. i18n.t('切换失败'), 4)
         end
     end
 end

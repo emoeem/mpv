@@ -1,5 +1,89 @@
 # 更新记录
 
+## 2026-11-13 · 同步 Yaozhi V1.0.9-2（含 1.0.8-3 / 1.0.9 / 1.0.9-1 / 1.0.9-2 四个公告）
+
+来源：`~/Downloads/Yaoplayer-1.0.9-2/portable_config`（2026.11.06 版便携包，mpv 0.42.0 核心）。
+同步前快照：tag `pre-sync-yaozhi-1.0.9-2`（工作树干净，等价既往快照提交）。三方合并基点：`2d9f1dd`（Yaozhi 9.7 同步）。
+
+### 架构决策（本次新增）：引入 Yaozhi i18n 双语支撑层
+
+1.0.9-1 起几乎所有 Yaozhi 脚本第 1 行 `dofile(yaozhi-i18n.lua)`，本地 8.29 时刻意的去 i18n
+化与上游再也对不上。经确认引入支撑层，默认 `zh-CN` 时 `t()` 原样返回中文文本，界面零变化：
+
+- `script-modules/yaozhi-i18n.lua`、`yaozhi-channel.lua`（占位）、`script-assets/i18n/en.json`、`script-opts/yaozhi-language.conf`
+- `yaozhi-persistence.lua` 打 **Linux 回退补丁**：非 Windows FFI 环境不再返回 `unsupported`，
+  改走「同目录临时文件 + `os.rename` 原子替换 + 提交前重读冲突检测」，语义与 Windows 路径
+  对齐（无建议锁，单实例安全）。lua5.1 实测通过：update_options 注释/行尾保留、read、
+  atomic_write、竞态冲突四项。
+
+### 公告条目 → 本地落地
+
+| 公告条目 | 落地方式 |
+| --- | --- |
+| 弹幕时间精度（保留小数秒） | `uosc_danmaku/modules/parse.lua` 整取：去掉 type 1 的 `math.floor(+0.5)` 取整 |
+| 兼容 Overlay 暂停/恢复丢时间 | `render.lua` 整取：hold/resume overlay clock + paused-for-cache 挂接 + 自适应刷新保护 |
+| 弹幕菜单加载状态区分 / 动漫弹幕搜索152468 / 来源识别与重置修复 | `menu.lua`/`main.lua`/`options.lua`/`color.lua` 整取（force_white 智能补色演进版），新模块 `source_cache`/`blackbar`/`title_display`/`remote`；`uosc_danmaku.conf` 整取（保本地 MFGA 字体），`render_mode=auto`、`overlay_fps=0`、`overlay_adaptive_fps=yes` |
+| 爱奇艺弹幕分段下载修复（1.0.8-3） | `sites/iqiyi.lua` 整取 |
+| 近期播放菜单适配（字体测量/小窗口） | `recentmenu.lua` + `recentmenu.conf` 整取；uosc 本地 5.13 上手工移植 `lib/text.lua` per-font 测量（font→bold→italic 三级缓存，菜单字体=测量字体）与 `elements/Menu.lua` recent_menu 三处精修（专属响应式边界 0.82/0.70/1000、窄窗可用宽按删除按钮预留、producer min_width 不得绕过视口上限） |
+| mpv 0.42 HDR BT.2390 参数适配 | `mpv.conf [hdr-2390]`：`tone-mapping-param` → `tone-mapping-knee-offset=2.0`，cond 加 `option-info/.../set-from-commandline` 守卫（命令行手动设置优先），`profile-restore=copy-equal`；`[SDR-target]` 收紧为仅 `bt.1886` |
+| 历史/书签/设置保存可靠性（1.0.8-3） | `simplehistory.lua` 三方合并：包侧 `mutate_log` 事务写入 + 本地 1e4ded5 实时进度回退合成；`simplebookmark.lua`/`persist_properties.lua`/`history-bookmark.lua` 走包版事务（落在打过补丁的 yaozhi-persistence 上） |
+| 网络片源切轨稳定性（1.0.9 公告六） | `audio-passthrough.lua` 整取 + 新模块 `audio-switch-guard.lua`（纯 Lua，网络切轨 EOF 有界恢复） |
+| 弹幕现场诊断 | 新增 `danmaku-diagnostics.lua`（零依赖、默认关闭），input.conf 新键 `CTRL+SHIFT+D`（120s 自动停止） |
+| mpv 0.42 双核心 / HLS 分段恢复 / 夸克播放器路径 / 窗口尺寸记忆 | Yaozhi 私有 exe 侧，不移植 |
+
+### PURE 整取（本地自 9.7 未动，跟随上游）
+
+scripts：auto-fullscreen、auto-save-state、dynamic-crop、episode-preferences、hdr-mode、
+history-bookmark、keybinding-manager、media-format-metadata、minimize-pause-resume、
+ontop_mode、persist_properties、recentmenu、slicing_copy、startup-format-logos、sub-assrt
+（连带字幕链 subtitle-request/output/remote/cat/search-query/search-session 共 6 个新模块）、
+uosc-subtitle-lines、uosc_danmaku/{modules/utils,sites/6 站}。
+script-modules：audio-stats-info、media-format-info、online-media-router（纯 URL 识别增强：
+bilibili ss/ep 大写入口、douyin live_web_rid 等，接口不变）。
+script-opts：auto_iso_loader、dynamic_crop、history_bookmark、recentmenu、sub_assrt、hdr_mode
+（加 output_mode/output_range/hdr_wait，**保本地** `hdr_mode=noth`、`target_peak=203`：
+Linux 无 Windows HDR 开关与 display-info.dll）。
+`inputevent_key.conf` 整取。
+
+### 本地保留差异（未整取/未合并）
+
+| 文件 | 原因 |
+| --- | --- |
+| `mpv.conf` / `input.conf` | 纪律：保本地 `ytdl=yes` 架构、键位体系、content-adaptive 着色器重置策略；只 cherry-pick 上述 Windows 无关项 |
+| `uosc`（5.13.0 定制） | 包内是 5.12 基线，整取=降级；只移植 text.lua/Menu.lua 修复 |
+| `autoload/trackselect/playlistmanager/music-mode/evafast/sub-fastwhisper/adaptive-quality` | 纪律：本地变体维持（adaptive-quality 已被 content-adaptive 引擎替代且 enabled=no） |
+| `thumbfast.lua` | 包侧修复是 Windows 缩略图进程残留，Linux 不适用 |
+| `online-media.lua` | 包侧深度耦合 Windows Python runtime（online-media-link 等 5 个新模块不引入）；57 处冲突全部为双方向演化，保本地系统 python3 路径 |
+| `copy-paste-URL-optimized.lua` | 包侧把跨平台剪贴板换成 PowerShell；保本地 wl-paste/xclip/pbpaste 版本（未同步 i18n 包装，OSD 仍为硬编码中文） |
+| `seek-feedback.lua` / `mpv-cropscreen.lua` | 包侧差异为 Yaoplayer.exe 调用/字体名，保本地 |
+| `hdr-peak-percentile-guard.lua` | 本地版是超集（带 options 与 percentile 写入）；包侧新 `[peak-percentile]` profile 是为包内简化版 guard 设计，本地脚本已直接管理 `hdr-peak-percentile`，**不引入该 profile 以避免争抢** |
+| `sort.lua` / `winsort.lua`（file-browser addon） | 包版新依赖 Yaozhi file-browser fork 的 `modules/ui-language`，本地 file-browser 为 OSS replace 管辖不混入 fork，回退本地版（放弃 winsort 的 ffi pcall 加固） |
+| `file-browser-alist` 全链（alist-http.lua、addons/alist.lua、network.lua、file_browser_alist.conf） | 纪律：file-browser 域走上游；本地未使用 AList 浏览 |
+| av3a-\*、cache-maintenance、disc-menu、douyu-account、etlp-startup、file-browser-new-window、network-connections、online-media-link/maintenance、stats-system（`assert(ffi.os=='Windows')`）、native-clock-compat | Windows 专属/私有补丁/Windows runtime |
+
+### 顺带修复的本地遗留问题
+
+1. **`fallback_triggered` 命名笔误**：8295653 引入的 auto_load_fallback 处理器检查小写
+   `fallback_triggered`，而 main.lua 初始化与 render.lua on_unload 复位用的都是大写
+   `FALLBACK_TRIGGER` → 武装标志从未生效。合并时统一为大写并保留该特性（开关
+   `auto_fallback_search` 默认 false）。
+2. **`ALT+_` 检查更新死键**：`check-update` 指向 `modules/update.lua` 的全局
+   `check_for_update`，但该模块从未被任何文件加载，按下即 nil 全局报错；Yaozhi 1.0.9-2
+   已移除更新器，删除该键位（`modules/update.lua` 仍为无引用孤儿，未删）。
+
+### 验证
+
+- 66 个改动/新增 Lua 全部通过 `luac5.1 -p` 语法解析（LuaJIT 5.1 同源语法）。
+- 模块引用完整性扫描：215 个 require/dofile 目标全部本地存在（sort/winsort 回退后）。
+- `python3 deploy.py --check`：配置结构无异常；mpv/yt-dlp/deno 为容器内 PATH 缺失，
+  属预期降级。
+- input.conf → uosc_danmaku 消息闭环：4 个发送方（immediately_save_danmaku /
+  open_add_total_menu / show_danmaku_keyboard / toggle-smart-color）均有注册接收器。
+- yaozhi-persistence Linux 回退分支 lua5.1 行为测试通过（见上）。
+- **宿主机冒烟待办**（容器内无 mpv）：`mpv --config-dir=~/.config/mpv --idle` 确认无脚本
+  加载错误；实播一个 HDR 片源看 `[hdr-2390]` 生效日志；实播带弹幕片源确认 overlay
+  暂停/恢复后位置不跳变。
+
 ## 2026-10-31 · 内容自适应自动化引擎（content-adaptive）
 
 对照调研结论：此前自动化只有「HDR 条件组 / 平台分流 / 网络缓存」三层，内容类型维度

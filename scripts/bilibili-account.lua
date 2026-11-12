@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 -- Local Bilibili QR login and cookie management for mpv-Emo.
 
 local mp = require 'mp'
@@ -9,12 +10,11 @@ local assdraw = require 'mp.assdraw'
 -- and 53 is the donation card. Keep this short-lived modal isolated at 54.
 local OVERLAY_ID = 54
 local MENU_TYPE = 'bilibili_account'
--- Linux port: see online-media.lua (runtime/bin/python3 venv)
-local python_path = mp.command_native({'expand-path', '~~/online-media/runtime/bin/python3'})
+local python_path = mp.command_native({'expand-path', '~~/online-media/runtime/python.exe'})
 local helper_path = mp.command_native({'expand-path', '~~/online-media/bilibili_qr_login.py'})
 local cookie_path = mp.command_native({'expand-path', '~~/online-media/bilibili-cookies.txt'})
 local qr_path = utils.join_path(
-    os.getenv('TMPDIR') or '/tmp',
+    os.getenv('TEMP') or '.',
     'mpv-yaozhi-bilibili-login-' .. tostring(utils.getpid()) .. '.bgra'
 )
 
@@ -26,6 +26,7 @@ local state = {
     ticket = 0,
     request = nil,
     status_request = nil,
+    status_generation = 0,
     poll_timer = nil,
     clock_timer = nil,
     qrcode_key = nil,
@@ -220,11 +221,17 @@ end
 
 local open_menu
 
-local function refresh_account_status(callback)
+local function invalidate_status()
+    state.status_generation = state.status_generation + 1
     if state.status_request then
         pcall(mp.abort_async_command, state.status_request)
         state.status_request = nil
     end
+end
+
+local function refresh_account_status(callback)
+    invalidate_status()
+    local generation = state.status_generation
     state.account_status = 'checking'
     publish_account()
     if not file_exists(cookie_path) then
@@ -237,6 +244,7 @@ local function refresh_account_status(callback)
     state.status_request = run_helper({
         python_path, helper_path, 'status', '--cookie-file', cookie_path,
     }, function(data)
+        if state.status_generation ~= generation then return end
         state.status_request = nil
         state.logged_in = data and data.ok == true and data.logged_in == true or false
         state.account_status = data and tostring(data.status or 'invalid') or 'unavailable'
@@ -245,7 +253,20 @@ local function refresh_account_status(callback)
     end)
 end
 
-open_menu = function(skip_refresh)
+open_menu = function(skip_refresh, update_only)
+    if not skip_refresh then
+        -- Missing cookies/helpers finish synchronously. Build the first menu
+        -- from that final state, before uosc receives our asynchronous message.
+        local synchronous = true
+        refresh_account_status(function()
+            if not synchronous then
+                -- uosc may still have the first open queued. Let its typed
+                -- update check the active menu when the message is handled.
+                open_menu(true, true)
+            end
+        end)
+        synchronous = false
+    end
     local status_hint = '正在检测本机 Cookie…'
     if state.account_status ~= 'checking' then
         status_hint = state.logged_in and '已登录 · 可使用账号允许的清晰度'
@@ -285,10 +306,7 @@ open_menu = function(skip_refresh)
     }
     local current_type = mp.get_property_native('user-data/uosc/menu/type')
     mp.commandv('script-message-to', 'uosc',
-        current_type == MENU_TYPE and 'update-menu' or 'open-menu', utils.format_json(menu))
-    if not skip_refresh then
-        refresh_account_status(function() open_menu(true) end)
-    end
+        (update_only or current_type == MENU_TYPE) and 'update-menu' or 'open-menu', utils.format_json(menu))
 end
 
 local poll_once
@@ -314,8 +332,8 @@ poll_once = function(ticket)
         '--qrcode-key', state.qrcode_key,
         '--cookie-file', cookie_path,
     }, function(data, error_message)
-        state.request = nil
         if not state.visible or state.ticket ~= ticket then return end
+        state.request = nil
         if not data or data.ok ~= true then
             state.status = 'error'
             state.message = error_message or (data and data.message) or '网络暂时不可用，正在重试'
@@ -327,10 +345,11 @@ poll_once = function(ticket)
         state.message = tostring(data.message or '等待扫码')
         render()
         if state.status == 'success' then
+            invalidate_status()
             state.logged_in = true
             state.account_status = 'ready'
             publish_account()
-            mp.osd_message('B站登录成功：下次解析将自动使用账号画质权限', 4)
+            mp.osd_message(i18n.t('B站登录成功：下次解析将自动使用账号画质权限'), 4)
             mp.add_timeout(0.8, function()
                 if state.visible and state.ticket == ticket then close_modal() end
             end)
@@ -341,6 +360,7 @@ poll_once = function(ticket)
 end
 
 local function start_qr_login()
+    invalidate_status()
     close_modal()
     mp.commandv('script-message-to', 'uosc', 'close-menu', MENU_TYPE)
     state.ticket = state.ticket + 1
@@ -360,8 +380,8 @@ local function start_qr_login()
         python_path, helper_path, 'generate',
         '--qr-output', qr_path, '--size', tostring(requested_size),
     }, function(data, error_message)
-        state.request = nil
         if not state.visible or state.ticket ~= ticket then return end
+        state.request = nil
         if not data or data.ok ~= true then
             state.status = 'error'
             state.message = error_message or (data and data.message) or '二维码生成失败，请重试'
@@ -381,6 +401,7 @@ local function start_qr_login()
 end
 
 local function logout()
+    invalidate_status()
     close_modal()
     local existed = file_exists(cookie_path)
     local removed = not existed or os.remove(cookie_path)
@@ -388,10 +409,10 @@ local function logout()
     state.account_status = removed and 'missing' or 'invalid'
     publish_account()
     if removed then
-        mp.osd_message('已清除播放器本机的 B站 Cookie', 3)
+        mp.osd_message(i18n.t('已清除播放器本机的 B站 Cookie'), 3)
     else
         msg.error('Unable to remove Bilibili cookie file')
-        mp.osd_message('Cookie 文件正在被占用，暂时无法清除', 4)
+        mp.osd_message(i18n.t('Cookie 文件正在被占用，暂时无法清除'), 4)
     end
     open_menu(true)
 end
@@ -401,11 +422,8 @@ mp.register_script_message('qr-login', start_qr_login)
 mp.register_script_message('logout', logout)
 mp.observe_property('osd-dimensions', 'native', render)
 mp.register_event('shutdown', function()
+    invalidate_status()
     close_modal()
-    if state.status_request then
-        pcall(mp.abort_async_command, state.status_request)
-        state.status_request = nil
-    end
 end)
 
 refresh_account_status()

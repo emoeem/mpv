@@ -238,6 +238,8 @@ local o = {
 }
 
 (require 'mp.options').read_options(o)
+-- UI-only template; paths, filters and bookmark group identities stay unchanged.
+o.header_text = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"})).t(o.header_text)
 local utils = require 'mp.utils'
 local msg = require 'mp.msg'
 
@@ -341,6 +343,117 @@ local seekTime = 0
 local filterName = 'all'
 local sortName
 local normalize_path = nil
+
+-- One lock covers the complete read/modify/write operation, including nested
+-- slot/group edits. UI success messages are released only after durable commit.
+local persistence = assert(dofile(mp.command_native({'expand-path', '~~/script-modules/yaozhi-persistence.lua'})))
+local log_transaction
+local count_log_args = select
+local original_info = msg.info
+local original_osd_message = mp.osd_message
+local original_set_osd_ass = mp.set_osd_ass
+local function log_effect(fn, ...)
+	if log_transaction then
+		local args = {n = count_log_args('#', ...), ...}
+		log_transaction.effects[#log_transaction.effects + 1] = function()
+			fn(unpack(args, 1, args.n))
+		end
+	else fn(...) end
+end
+local function log_info(...) log_effect(original_info, ...) end
+local function log_osd_message(...) log_effect(original_osd_message, ...) end
+local function log_set_osd_ass(...) log_effect(original_set_osd_ass, ...) end
+local function copy_log_state(value)
+	if type(value) ~= 'table' then return value end
+	local result = {}
+	for key, item in pairs(value) do result[key] = copy_log_state(item) end
+	return result
+end
+local function read_log_bytes()
+	if log_transaction then return log_transaction.bytes end
+	local bytes, err, code = persistence.read(log_fullpath)
+	if not bytes and code ~= 'missing' then msg.error('Could not read log: ' .. tostring(err)) end
+	return bytes
+end
+local function replace_log_entries(entries)
+	assert(log_transaction, 'Log modification outside a transaction')
+	local lines = {}
+	for _, entry in ipairs(entries or {}) do lines[#lines + 1] = entry.found_line .. log_transaction.newline end
+	log_transaction.bytes = table.concat(lines)
+end
+local function append_log_line(line)
+	assert(log_transaction, 'Log append outside a transaction')
+	local bytes = log_transaction.bytes
+	if bytes ~= '' and bytes:sub(-1) ~= '\n' then bytes = bytes .. log_transaction.newline end
+	log_transaction.bytes = bytes .. line .. log_transaction.newline
+end
+local function find_log_identity(entries, target)
+	if not target or not target.found_line then error('The selected log entry is unavailable; refresh the list') end
+	local expected = log_transaction.identities[target.found_line] or target.found_line
+	local found
+	for index, entry in ipairs(entries) do
+		if entry.found_line == expected then
+			if found then error('The selected log entry is ambiguous; refresh the list') end
+			found = index
+		end
+	end
+	if not found then error('The selected log entry changed; refresh the list') end
+	return found
+end
+local function change_log_line(entry, line)
+	local previous = entry.found_line
+	for identity, current in pairs(log_transaction.identities) do
+		if current == previous then log_transaction.identities[identity] = line end
+	end
+	log_transaction.identities[previous] = line
+	entry.found_line = line
+end
+local function mutate_log(fn, ...)
+	if log_transaction then return fn(...) end
+	local args = {n = count_log_args('#', ...), ...}
+	local state = {osd_log_contents = copy_log_state(osd_log_contents), list_highlight_cursor = copy_log_state(list_highlight_cursor), list_start = copy_log_state(list_start), list_cursor = copy_log_state(list_cursor), list_drawn = copy_log_state(list_drawn), list_pages = copy_log_state(list_pages), filePath = copy_log_state(filePath), fileTitle = copy_log_state(fileTitle), fileLength = copy_log_state(fileLength), seekTime = copy_log_state(seekTime), filterName = copy_log_state(filterName), sortName = copy_log_state(sortName)}
+	local result, effects
+	local ok, err = persistence.update(log_fullpath, function(bytes)
+		local newline = bytes and bytes ~= '' and (bytes:find('\r\n', 1, true) and '\r\n' or '\n') or (is_windows and '\r\n' or '\n')
+		log_transaction = {bytes = bytes or '', newline = newline, effects = {}, identities = {}}
+		local worked, failure = pcall(function()
+			result = {fn(unpack(args, 1, args.n))}
+		end)
+		if not worked then return nil, failure end
+		effects = log_transaction.effects
+		return log_transaction.bytes
+	end)
+	log_transaction = nil
+	if not ok then
+		osd_log_contents = state.osd_log_contents
+		list_highlight_cursor = state.list_highlight_cursor
+		list_start = state.list_start
+		list_cursor = state.list_cursor
+		list_drawn = state.list_drawn
+		list_pages = state.list_pages
+		filePath = state.filePath
+		fileTitle = state.fileTitle
+		fileLength = state.fileLength
+		seekTime = state.seekTime
+		filterName = state.filterName
+		sortName = state.sortName
+		msg.error('Could not save log; existing data was kept: ' .. tostring(err))
+		if o.osd_messages then original_osd_message('Save failed; existing history/bookmarks were kept', 4) end
+		return nil, err
+	end
+	for _, effect in ipairs(effects or {}) do effect() end
+	-- Existing void functions stay usable as callbacks; callers may now check the
+	-- first result before setting autosaved state or reporting success.
+	if result and result[1] ~= nil then return unpack(result) end
+	return true
+end
+local function log_mutator(fn, requires_file)
+	return function(...)
+		if requires_file and not filePath then return fn(...) end
+		return mutate_log(fn, ...)
+	end
+end
+
 
 function starts_protocol(tab, val)
 	for index, element in ipairs(tab) do
@@ -565,13 +678,15 @@ end
 ---------Start of LogManager---------
 --LogManager (Read and Format the List from Log)--
 function read_log(func)
-	local f = io.open(log_fullpath, "r")
-	if not f then return end
+	local bytes = read_log_bytes()
+	if not bytes then return end
 	local contents = {}
-	for line in f:lines() do
-		table.insert(contents, (func(line)))
+	if bytes == '' then return contents end
+	for line in (bytes .. (bytes:sub(-1) == '\n' and '' or '\n')):gmatch('(.-)\n') do
+		line = line:gsub('\r$', '')
+		local item = func(line)
+		if item then table.insert(contents, item) end
 	end
-	f:close()
 	return contents
 end
 
@@ -583,6 +698,10 @@ function read_log_table()
 			tt, p = line:match('^.-\"(.-)\" | (.*) | ' .. esc_string(log_length_text) .. '(.*)')
 		else --1.3# get path only if no title is there
 			p = line:match('[(.*)%]]%s(.*) | ' .. esc_string(log_length_text) .. '(.*)') 
+		end
+		if not p then
+			if log_transaction then error('Malformed bookmark row; existing data was kept') end
+			return nil
 		end
 		d, n, e = p:match('^(.-)([^\\/]-)%.([^\\/%.]-)%.?$') --1.3#  not inside if statement anymore since we are not changing name with title anymore
 		dt = line:match('%[(.-)%]')
@@ -1231,7 +1350,7 @@ function draw_list(arr_contents)
 		end
 	
 	end
-	mp.set_osd_ass(0, 0, osd_msg)
+	log_set_osd_ass(0, 0, osd_msg)
 end
 
 function list_empty_error_msg()
@@ -1242,9 +1361,9 @@ function list_empty_error_msg()
 	else
 		msg_text = "Bookmark Empty"
 	end
-	msg.info(msg_text)
+	log_info(msg_text)
 	if o.osd_messages == true and not list_drawn then
-		mp.osd_message(msg_text)
+		log_osd_message(msg_text)
 	end
 end
 
@@ -1515,21 +1634,21 @@ function load(list_cursor, add_playlist, target_time)
 				list_close_and_trash_collection()
 			end
 			if o.osd_messages == true then
-				mp.osd_message('Loaded:\n' .. list_filename.. ' 🕒 ' .. format_time(seekTime, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]))
+				log_osd_message('Loaded:\n' .. list_filename.. ' 🕒 ' .. format_time(seekTime, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]))
 			end
-			msg.info('Loaded the below file:\n' .. list_filename  .. ' | '.. format_time(seekTime))
+			log_info('Loaded the below file:\n' .. list_filename  .. ' | '.. format_time(seekTime))
 		else
 			mp.commandv('loadfile', osd_log_contents[#osd_log_contents - list_cursor + 1].found_path, 'append-play')
 			if o.osd_messages == true then
-				mp.osd_message('Added into Playlist:\n'..list_filename..' ')
+				log_osd_message('Added into Playlist:\n'..list_filename..' ')
 			end
-			msg.info('Added the below file into playlist:\n' .. list_filepath)
+			log_info('Added the below file into playlist:\n' .. list_filepath)
 		end
 	else
 		if o.osd_messages == true then
-			mp.osd_message('File Doesn\'t Exist:\n' .. osd_log_contents[#osd_log_contents - list_cursor + 1].found_path) --1.3# cant use the list_filepath because file doesn't exist so it returns nil
+			log_osd_message('File Doesn\'t Exist:\n' .. osd_log_contents[#osd_log_contents - list_cursor + 1].found_path) --1.3# cant use the list_filepath because file doesn't exist so it returns nil
 		end
-		msg.info('The file below doesn\'t seem to exist:\n' .. osd_log_contents[#osd_log_contents - list_cursor + 1].found_path)
+		log_info('The file below doesn\'t seem to exist:\n' .. osd_log_contents[#osd_log_contents - list_cursor + 1].found_path)
 		return
 	end
 end
@@ -1555,15 +1674,15 @@ function list_add_playlist(action)
 		end
 		if o.osd_messages == true then
 			if file_ignored_total > 0 then
-				mp.osd_message('Added into Playlist '..#list_highlight_cursor - file_ignored_total..' Item/s\nIgnored '..file_ignored_total.. " Item/s That Do Not Exist")
+				log_osd_message('Added into Playlist '..#list_highlight_cursor - file_ignored_total..' Item/s\nIgnored '..file_ignored_total.. " Item/s That Do Not Exist")
 			else
-				mp.osd_message('Added into Playlist '..#list_highlight_cursor - file_ignored_total..' Item/s')
+				log_osd_message('Added into Playlist '..#list_highlight_cursor - file_ignored_total..' Item/s')
 			end
 		end
 		if file_ignored_total > 0 then
 			msg.warn('Ignored a total of '..file_ignored_total.. " Item/s that does not seem to exist")
 		end
-		msg.info('Added into playlist a total of '..#list_highlight_cursor - file_ignored_total..' item/s')
+		log_info('Added into playlist a total of '..#list_highlight_cursor - file_ignored_total..' item/s')
 	end
 end
 
@@ -1593,13 +1712,7 @@ function same_path_log_delete(target_path, entry_limit, arr_contents)
 	end
 	
 	if not trigger_delete then return end
-	local f = io.open(log_fullpath, "w+")
-	if arr_contents ~= nil and arr_contents[1] then
-		for i = 1, #arr_contents do
-			f:write(("%s\n"):format(arr_contents[i].found_line))
-		end
-	end
-	f:close()
+	replace_log_entries(arr_contents)
 	return deleted_entries
 end
 
@@ -1625,67 +1738,33 @@ end
 
 
 function delete_log_entry(target_sequence, arr_contents)
-	--1.2.5# new function to delete based on sequence which is (id)
-	if not target_sequence then return end --1.2.5# if no sequence found then just exit the function
-	if not arr_contents then  --1.2.5# ability to pass an array instead of looping through
-		arr_contents = read_log_table()
-		if not arr_contents or not arr_contents[1] then return end
-	end
-
-	table.remove(arr_contents, target_sequence)
-	
-	local f = io.open(log_fullpath, "w+")
-	if arr_contents ~= nil and arr_contents[1] then
-		for i = 1, #arr_contents do
-			f:write(("%s\n"):format(arr_contents[i].found_line))
-		end
-	end
-	f:close()
+	if not target_sequence then return end
+	local entries = read_log_table() or {}
+	local selected = arr_contents and arr_contents[target_sequence]
+	if selected then target_sequence = find_log_identity(entries, selected) end
+	if not entries[target_sequence] then error('The selected bookmark changed; refresh the list') end
+	table.remove(entries, target_sequence)
+	replace_log_entries(entries)
 end
 
 function delete_log_entry_highlighted()
 	if not list_highlight_cursor or not list_highlight_cursor[1] then return end
-	local temp_log_contents = read_log_table()
-	if not temp_log_contents or not temp_log_contents[1] then return end
-	
-	local log_contents_length = #temp_log_contents
-	
-	for i = 1, log_contents_length do
-		for j=1, #list_highlight_cursor do
-			if temp_log_contents[log_contents_length+1-i] then
-				if temp_log_contents[log_contents_length+1-i].found_sequence == list_highlight_cursor[j][2].found_sequence then
-					table.remove(temp_log_contents, log_contents_length+1-i)
-				end
-			end
-		end
-	end
-	
-	msg.info("Deleted "..#list_highlight_cursor.." Item/s")
-	
+	local entries = read_log_table() or {}
+	local indices = {}
+	for _, selected in ipairs(list_highlight_cursor) do indices[find_log_identity(entries, selected[2])] = true end
+	for i = #entries, 1, -1 do if indices[i] then table.remove(entries, i) end end
+	replace_log_entries(entries)
+	log_info('Deleted ' .. #list_highlight_cursor .. ' Item/s')
 	list_unhighlight_all()
-	
-	local f = io.open(log_fullpath, "w+")
-	if temp_log_contents ~= nil and temp_log_contents[1] then
-		for i = 1, #temp_log_contents do
-			f:write(("%s\n"):format(temp_log_contents[i].found_line))
-		end
-	end
-	f:close()
-	
 end
 
 function delete_selected()
-	--1.2.5# replace with new delete_log_entry that uses sequence id, and used local variables with or statement just in case
-	local list_sequence = osd_log_contents[#osd_log_contents - list_cursor + 1].found_sequence
-	local list_filepath = osd_log_contents[#osd_log_contents - list_cursor + 1].found_path or ""
-	local list_seektime = tonumber(osd_log_contents[#osd_log_contents - list_cursor + 1].found_time) or 0
-
-	if not list_sequence then
-		msg.info("Failed to delete")
-		return
-	end
-	delete_log_entry(list_sequence)
-	msg.info("Deleted \"" .. list_filepath .. "\" | " .. format_time(list_seektime))
+	local selected = osd_log_contents[#osd_log_contents - list_cursor + 1]
+	local entries = read_log_table() or {}
+	local index = find_log_identity(entries, selected)
+	table.remove(entries, index)
+	replace_log_entries(entries)
+	log_info('Deleted "' .. (selected.found_path or '') .. '" | ' .. format_time(tonumber(selected.found_time) or 0))
 end
 
 function list_delete(action)
@@ -1694,6 +1773,7 @@ function list_delete(action)
 	elseif action == 'highlight' then
 		delete_log_entry_highlighted()
 	end
+	log_effect(function()
 	get_osd_log_contents()
 	if #osd_log_contents == 0 then
 		display_list('all')
@@ -1703,6 +1783,7 @@ function list_delete(action)
 	else
 		list_move_last()
 	end
+	end)
 end
 
 function get_total_duration(action)
@@ -1845,6 +1926,7 @@ end
 
 --LogManager (List Bind and Unbind)--
 function get_list_keybinds()
+	if not list_drawn then return end
 	bind_keys(o.list_ignored_keybind, 'ignore')
 	bind_keys(o.list_move_up_keybind, 'move-up', list_move_up, 'repeatable')
 	bind_keys(o.list_move_down_keybind, 'move-down', list_move_down, 'repeatable')
@@ -1946,11 +2028,12 @@ function unbind_list_keys()
 	unbind_keys(o.list_close_keybind, 'list-close')
 	unbind_keys(o.next_filter_sequence_keybind, 'list-filter-next')
 	unbind_keys(o.previous_filter_sequence_keybind, 'list-filter-previous')
+	unbind_keys(o.list_search_activate_keybind, 'list-search-activate')
 	unbind_keys(o.list_highlight_all_keybind, 'list-highlight-all')
-	unbind_keys(o.list_highlight_all_keybind, 'list-unhighlight-all')
+	unbind_keys(o.list_unhighlight_all_keybind, 'list-unhighlight-all')
 	unbind_keys(o.list_cycle_sort_keybind, 'list-cycle-sort')
 	unbind_keys(o.keybinds_remove_keybind, 'keybind-slot-remove')
-	unbind_keys(o.keybinds_remove_keybind, 'keybind-slot-remove-highlight')
+	unbind_keys(o.keybinds_remove_highlighted_keybind, 'keybind-slot-remove-highlight')
 	
 	unbind_keys(o.list_group_add_cycle_keybind, 'group-add-cycle')
 	unbind_keys(o.list_group_add_cycle_highlighted_keybind, 'group-add-cycle-highlight')
@@ -2012,6 +2095,8 @@ function unbind_list_keys()
 end
 
 function list_close_and_trash_collection()
+	list_drawn = false
+	search_active = false
 	if utils.shared_script_property_set then
 		utils.shared_script_property_set('simplebookmark-menu-open', 'no')
 	end
@@ -2019,14 +2104,12 @@ function list_close_and_trash_collection()
 	if o.toggle_idlescreen then mp.commandv('script-message', 'osc-idlescreen', 'yes', 'no_osd') end
 	unbind_list_keys()
 	unbind_search_keys()
-	mp.set_osd_ass(0, 0, "")
-	list_drawn = false
+	log_set_osd_ass(0, 0, "")
 	list_cursor = 1
 	list_start = 0
 	filterName = 'all'
 	list_pages = {}
 	search_string = ''
-	search_active = false
 	list_highlight_cursor = {}
 	sortName = nil
 end
@@ -2034,6 +2117,7 @@ end
 
 --LogManager Search Feature--
 function list_search_exit()
+	if not list_drawn then return end
 	search_active = false
 	get_osd_log_contents(filterName)
 	get_page_properties(filterName)
@@ -2043,6 +2127,7 @@ function list_search_exit()
 end
 
 function list_search_not_typing_mode(auto_triggered)
+	if not list_drawn then return end
 	if auto_triggered then
 		if search_string ~= '' and osd_log_contents[1] then 
 			search_active = 'not_typing'
@@ -2213,7 +2298,7 @@ function bind_search_keys()
 		bind_keys(o.list_delete_keybind, 'list-delete', function() list_delete() list_search_not_typing_mode(true) end)
 		bind_keys(o.list_delete_highlighted_keybind, 'list-delete-highlight', function() list_delete('highlight') list_search_not_typing_mode(true) end)
 		bind_keys(o.keybinds_remove_keybind, 'keybind-slot-remove', function() slot_remove()  list_search_not_typing_mode(true) end)
-		bind_keys(o.keybinds_remove_keybind, 'keybind-slot-remove-highlight', function() slot_remove('highlight')  list_search_not_typing_mode(true) end)
+		bind_keys(o.keybinds_remove_highlighted_keybind, 'keybind-slot-remove-highlight', function() slot_remove('highlight')  list_search_not_typing_mode(true) end)
 	end
 end
 
@@ -2318,6 +2403,7 @@ function unbind_search_keys()
 	mp.remove_key_binding('search_string_<')
 	
 	mp.remove_key_binding('search_string_del')
+	unbind_keys(o.list_search_not_typing_mode_keybind, 'search_string_not_typing')
 	if not search_active then
 		unbind_keys(o.list_close_keybind, 'search_exit')
 	end
@@ -2328,71 +2414,30 @@ end
 --Modify Additional Log Parameters--
 function remove_all_additional_param_log_entry(index, log_text)
 	if not index or not log_text then return end
-	local temp_log_contents = read_log_table()
-	if not temp_log_contents or not temp_log_contents[1] then return end
-
-	for i = #temp_log_contents, 1, -1 do
-		if temp_log_contents[i].found_line:find(log_text..index) then
-			temp_log_contents[i].found_line = string.gsub(temp_log_contents[i].found_line, ' | '..log_text..index, "")
-		end
-	end
-
-	f = io.open(log_fullpath, "w+")
-	if temp_log_contents ~= nil and temp_log_contents[1] then
-		for i = 1, #temp_log_contents do
-			f:write(("%s\n"):format(temp_log_contents[i].found_line))
-		end
-	end
-	f:close()
+	local entries = read_log_table() or {}
+	local pattern = ' | ' .. esc_string(log_text .. index) .. '%f[%D]'
+	for _, entry in ipairs(entries) do change_log_line(entry, (entry.found_line:gsub(pattern, ''))) end
+	replace_log_entries(entries)
 end
 
 function remove_additional_param_log_entry(index, target, log_text)
-	if not index or not target or not log_text then return msg.error('remove_additional_param_log_entry parameters not defined') end
-	if not osd_log_contents or not osd_log_contents[1] then return end
-	local temp_log_contents = read_log_table()
-	if not temp_log_contents or not temp_log_contents[1] then return end
-	
-	local log_index = osd_log_contents[target].found_sequence
-
-	if temp_log_contents[log_index].found_line:find(log_text..index) then
-		temp_log_contents[log_index].found_line = string.gsub(temp_log_contents[log_index].found_line, ' | '..log_text..index, "")
-	else
-		return msg.error('temp_log_contents[log_index].found_line is not found')
-	end
-
-	f = io.open(log_fullpath, "w+")
-	if temp_log_contents ~= nil and temp_log_contents[1] then
-		for i = 1, #temp_log_contents do
-			f:write(("%s\n"):format(temp_log_contents[i].found_line))
-		end
-	end
-	f:close()
+	if not index or not target or not log_text then error('Bookmark parameter is missing') end
+	local entries = read_log_table() or {}
+	local log_index = find_log_identity(entries, osd_log_contents[target])
+	local line, count = entries[log_index].found_line:gsub(' | ' .. esc_string(log_text .. index) .. '%f[%D]', '')
+	if count == 0 then error('The selected bookmark property changed; refresh the list') end
+	change_log_line(entries[log_index], line)
+	replace_log_entries(entries)
 end
 
 function add_additional_param_log_entry(index, target, log_text)
-	if not index or not target or not log_text then return msg.error('add_additional_param_log_entry parameters not defined') end
-	if not osd_log_contents or not osd_log_contents[1] then return end
-	local temp_log_contents = read_log_table()
-	if not temp_log_contents or not temp_log_contents[1] then return end
-	local log_index = osd_log_contents[target].found_sequence
-
-	if temp_log_contents[log_index].found_line then
-		if temp_log_contents[log_index].found_line:sub(-1) ~= ' ' then
-			temp_log_contents[log_index].found_line = temp_log_contents[log_index].found_line..' | '..log_text .. index..' | '
-		else
-			temp_log_contents[log_index].found_line = temp_log_contents[log_index].found_line..log_text .. index..' | '
-		end
-	else
-		return msg.error('temp_log_contents[log_index].found_line is not found')
-	end
-
-	f = io.open(log_fullpath, "w+")
-	if temp_log_contents ~= nil and temp_log_contents[1] then
-		for i = 1, #temp_log_contents do
-			f:write(("%s\n"):format(temp_log_contents[i].found_line))
-		end
-	end
-	f:close()
+	if not index or not target or not log_text then error('Bookmark parameter is missing') end
+	local entries = read_log_table() or {}
+	local log_index = find_log_identity(entries, osd_log_contents[target])
+	local line = entries[log_index].found_line
+	if line:sub(-1) ~= ' ' then line = line .. ' | ' end
+	change_log_line(entries[log_index], line .. log_text .. index .. ' | ')
+	replace_log_entries(entries)
 end
 --End Of Modify Additional Log Parameters--
 
@@ -2400,14 +2445,18 @@ end
 function list_slot_remove(index, action)
 	if not list_drawn then return end
 	if not osd_log_contents or not osd_log_contents[1] then return end
-	if not index then index = tonumber(osd_log_contents[#osd_log_contents - list_cursor + 1].found_slot) end
+	if not index then
+		local selected = osd_log_contents[#osd_log_contents - list_cursor + 1]
+		find_log_identity(read_log_table() or {}, selected)
+		index = tonumber(selected.found_slot)
+	end
 	
 	if not index then
-		if action ~= 'silent' then msg.info("Failed to remove") end
+		if action ~= 'silent' then log_info("Failed to remove") end
 		return
 	end
 	remove_all_additional_param_log_entry(index, log_keybind_text)
-	if action ~= 'silent' then msg.info('Removed Keybind: ' .. get_slot_keybind(index)) end
+	if action ~= 'silent' then log_info('Removed Keybind: ' .. get_slot_keybind(index)) end
 end
 
 function list_slot_remove_highlighted()
@@ -2416,6 +2465,8 @@ function list_slot_remove_highlighted()
 	if not osd_log_contents or not osd_log_contents[1] then return end
 
 	local slotIndex
+	local current_entries = read_log_table() or {}
+	for _, selected in ipairs(list_highlight_cursor) do find_log_identity(current_entries, selected[2]) end
 	for i = 1, #osd_log_contents do
 		for j=1, #list_highlight_cursor do
 			if osd_log_contents[#osd_log_contents+1-i] then
@@ -2423,7 +2474,7 @@ function list_slot_remove_highlighted()
 					slotIndex = tonumber(osd_log_contents[#osd_log_contents+1-i].found_slot)
 					if slotIndex then
 						remove_all_additional_param_log_entry(slotIndex, log_keybind_text)
-						msg.info('Removed Keybind: ' .. get_slot_keybind(slotIndex))
+						log_info('Removed Keybind: ' .. get_slot_keybind(slotIndex))
 					end
 				end
 			end
@@ -2439,7 +2490,7 @@ function list_slot_add(index)
 	local cursor_filename, cursor_filepath, cursor_filetitle = get_local_names(osd_log_contents[#osd_log_contents - list_cursor + 1]) --1.2.4# added the new name calling method to fix issue of unable to add urls into groups or slots
 	local cursor_seektime = tonumber(osd_log_contents[#osd_log_contents - list_cursor + 1].found_time)
 	if not cursor_filename or not cursor_seektime then
-		msg.info("Failed to add slot")
+		log_info("Failed to add slot")
 		return
 	end
 	
@@ -2451,7 +2502,7 @@ function list_slot_add(index)
 	
 	list_slot_remove(index, 'silent')
 	add_additional_param_log_entry(index, #osd_log_contents-list_cursor+1, log_keybind_text)
-	msg.info('Added Keybind:\n' .. cursor_filetitle .. ' 🕒 ' .. format_time(cursor_seektime) .. ' ⌨ ' .. get_slot_keybind(index))
+	log_info('Added Keybind:\n' .. cursor_filetitle .. ' 🕒 ' .. format_time(cursor_seektime) .. ' ⌨ ' .. get_slot_keybind(index))
 end
 
 function slot_remove(action)
@@ -2460,6 +2511,7 @@ function slot_remove(action)
 	elseif action == 'highlight' then
 		list_slot_remove_highlighted()
 	end
+	log_effect(function()
 	get_osd_log_contents()
 	if #osd_log_contents == 0 then
 		display_list('all')
@@ -2469,12 +2521,14 @@ function slot_remove(action)
 	else 
 		select(-1) 
 	end
+	end)
 end
 
 function slot_add(index)
 	if not index then return end
 
 	list_slot_add(index)
+	log_effect(function()
 	get_osd_log_contents()
 	if #osd_log_contents == 0 then
 		list_cursor = 0
@@ -2484,6 +2538,7 @@ function slot_add(index)
 	else 
 		select(-1) 
 	end
+	end)
 end
 --End of Keybind Slot Feature--
 
@@ -2494,11 +2549,11 @@ function list_group_remove(action)
 	
 	local groupCursorIndex = tonumber(osd_log_contents[#osd_log_contents - list_cursor + 1].found_group)
 	if not groupCursorIndex then
-		if action ~= 'silent' then msg.info("Failed to remove") end
+		if action ~= 'silent' then log_info("Failed to remove") end
 		return
 	end
 	remove_additional_param_log_entry(groupCursorIndex, #osd_log_contents-list_cursor+1, log_group_text)
-	if action ~= 'silent' then msg.info('Removed Group: ' .. get_group_properties(groupCursorIndex).name) end
+	if action ~= 'silent' then log_info('Removed Group: ' .. get_group_properties(groupCursorIndex).name) end
 end
 
 function list_group_remove_highlighted()
@@ -2514,7 +2569,7 @@ function list_group_remove_highlighted()
 					groupIndex = tonumber(osd_log_contents[#osd_log_contents+1-i].found_group)
 					if groupIndex then
 						remove_additional_param_log_entry(groupIndex, #osd_log_contents+1-i, log_group_text)
-						msg.info('Removed Group: ' .. get_group_properties(groupIndex).name)
+						log_info('Removed Group: ' .. get_group_properties(groupIndex).name)
 					end
 				end
 			end
@@ -2530,13 +2585,13 @@ function list_group_add(index)
 	local cursor_filename, cursor_filepath, cursor_filetitle = get_local_names(osd_log_contents[#osd_log_contents - list_cursor + 1]) --1.2.4# added the new name calling method to fix issue of unable to add urls into groups or slots
 	local cursor_seektime = tonumber(osd_log_contents[#osd_log_contents - list_cursor + 1].found_time)
 	if not cursor_filename or not cursor_seektime then
-		msg.info("Failed to add group")
+		log_info("Failed to add group")
 		return
 	end
 	
 	list_group_remove('silent')
 	add_additional_param_log_entry(index, #osd_log_contents-list_cursor+1, log_group_text)
-	msg.info('Added Group:\n' .. cursor_filename .. ' 🕒 ' .. format_time(cursor_seektime) .. ' 🖿 ' .. get_group_properties(index).name)
+	log_info('Added Group:\n' .. cursor_filename .. ' 🕒 ' .. format_time(cursor_seektime) .. ' 🖿 ' .. get_group_properties(index).name)
 end
 
 function list_group_add_highlighted(index)
@@ -2551,7 +2606,7 @@ function list_group_add_highlighted(index)
 			if osd_log_contents[#osd_log_contents+1-i] then
 				if osd_log_contents[#osd_log_contents+1-i].found_sequence == list_highlight_cursor[j][2].found_sequence then
 					add_additional_param_log_entry(index, #osd_log_contents+1-i, log_group_text)
-					msg.info('Added Group: ' .. get_group_properties(index).name)
+					log_info('Added Group: ' .. get_group_properties(index).name)
 				end
 			end
 		end
@@ -2581,6 +2636,7 @@ function group_remove(action)
 	elseif action == 'highlight' then
 		list_group_remove_highlighted()
 	end
+	log_effect(function()
 	get_osd_log_contents()
 	if #osd_log_contents == 0 then
 		display_list('all')
@@ -2590,6 +2646,7 @@ function group_remove(action)
 	else 
 		select(-1) 
 	end
+	end)
 end
 
 function group_add(index, action)
@@ -2600,6 +2657,7 @@ function group_add(index, action)
 	elseif action == 'highlight' then
 		list_group_add_highlighted(index)
 	end
+	log_effect(function()
 	get_osd_log_contents()
 	if #osd_log_contents == 0 then
 		list_cursor = 0
@@ -2609,6 +2667,7 @@ function group_add(index, action)
 	else 
 		select(-1) 
 	end	
+	end)
 end
 --End of Group Feature--
 
@@ -2662,24 +2721,24 @@ function write_log(target_time, update_seekTime, entry_limit)
 	end
 	deleted_entries = same_path_log_delete(filePath, entry_limit) --1.2.5# seperate function to delete any additional entries based on the same_entry_limit set by user --1.2.7# assign it to varible since function now returns status and an array of deleted_entries --1.2.8# removed calling the array earlier and automatically call inside function
 
-	local f = io.open(log_fullpath, "a+")--1.3# dont allow customization to date_format so it can be saved in a standard in which I can parse for search results, etc..
+	local line
 	if o.file_title_logging == 'all' then
-		f:write(("[%s] \"%s\" | %s | %s | %s | "):format(os.date("%Y-%m-%dT%H:%M:%S"), fileTitle, filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime)))
+		line = ("[%s] \"%s\" | %s | %s | %s | "):format(os.date("%Y-%m-%dT%H:%M:%S"), fileTitle, filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime))
 	elseif o.file_title_logging == 'protocols' and (starts_protocol(o.logging_protocols, filePath))  or o.file_title_logging == 'local' and not (starts_protocol(o.logging_protocols, filePath)) then --1.3# added file_title_logging for local
-		f:write(("[%s] \"%s\" | %s | %s | %s | "):format(os.date("%Y-%m-%dT%H:%M:%S"), fileTitle, filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime)))
+		line = ("[%s] \"%s\" | %s | %s | %s | "):format(os.date("%Y-%m-%dT%H:%M:%S"), fileTitle, filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime))
 	elseif o.file_title_logging == 'protocols' and not (starts_protocol(o.logging_protocols, filePath)) then
-		f:write(("[%s] %s | %s | %s | "):format(os.date("%Y-%m-%dT%H:%M:%S"), filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime)))
+		line = ("[%s] %s | %s | %s | "):format(os.date("%Y-%m-%dT%H:%M:%S"), filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime))
 	else
-		f:write(("[%s] %s | %s | %s | "):format(os.date("%Y-%m-%dT%H:%M:%S"), filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime)))
+		line = ("[%s] %s | %s | %s | "):format(os.date("%Y-%m-%dT%H:%M:%S"), filePath, log_length_text .. tostring(fileLength), log_time_text .. tostring(seekTime))
 	end
 
-	f:write('\n')
-	f:close()
+	append_log_line(line)
 
 	
 	--1.2.6# restore properties if o.overwrite_preserve_properties is enabled
 	if found_entry and o.overwrite_preserve_properties then
 		local temp_log_contents = read_log_table() --1.2.6# loop through table with the new additions
+		osd_log_contents = temp_log_contents
 		if not temp_log_contents or not temp_log_contents[1] then return end
 		--1.2.6# when a slot or group was found previously, then add it
 		if found_entry['found_slot'] then
@@ -2694,6 +2753,7 @@ function write_log(target_time, update_seekTime, entry_limit)
 	--1.2.7# if an exact match is not found, and there are multiple deleted entries because of same_path_log_delete then add the latest deleted property to the newly added entry
 	if not found_entry and deleted_entries ~= nil and deleted_entries[1] and o.overwrite_preserve_properties then
 		local temp_log_contents = read_log_table() --1.2.6# loop through table with the new additions
+		osd_log_contents = temp_log_contents
 		if not temp_log_contents or not temp_log_contents[1] then return end
 		--1.2.7# loop through all deleted entries and get the first found slot and group then append it to the latest entry and then break loop
 		local break_table = false
@@ -2756,25 +2816,26 @@ function add_load_slot(key_index)
 					end
 					if o.keybinds_auto_resume then
 						if o.osd_messages == true then
-							mp.osd_message('Loaded slot:' .. ' ⌨ ' .. get_slot_keybind(key_index) .. '\n' .. list_filetitle .. ' 🕒 ' .. format_time(list_seektime, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]))
+							log_osd_message('Loaded slot:' .. ' ⌨ ' .. get_slot_keybind(key_index) .. '\n' .. list_filetitle .. ' 🕒 ' .. format_time(list_seektime, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]))
 						end
-						msg.info('Loaded slot:' .. ' ⌨ ' .. get_slot_keybind(key_index) .. '\n' .. list_filetitle .. ' 🕒 ' .. format_time(list_seektime))						
+						log_info('Loaded slot:' .. ' ⌨ ' .. get_slot_keybind(key_index) .. '\n' .. list_filetitle .. ' 🕒 ' .. format_time(list_seektime))						
 					else
 						if o.osd_messages == true then
-							mp.osd_message('Loaded slot:' .. ' ⌨ ' .. get_slot_keybind(key_index) .. '\n' .. list_filetitle)
+							log_osd_message('Loaded slot:' .. ' ⌨ ' .. get_slot_keybind(key_index) .. '\n' .. list_filetitle)
 						end
-						msg.info('Loaded slot:' .. ' ⌨ ' .. get_slot_keybind(key_index) .. '\n' .. list_filetitle)																	
+						log_info('Loaded slot:' .. ' ⌨ ' .. get_slot_keybind(key_index) .. '\n' .. list_filetitle)																	
 					end
 				else
 					if o.osd_messages == true then
-						mp.osd_message('File Doesn\'t Exist:\n' .. list_filepath)
+						log_osd_message('File Doesn\'t Exist:\n' .. list_filepath)
 					end
-					msg.info('The file below doesn\'t seem to exist:\n' .. list_filepath)
+					log_info('The file below doesn\'t seem to exist:\n' .. list_filepath)
 					return
 				end
 			else
 				if o.keybinds_empty_auto_create then
 					if filePath ~= nil then
+						mutate_log(function()
 						if o.keybinds_empty_fileonly then
 							write_log(0) --1.2.9# reflect removal of key_index in write_log function, fixes bug and cleaner code
 							get_osd_log_contents() --1.2.9# reflect removal of key_index in write_log function, fixes bug and cleaner code -- also used get_osd instead of local because add_additional_param uses osd_log inside its function perhaps this should be changed
@@ -2791,27 +2852,28 @@ function add_load_slot(key_index)
 							add_additional_param_log_entry(key_index, #osd_log_contents, log_keybind_text) --1.2.9# adds the slot of the passed index
 						end
 						if o.osd_messages == true then
-							mp.osd_message('Bookmarked & Added Keybind:\n' .. fileTitle .. ' 🕒 ' .. format_time(mp.get_property_number('time-pos'), o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]) .. ' ⌨ ' .. get_slot_keybind(key_index))
+							log_osd_message('Bookmarked & Added Keybind:\n' .. fileTitle .. ' 🕒 ' .. format_time(mp.get_property_number('time-pos'), o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]) .. ' ⌨ ' .. get_slot_keybind(key_index))
 						end
-						msg.info('Bookmarked the below & added keybind:\n' .. fileTitle .. ' 🕒 ' .. format_time(mp.get_property_number('time-pos')) .. ' ⌨ ' .. get_slot_keybind(key_index))
+						log_info('Bookmarked the below & added keybind:\n' .. fileTitle .. ' 🕒 ' .. format_time(mp.get_property_number('time-pos')) .. ' ⌨ ' .. get_slot_keybind(key_index))
+						end)
 					else
 						if o.osd_messages == true then
-							mp.osd_message('Failed to Bookmark & Auto Create Keybind\nNo Video Found')
+							log_osd_message('Failed to Bookmark & Auto Create Keybind\nNo Video Found')
 						end
-						msg.info("Failed to bookmark & auto create keybind, no video found")
+						log_info("Failed to bookmark & auto create keybind, no video found")
 					end
 				else
 					if o.osd_messages == true then
-						mp.osd_message('No Bookmark Slot For' .. ' ⌨ ' .. get_slot_keybind(key_index) .. ' Yet')
+						log_osd_message('No Bookmark Slot For' .. ' ⌨ ' .. get_slot_keybind(key_index) .. ' Yet')
 					end
-					msg.info('No bookmark slot has been assigned for' .. ' ⌨ ' .. get_slot_keybind(key_index) .. ' keybind yet')
+					log_info('No bookmark slot has been assigned for' .. ' ⌨ ' .. get_slot_keybind(key_index) .. ' keybind yet')
 				end
 			end
 		else
 			if o.osd_messages == true then
-				mp.osd_message('No Bookmark Slot For' .. ' ⌨ ' .. get_slot_keybind(key_index) .. ' Yet')
+				log_osd_message('No Bookmark Slot For' .. ' ⌨ ' .. get_slot_keybind(key_index) .. ' Yet')
 			end
-			msg.info('No bookmark slot has been assigned for' .. ' ⌨ ' .. get_slot_keybind(key_index) .. ' keybind yet')
+			log_info('No bookmark slot has been assigned for' .. ' ⌨ ' .. get_slot_keybind(key_index) .. ' keybind yet')
 		end
 	end
 end
@@ -2832,9 +2894,9 @@ function quicksave_slot(key_index)
 				add_additional_param_log_entry(key_index, #osd_log_contents, log_keybind_text) --1.2.9# adds the slot of the passed index
 
 				if o.osd_messages == true then
-					mp.osd_message('Bookmarked Fileonly & Added Keybind:\n' .. fileTitle .. ' ⌨ ' .. get_slot_keybind(key_index))
+					log_osd_message('Bookmarked Fileonly & Added Keybind:\n' .. fileTitle .. ' ⌨ ' .. get_slot_keybind(key_index))
 				end
-				msg.info('Bookmarked the below & added keybind:\n' .. fileTitle .. ' ⌨ ' .. get_slot_keybind(key_index))
+				log_info('Bookmarked the below & added keybind:\n' .. fileTitle .. ' ⌨ ' .. get_slot_keybind(key_index))
 			else
 				write_log(false, true) --1.2.9# reflect removal of key_index in write_log function, fixes bug and cleaner code
 				get_osd_log_contents() --1.2.9# reflect removal of key_index in write_log function, fixes bug and cleaner code
@@ -2844,15 +2906,15 @@ function quicksave_slot(key_index)
 				add_additional_param_log_entry(key_index, #osd_log_contents, log_keybind_text) --1.2.9# adds the slot of the passed index
 				
 				if o.osd_messages == true then
-					mp.osd_message('Bookmarked & Added Keybind:\n' .. fileTitle .. ' 🕒 ' .. format_time(seekTime, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]) .. ' ⌨ ' .. get_slot_keybind(key_index))
+					log_osd_message('Bookmarked & Added Keybind:\n' .. fileTitle .. ' 🕒 ' .. format_time(seekTime, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]) .. ' ⌨ ' .. get_slot_keybind(key_index))
 				end
-				msg.info('Bookmarked the below & added keybind:\n' .. fileTitle .. ' 🕒 ' .. format_time(seekTime) .. ' ⌨ ' .. get_slot_keybind(key_index))
+				log_info('Bookmarked the below & added keybind:\n' .. fileTitle .. ' 🕒 ' .. format_time(seekTime) .. ' ⌨ ' .. get_slot_keybind(key_index))
 			end
 		else
 			if o.osd_messages == true then
-				mp.osd_message('Failed to Bookmark & Auto Create Keybind\nNo Video Found')
+				log_osd_message('Failed to Bookmark & Auto Create Keybind\nNo Video Found')
 			end
-			msg.info("Failed to bookmark & auto create keybind, no video found")
+			log_info("Failed to bookmark & auto create keybind, no video found")
 		end
 	end
 end
@@ -2860,46 +2922,76 @@ end
 function bookmark_save()
 	if filePath ~= nil then
 		write_log(false, true, o.same_entry_limit) --1.2.9# reflect removal of key_index in write_log function
+		log_effect(function()
 		if list_drawn then
 			get_osd_log_contents()
 			select(0)
 		end
+		end)
 		if o.osd_messages == true then
-			mp.osd_message('Bookmarked:\n' .. fileTitle .. ' 🕒 ' .. format_time(seekTime, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]))
+			log_osd_message('Bookmarked:\n' .. fileTitle .. ' 🕒 ' .. format_time(seekTime, o.osd_time_format[3], o.osd_time_format[2], o.osd_time_format[1]))
 		end
-		msg.info('Added the below to bookmarks\n' .. fileTitle .. ' 🕒 ' .. format_time(seekTime))
+		log_info('Added the below to bookmarks\n' .. fileTitle .. ' 🕒 ' .. format_time(seekTime))
 	elseif filePath == nil and o.bookmark_loads_last_idle then
 		osd_log_contents = read_log_table()
 		load(1)
 	else
 		if o.osd_messages == true then
-			mp.osd_message('Failed to Bookmark\nNo Video Found')
+			log_osd_message('Failed to Bookmark\nNo Video Found')
 		end
-		msg.info("Failed to bookmark, no video found")
+		log_info("Failed to bookmark, no video found")
 	end
 end
 
 function bookmark_fileonly_save()
 	if filePath ~= nil then
 		write_log(0, false, o.same_entry_limit) --1.2.9# reflect removal of key_index in write_log function
+		log_effect(function()
 		if list_drawn then
 			get_osd_log_contents()
 			select(0)
 		end
+		end)
 		if o.osd_messages == true then
-			mp.osd_message('Bookmarked File Only:\n' .. fileTitle)
+			log_osd_message('Bookmarked File Only:\n' .. fileTitle)
 		end
-		msg.info('Added the below to bookmarks\n' .. fileTitle)
+		log_info('Added the below to bookmarks\n' .. fileTitle)
 	elseif filePath == nil and o.bookmark_fileonly_loads_last_idle then
 		osd_log_contents = read_log_table()
 		load(1, false, 0)
 	else
 		if o.osd_messages == true then
-			mp.osd_message('Failed to Bookmark\nNo Video Found')
+			log_osd_message('Failed to Bookmark\nNo Video Found')
 		end
-		msg.info("Failed to bookmark, no video found")
+		log_info("Failed to bookmark, no video found")
 	end
 end
+
+-- Keep complete user actions within one transaction. Nested helpers reuse it.
+same_path_log_delete = log_mutator(same_path_log_delete)
+delete_log_entry = log_mutator(delete_log_entry)
+delete_log_entry_highlighted = log_mutator(delete_log_entry_highlighted)
+delete_selected = log_mutator(delete_selected)
+list_delete = log_mutator(list_delete)
+remove_all_additional_param_log_entry = log_mutator(remove_all_additional_param_log_entry)
+remove_additional_param_log_entry = log_mutator(remove_additional_param_log_entry)
+add_additional_param_log_entry = log_mutator(add_additional_param_log_entry)
+list_slot_remove = log_mutator(list_slot_remove)
+list_slot_remove_highlighted = log_mutator(list_slot_remove_highlighted)
+list_slot_add = log_mutator(list_slot_add)
+slot_remove = log_mutator(slot_remove)
+slot_add = log_mutator(slot_add)
+list_group_remove = log_mutator(list_group_remove)
+list_group_remove_highlighted = log_mutator(list_group_remove_highlighted)
+list_group_add = log_mutator(list_group_add)
+list_group_add_highlighted = log_mutator(list_group_add_highlighted)
+list_group_add_cycle = log_mutator(list_group_add_cycle)
+group_remove = log_mutator(group_remove)
+group_add = log_mutator(group_add)
+write_log = log_mutator(write_log, true)
+quicksave_slot = log_mutator(quicksave_slot, true)
+bookmark_save = log_mutator(bookmark_save, true)
+bookmark_fileonly_save = log_mutator(bookmark_fileonly_save, true)
 
 mp.register_event('file-loaded', function()
 	list_close_and_trash_collection()

@@ -1,3 +1,5 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
+local Color = require("modules/color")
 local msg = require('mp.msg')
 local utils = require("mp.utils")
 
@@ -80,7 +82,7 @@ function load_danmaku_for_bahamut(path, callback)
 
     call_cmd_async(arg, function(error)
         if error then
-            show_message("HTTP 请求失败，打开控制台查看详情", 5)
+            show_message(i18n.t("HTTP 请求失败，打开控制台查看详情"), 5)
             msg.error(error)
             callback(false)
             return
@@ -100,7 +102,7 @@ function load_danmaku_for_bahamut(path, callback)
 
         local output_table = {}
         for _, comment in ipairs(comments) do
-            local color = hex_to_int_color(comment["color"])
+            local color = Color.normalize(comment["color"], "hex") or ""
             local mode = get_type_from_position(comment["position"])
             local time = tonumber(comment["time"]) / 10
             local c_param = string.format("%s,%s,%s,25,,,", time, color, mode)

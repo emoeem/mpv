@@ -1,3 +1,4 @@
+local i18n = dofile(require("mp").command_native({"expand-path", "~~/script-modules/yaozhi-i18n.lua"}))
 local mp = require 'mp'
 local msg = require 'mp.msg'
 local utils = require 'mp.utils'
@@ -25,6 +26,8 @@ local capture_timer = nil
 local capture_arm_timer = nil
 local capture_finalize_timer = nil
 local capture_candidate = nil
+local capture_generation = 0
+local capture_return_timer = nil
 local applied_binding_names = {}
 local is_safe_keyboard_key
 
@@ -153,21 +156,37 @@ local function save_config(candidate)
 end
 
 local function canonical_key(key)
+    if key == ' ' then return 'SPACE' end
     key = trim(key)
     if key == '' then return '' end
-    local modifiers, base = {}, nil
-    for part in key:gmatch('[^+]+') do
+    local modifiers, base = {}, key
+    while true do
+        local part, rest = base:match('^([^+]+)%+(.*)$')
+        if not part then break end
         local upper = part:upper()
         if upper == 'CTRL' or upper == 'ALT' or upper == 'SHIFT' or upper == 'META' then
             modifiers[upper] = true
-        else
-            base = part
-        end
+            base = rest
+        else break end
     end
-    if not base then return key end
+    if base == '' then return '' end
     if #base > 1 and base:match('^[%w_%-]+$') then base = base:upper() end
+    local aliases = {['#'] = 'SHARP', ['　'] = 'IDEOGRAPHIC_SPACE',
+        XF86_PAUSE = 'PAUSE', XF86_STOP = 'STOP', XF86_PREV = 'PREV', XF86_NEXT = 'NEXT'}
+    base = aliases[base] or base
+    -- mp_normalize_keycode drops Shift on printable characters, including
+    -- SPACE/SHARP; only ASCII lowercase is converted to uppercase.
+    local printable = #base == 1 and base:byte() >= 32
+        or base == 'SPACE' or base == 'SHARP' or base == 'IDEOGRAPHIC_SPACE'
+        or base:match('^[\194-\223][\128-\191]$')
+        or base:match('^[\224-\239][\128-\191][\128-\191]$')
+        or base:match('^[\240-\244][\128-\191][\128-\191][\128-\191]$')
+    if printable then
+        if modifiers.SHIFT and base:match('^[a-z]$') then base = base:upper() end
+        modifiers.SHIFT = nil
+    end
     local result = {}
-    for _, modifier in ipairs({'CTRL', 'ALT', 'SHIFT', 'META'}) do
+    for _, modifier in ipairs({'SHIFT', 'CTRL', 'ALT', 'META'}) do
         if modifiers[modifier] then result[#result + 1] = modifier end
     end
     result[#result + 1] = base
@@ -195,15 +214,15 @@ is_safe_keyboard_key = function(key)
 end
 
 local key_labels = {
-    SPACE = '空格', ENTER = '回车', ESC = 'Esc', TAB = 'Tab', BS = '退格',
-    DEL = '删除', INS = '插入', HOME = 'Home', END = 'End', PGUP = 'Page Up',
-    PGDWN = 'Page Down', LEFT = '左方向键', RIGHT = '右方向键', UP = '上方向键',
-    DOWN = '下方向键', WHEEL_UP = '滚轮向上', WHEEL_DOWN = '滚轮向下',
-    WHEEL_LEFT = '滚轮向左', WHEEL_RIGHT = '滚轮向右', MBTN_LEFT = '鼠标左键',
-    MBTN_RIGHT = '鼠标右键', MBTN_MID = '鼠标中键', MBTN_BACK = '鼠标后退键',
-    MBTN_FORWARD = '鼠标前进键',
-    ['`'] = '反引号 `（不含 Shift）',
-    ['~'] = '波浪号 ~（Shift + 反引号）',
+    SPACE = i18n.t('空格'), ENTER = i18n.t('回车'), ESC = 'Esc', TAB = 'Tab', BS = i18n.t('退格'),
+    DEL = i18n.t('删除'), INS = i18n.t('插入'), HOME = 'Home', END = 'End', PGUP = 'Page Up',
+    PGDWN = 'Page Down', LEFT = i18n.t('左方向键'), RIGHT = i18n.t('右方向键'), UP = i18n.t('上方向键'),
+    DOWN = i18n.t('下方向键'), WHEEL_UP = i18n.t('滚轮向上'), WHEEL_DOWN = i18n.t('滚轮向下'),
+    WHEEL_LEFT = i18n.t('滚轮向左'), WHEEL_RIGHT = i18n.t('滚轮向右'), MBTN_LEFT = i18n.t('鼠标左键'),
+    MBTN_RIGHT = i18n.t('鼠标右键'), MBTN_MID = i18n.t('鼠标中键'), MBTN_BACK = i18n.t('鼠标后退键'),
+    MBTN_FORWARD = i18n.t('鼠标前进键'),
+    ['`'] = i18n.t('反引号 `（不含 Shift）'),
+    ['~'] = i18n.t('波浪号 ~（Shift + 反引号）'),
 }
 
 local function human_key(key)
@@ -417,7 +436,7 @@ end
 local function menu_open(menu)
     local json, err = utils.format_json(menu)
     if not json then
-        mp.osd_message('无法打开按键菜单：' .. tostring(err), 3)
+        mp.osd_message(i18n.t('无法打开按键菜单：') .. tostring(err), 3)
         return
     end
     mp.commandv('script-message-to', 'uosc', 'open-menu', json)
@@ -470,7 +489,7 @@ local function open_main_menu()
     end
     if config_warning then
         items[#items + 1] = {
-            title = config_warning,
+            title = i18n.text(config_warning),
             icon = 'warning',
             selectable = false,
             italic = true,
@@ -481,14 +500,14 @@ local function open_main_menu()
     for index, entry in ipairs(visible_entries) do
         if index == 1 and managed_count > 0 then
             items[#items + 1] = {
-                title = '已修改的按键（' .. tostring(managed_count) .. '）',
+                title = i18n.t('已修改的按键（') .. tostring(managed_count) .. '）',
                 icon = 'edit',
                 selectable = false,
                 muted = true,
             }
         elseif not entry.override and managed_count > 0 and not added_other_header then
             items[#items + 1] = {
-                title = '其他按键',
+                title = i18n.t('其他按键'),
                 selectable = false,
                 muted = true,
             }
@@ -497,10 +516,10 @@ local function open_main_menu()
         local status = entry.override and entry.override.status or nil
         local hint = human_key(entry.effective_key)
         if status == '已应用' then
-            hint = human_key(entry.effective_key) .. ' · 原 ' .. human_key(entry.key)
-        elseif status then hint = human_key(entry.key) .. ' · ' .. status end
+            hint = human_key(entry.effective_key) .. i18n.t(' · 原 ') .. human_key(entry.key)
+        elseif status then hint = human_key(entry.key) .. ' · ' .. i18n.t(status) end
         items[#items + 1] = {
-            title = entry.override and ('已修改 · ' .. entry.title) or entry.title,
+            title = entry.override and (i18n.t('已修改 · ') .. i18n.text(entry.title)) or i18n.text(entry.title),
             hint = hint,
             icon = entry.override and 'edit' or (entry.editable and 'keyboard' or 'lock'),
             active = status == '已应用',
@@ -508,13 +527,13 @@ local function open_main_menu()
         }
     end
     if #visible_entries == 0 then
-        items[#items + 1] = {title = '未读取到按键绑定', selectable = false, muted = true}
+        items[#items + 1] = {title = i18n.t('未读取到按键绑定'), selectable = false, muted = true}
     end
     menu_open({
         id = MENU_MAIN,
         type = MENU_MAIN,
-        title = '快捷键管理',
-        footnote = '输入中文可搜索 · 回车查看详情 · 修改保存到独立托管层，input.conf 始终只读',
+        title = i18n.t('快捷键管理'),
+        footnote = i18n.t('输入中文可搜索 · 回车查看详情 · 修改保存到独立托管层，input.conf 始终只读'),
         search_style = 'palette',
         fixed_columns = true,
         callback = {script_name, 'menu-event'},
@@ -524,43 +543,43 @@ end
 
 local function open_detail_menu(entry)
     selected_entry = entry
-    local status = entry.override and entry.override.status or '未修改'
+    local status = entry.override and i18n.t(entry.override.status) or i18n.t('未修改')
     local items = {
-        {title = '当前按键', hint = human_key(entry.effective_key), selectable = false},
-        {title = '配置来源', hint = entry.source .. (entry.editable and '（只读）' or '（不可编辑）'), selectable = false},
-        {title = '托管状态', hint = status, selectable = false},
-        {title = '原始命令', hint = entry.command, selectable = false},
+        {title = i18n.t('当前按键'), hint = human_key(entry.effective_key), selectable = false},
+        {title = i18n.t('配置来源'), hint = entry.source .. (entry.editable and i18n.t('（只读）') or i18n.t('（不可编辑）')), selectable = false},
+        {title = i18n.t('托管状态'), hint = status, selectable = false},
+        {title = i18n.t('原始命令'), hint = entry.command, selectable = false},
     }
     if entry.editable then
         items[#items + 1] = {
-            title = '修改按键（安全托管）',
-            hint = '不会写入 input.conf',
+            title = i18n.t('修改按键（安全托管）'),
+            hint = i18n.t('不会写入 input.conf'),
             icon = 'edit',
             value = 'rebind',
         }
         if entry.override then
             items[#items + 1] = {
-                title = '恢复原按键',
+                title = i18n.t('恢复原按键'),
                 hint = human_key(entry.key),
                 icon = 'restore',
                 value = 'restore',
             }
         else
             items[#items + 1] = {
-                title = '恢复原按键',
-                hint = '当前未修改，无需恢复',
+                title = i18n.t('恢复原按键'),
+                hint = i18n.t('当前未修改，无需恢复'),
                 icon = 'restore',
                 selectable = false,
                 muted = true,
             }
         end
     end
-    items[#items + 1] = {title = '返回列表', icon = 'arrow_back', value = 'back'}
+    items[#items + 1] = {title = i18n.t('返回列表'), icon = 'arrow_back', value = 'back'}
     menu_open({
         id = MENU_DETAIL,
         type = MENU_DETAIL,
-        title = entry.title,
-        footnote = '原配置只读；托管改动可随时恢复',
+        title = i18n.text(entry.title),
+        footnote = i18n.t('原配置只读；托管改动可随时恢复'),
         search_style = 'disabled',
         callback = {script_name, 'menu-event'},
         items = items,
@@ -571,26 +590,28 @@ local function open_capture_menu(entry)
     menu_open({
         id = MENU_CAPTURE,
         type = MENU_CAPTURE,
-        title = '按下新的键盘快捷键',
-        footnote = 'Esc 取消 · 12 秒自动取消 · 完整拦截按下与松开，不会执行原功能',
+        title = i18n.t('按下新的键盘快捷键'),
+        footnote = i18n.t('Esc 取消 · 12 秒自动取消 · 完整拦截按下与松开，不会执行原功能'),
         search_style = 'disabled',
-        callback = {script_name, 'menu-event'},
+        callback = {script_name, 'capture-menu-event', tostring(capture_generation)},
+        on_close = { 'script-message-to', script_name, 'capture-menu-closed', tostring(capture_generation) },
         items = {
-            {title = '正在修改', hint = entry.title, selectable = false},
-            {title = '当前按键', hint = human_key(entry.effective_key), selectable = false},
+            {title = i18n.t('正在修改'), hint = i18n.text(entry.title), selectable = false},
+            {title = i18n.t('当前按键'), hint = human_key(entry.effective_key), selectable = false},
             {
-                title = '等待键盘输入…',
-                hint = '松开按键后保存；修改只进入安全托管层',
+                title = i18n.t('等待键盘输入…'),
+                hint = i18n.t('松开按键后保存；修改只进入安全托管层'),
                 icon = 'keyboard',
                 selectable = false,
                 active = true,
             },
-            {title = '取消修改', icon = 'close', value = 'cancel'},
+            {title = i18n.t('取消修改'), icon = 'close', value = 'cancel'},
         },
     })
 end
 
 local function cleanup_capture()
+    capture_generation = capture_generation + 1
     if capture_section_active then
         pcall(mp.commandv, 'disable-section', CAPTURE_SECTION)
         pcall(mp.commandv, 'define-section', CAPTURE_SECTION, '', 'force')
@@ -599,12 +620,25 @@ local function cleanup_capture()
     if capture_timer then capture_timer:kill(); capture_timer = nil end
     if capture_arm_timer then capture_arm_timer:kill(); capture_arm_timer = nil end
     if capture_finalize_timer then capture_finalize_timer:kill(); capture_finalize_timer = nil end
+    if capture_return_timer then capture_return_timer:kill(); capture_return_timer = nil end
     capture_candidate = nil
+    pending_capture = nil
+end
+
+local function return_to_detail(entry)
+    local generation = capture_generation
+    if capture_return_timer then capture_return_timer:kill() end
+    capture_return_timer = mp.add_timeout(0.05, function()
+        capture_return_timer = nil
+        if generation == capture_generation and not pending_capture then
+            open_detail_menu(refreshed_entry(entry))
+        end
+    end)
 end
 
 local function current_conflict(new_key, source_entry)
     new_key = canonical_key(new_key)
-    if new_key == source_entry.key then return nil end
+    if new_key == canonical_key(source_entry.key) then return nil end
     for _, record in ipairs(data.overrides) do
         if canonical_key(record.new_key) == new_key
             and not (canonical_key(record.source_key) == source_entry.key
@@ -627,8 +661,8 @@ end
 
 local function commit_rebind(entry, new_key, occupied)
     if not is_safe_keyboard_key(new_key) then
-        mp.osd_message('未识别到有效键盘快捷键，已取消\ninput.conf 未改动', 3)
-        mp.add_timeout(0.05, function() open_detail_menu(refreshed_entry(entry)) end)
+        mp.osd_message(i18n.t('未识别到有效键盘快捷键，已取消\ninput.conf 未改动'), 3)
+        return_to_detail(entry)
         return false
     end
     local candidate = {version = 1, overrides = {}}
@@ -652,14 +686,14 @@ local function commit_rebind(entry, new_key, occupied)
     end
     local saved, save_err = save_config(candidate)
     if not saved then
-        mp.osd_message('按键修改未保存\n' .. tostring(save_err) .. '\ninput.conf 未受影响', 5)
+        mp.osd_message(i18n.t('按键修改未保存\n') .. i18n.text(tostring(save_err)) .. i18n.t('\ninput.conf 未受影响'), 5)
         return false
     end
     apply_overrides()
-    mp.osd_message('按键已安全保存：' .. human_key(new_key)
-        .. '\n对应功能：' .. entry.title
-        .. '\ninput.conf 未改动，可在列表中恢复', 5)
-    mp.add_timeout(0.05, function() open_detail_menu(refreshed_entry(entry)) end)
+    mp.osd_message(i18n.t('按键已安全保存：') .. human_key(new_key)
+        .. i18n.t('\n对应功能：') .. i18n.text(entry.title)
+        .. i18n.t('\ninput.conf 未改动，可在列表中恢复'), 5)
+    return_to_detail(entry)
     return true
 end
 
@@ -668,15 +702,15 @@ local function open_conflict_menu(entry, new_key, occupied)
     menu_open({
         id = MENU_CONFLICT,
         type = MENU_CONFLICT,
-        title = '按键冲突：' .. human_key(new_key),
-        footnote = '替换仅在托管层生效，恢复后原绑定自动回来',
+        title = i18n.t('按键冲突：') .. human_key(new_key),
+        footnote = i18n.t('替换仅在托管层生效，恢复后原绑定自动回来'),
         search_style = 'disabled',
         callback = {script_name, 'menu-event'},
         items = {
-            {title = '当前功能', hint = occupied.title or occupied.command, selectable = false},
-            {title = '仍然替换（可撤销）', icon = 'warning', value = 'replace'},
-            {title = '重新选择按键', icon = 'keyboard', value = 'recapture'},
-            {title = '取消', icon = 'close', value = 'cancel'},
+            {title = i18n.t('当前功能'), hint = occupied.title and i18n.text(occupied.title) or occupied.command, selectable = false},
+            {title = i18n.t('仍然替换（可撤销）'), icon = 'warning', value = 'replace'},
+            {title = i18n.t('重新选择按键'), icon = 'keyboard', value = 'recapture'},
+            {title = i18n.t('取消'), icon = 'close', value = 'cancel'},
         },
     })
 end
@@ -687,8 +721,8 @@ local function finish_captured_key(entry, key)
     menu_close(MENU_CAPTURE)
     key = canonical_key(key)
     if key == 'ESC' or not is_safe_keyboard_key(key) then
-        mp.osd_message('已取消修改；input.conf 未改动', 2)
-        mp.add_timeout(0.05, function() open_detail_menu(refreshed_entry(entry)) end)
+        mp.osd_message(i18n.t('已取消修改；input.conf 未改动'), 2)
+        return_to_detail(entry)
         return
     end
     local occupied = current_conflict(key, entry)
@@ -698,9 +732,10 @@ end
 
 local function schedule_capture_finish(entry, key, delay)
     if capture_finalize_timer then capture_finalize_timer:kill() end
+    local generation = capture_generation
     capture_finalize_timer = mp.add_timeout(delay, function()
         capture_finalize_timer = nil
-        if pending_capture == entry and capture_candidate == key then
+        if generation == capture_generation and pending_capture == entry and capture_candidate == key then
             finish_captured_key(entry, key)
         end
     end)
@@ -796,6 +831,7 @@ end, {complex = true})
 local function start_capture(entry)
     cleanup_capture()
     pending_capture = entry
+    local generation = capture_generation
     open_capture_menu(entry)
     -- Queue the complete section in the same activation callback. Re-enable
     -- once uosc has committed its foreground menu so this forced section owns
@@ -803,14 +839,15 @@ local function start_capture(entry)
     install_capture_bindings()
     capture_arm_timer = mp.add_timeout(0.03, function()
         capture_arm_timer = nil
-        if pending_capture == entry and not capture_candidate then install_capture_bindings() end
+        if generation == capture_generation and pending_capture == entry and not capture_candidate then install_capture_bindings() end
     end)
     capture_timer = mp.add_timeout(12, function()
+        if generation ~= capture_generation or pending_capture ~= entry then return end
         cleanup_capture()
         pending_capture = nil
         menu_close(MENU_CAPTURE)
-        mp.osd_message('未检测到新按键，已取消；input.conf 未改动', 3)
-        mp.add_timeout(0.05, function() open_detail_menu(refreshed_entry(entry)) end)
+        mp.osd_message(i18n.t('未检测到新按键，已取消；input.conf 未改动'), 3)
+        return_to_detail(entry)
     end)
 end
 
@@ -824,18 +861,18 @@ local function restore_selected(entry)
     end
     local saved, save_err = save_config(candidate)
     if not saved then
-        mp.osd_message('恢复失败：' .. tostring(save_err) .. '\ninput.conf 未受影响', 4)
+        mp.osd_message(i18n.t('恢复失败：') .. i18n.text(tostring(save_err)) .. i18n.t('\ninput.conf 未受影响'), 4)
         return
     end
     apply_overrides()
-    mp.osd_message('已恢复原按键：' .. human_key(entry.key) .. '\ninput.conf 始终未改动', 3)
+    mp.osd_message(i18n.t('已恢复原按键：') .. human_key(entry.key) .. i18n.t('\ninput.conf 始终未改动'), 3)
     mp.add_timeout(0.05, function() open_detail_menu(refreshed_entry(entry)) end)
 end
 
 mp.register_script_message('open', open_main_menu)
 mp.add_key_binding(nil, 'open', open_main_menu)
 
-mp.register_script_message('menu-event', function(json)
+local function handle_menu_event(json)
     local event = utils.parse_json(json)
     if type(event) ~= 'table' or event.type ~= 'activate' or event.action then return end
     if event.menu_id == MENU_MAIN then
@@ -850,8 +887,8 @@ mp.register_script_message('menu-event', function(json)
         cleanup_capture()
         pending_capture = nil
         menu_close(MENU_CAPTURE)
-        mp.osd_message('已取消修改；input.conf 未改动', 2)
-        mp.add_timeout(0.05, function() open_detail_menu(refreshed_entry(entry)) end)
+        mp.osd_message(i18n.t('已取消修改；input.conf 未改动'), 2)
+        return_to_detail(entry)
     elseif event.menu_id == MENU_CONFLICT and pending_conflict then
         local conflict = pending_conflict
         pending_conflict = nil
@@ -860,18 +897,27 @@ mp.register_script_message('menu-event', function(json)
         elseif event.value == 'recapture' then
             start_capture(conflict.entry)
         else
-            mp.osd_message('已取消修改；input.conf 未改动', 2)
+            mp.osd_message(i18n.t('已取消修改；input.conf 未改动'), 2)
             open_detail_menu(conflict.entry)
         end
     end
+end
+mp.register_script_message('menu-event', handle_menu_event)
+mp.register_script_message('capture-menu-closed', function(generation)
+    if tonumber(generation) == capture_generation and pending_capture then cleanup_capture() end
+end)
+mp.register_script_message('capture-menu-event', function(generation, json)
+    if tonumber(generation) ~= capture_generation or not pending_capture then return end
+    local event = utils.parse_json(json)
+    if type(event) ~= 'table' then return end
+    if event.type == 'close' then cleanup_capture()
+    else handle_menu_event(json) end
 end)
 
 mp.register_event('start-file', function()
-    if pending_capture then
-        cleanup_capture()
-        pending_capture = nil
-        menu_close(MENU_CAPTURE)
-    end
+    local had_capture = pending_capture ~= nil
+    cleanup_capture()
+    if had_capture then menu_close(MENU_CAPTURE) end
     pending_conflict = nil
 end)
 
