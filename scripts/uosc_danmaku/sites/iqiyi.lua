@@ -6,6 +6,41 @@ local inflate = require('modules/inflate')
 
 local user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
+-- 上游 d896f17/2ad35e4 移植：清理异常退出遗留的 iqiyi 分段临时文件。
+-- 'own' 在 on_unload 时删本进程文件；'stale' 在新一轮下载前删超过 1 小时的他人残留。
+local TEMP_NAME_PATTERN = '^iqiyi_(.-)_(%d+)_(%d+)%.z$'
+local STALE_SECONDS = 3600
+
+local function cleanup_iqiyi_temp(mode)
+    local dir = DANMAKU_PATH
+    if type(dir) ~= 'string' or dir == '' then return end
+    local entries = utils.readdir(dir)
+    if not entries then return end
+    local now = os.time()
+    for _, name in ipairs(entries) do
+        local pid = name:match(TEMP_NAME_PATTERN)
+        if pid then
+            local full = utils.join_path(dir, name)
+            local info = utils.file_info(full)
+            local remove = false
+            if info and info.is_file then
+                if mode == 'own' then
+                    remove = tostring(pid) == tostring(PID)
+                else
+                    remove = tostring(pid) ~= tostring(PID)
+                        and (now - (tonumber(info.mtime) or now)) > STALE_SECONDS
+                end
+            end
+            if remove then
+                os.remove(full)
+                msg.verbose('iqiyi: 已清理临时文件 ' .. name)
+            end
+        end
+    end
+end
+
+mp.add_hook('on_unload', 50, function() cleanup_iqiyi_temp('own') end)
+
 local function build_curl_args(url, extra_headers)
     local args = {
         'curl', '-L', '-s', '--user-agent', user_agent
@@ -253,6 +288,7 @@ local function process_iqiyi_with_tvid(tvid, url, callback)
         msg.verbose(string.format('tvid: %s duration: %s pages: %d', tvid, tostring(duration), page))
 
         local servers = {}
+        cleanup_iqiyi_temp('stale')
         for i = 0, page - 1 do
             local part1 = tvid:sub(-4, -3) or ''
             local part2 = tvid:sub(-2) or ''

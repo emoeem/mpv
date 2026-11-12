@@ -22,8 +22,9 @@ if not globals.PLATFORM then
         globals.PLATFORM = 'windows'
     elseif mp.get_property_native('options/macos-force-dedicated-gpu', _) ~= _ then
         globals.PLATFORM = 'darwin'
+    else
+        globals.PLATFORM = 'other'
     end
-    return 'other'
 end
 
 --the osd_overlay API was not added until v0.31. The expand-path command was not added until 0.30
@@ -118,14 +119,15 @@ globals.audio_extensions = {}
 ---@type Set<string>
 globals.parseable_extensions = {}
 
----This table contains mappings to convert external directories to cannonical
+---This table contains path substitutions for converting external paths to canonical
 --locations within the file-browser file tree. The keys of the table are Lua
---patterns used to evaluate external directory paths. The value is the path
---that should replace the part of the path than matched the pattern.
---These mappings should only applied at the edges where external paths are
+--patterns used to evaluate external paths. Each value contains either a replacement string,
+-- or a function that takes a path and returns a replacement string.
+--These mappings should only be applied at the edges where external paths are
 --ingested by file-browser.
----@type table<string,string>
-globals.directory_mappings = {}
+---@alias PathSubstitution string|(fun(path: string): string|nil)
+---@type table<string,PathSubstitution>
+globals.path_substitutions = {}
 
 ---@class CurrentFile
 ---@field directory string?

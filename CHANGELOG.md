@@ -1,5 +1,58 @@
 # 更新记录
 
+## 2026-11-13（第二轮）· 同步收尾：紧急回退、实机冒烟修复与上游修复移植
+
+同步提交 `d850ecf` 之后的实机验证轮。宿主机实测：mpv v0.41.0，yt-dlp 2026.10.26、deno 2.9.8、
+wl-clipboard 2.3.0、vapoursynth 可导入、在线媒体 venv 健康（详见文末环境结论）。
+
+### 紧急修复（实机冒烟抓到）
+
+1. **`mpv.conf [hdr-2390]` 回退**：`tone-mapping-knee-offset` 是 mpv 0.42 选项，宿主机
+   0.41.0 报 `option not found` 且配置解析失败会阻止启动。回退为 `tone-mapping-param=2.0`
+   （Yaozhi 0.42 守卫一并撤下，注释说明 0.42 后可换回）。同轮把 `[SDR-target]` 等保留。
+2. **`history-bookmark.lua` 加载即崩修复**：上游 1.0.9-2 把旧的 getenv nil 防卫弄丢了，
+   Linux 无 APPDATA → `gsub(nil)` 崩溃。该问题 9.7 版就存在（脚本崩溃不影响 mpv，一直
+   未察觉）。双修：`history_bookmark.conf` 的 `history_dir` 改为 `~~/files/historybookmarks`
+   （走 expand-path 分支），脚本 var 分支补 `or mp.find_config_file('.')` 防卫。
+
+### 上游修复移植（Tony15246/uosc_danmaku 10.30 五提交核对）
+
+| 上游提交 | 处理 |
+| --- | --- |
+| #436 iqiyi 临时文件清理 + message_alignment 拼写 | **移植**：`sites/iqiyi.lua` 增 `cleanup_iqiyi_temp`（on_unload 清本进程、新下载前清 1h 前他人残留，readdir 用 ipairs）；`options.lua`/`render.lua` 三处 `message_anlignment` → `message_alignment`（两侧一致所以此前「带病自洽」，conf 无该键无影响） |
+| #435 mgtv 早期退出 callback(false) | **已包含**：Yaozhi 版错误路径均有 callback(false) |
+| #434 FALLBACK_TRIGGER 大小写 | **已于同步时修复**（与上游同一 bug 各自发现） |
+| #433 搜索完成菜单位移 | **不移植**：Yaozhi 架构已有 `ctx.finalized` 单渲染守卫 + 生成号时效检查，等价覆盖；其摘要行是另一种 UX 方案。仅补进 `input.terminate` 0.1s 超时回调的 `request_is_current` 复查（上游同类守卫） |
+| iqiyi curl 参数顺序 | **已包含**：Yaozhi 1.0.8-3 的修法不同但等价（table.insert 尾插 --output） |
+
+### 插件升级与环境收尾
+
+- **file-browser 整体更新到上游 721ee1c（2026-10-22）**：本地经核对无手工定制（纯旧版
+  上游），按 manager replace 语义先备份 `archive/2026-11-13-file-browser-pre-update.tar.gz`
+  再整体替换；conf 与 Yaozhi addon 均不踩上游 `directory_mappings → path_substitutions`
+  重构（deprecated 兼容层仍在）。
+- **manager.json**：uosc_danmaku 源新增 `note` 字段说明 baseline d8c1cd8 自本日起仅为漂移
+  参考（弹幕主体已是 Yaozhi V1.0.9-2 血统），上游修复按公告核对后手工移植。
+- **online-media/runtime-manifest.json 改写**：旧 manifest 描述的是 Yaozhi Windows 便携
+  运行时（windows-x86_64），与本地宿主机建的 Linux venv 错配导致 deploy 永远报「须按平台
+  重建」。实测 venv 本身健康（Python 3.14.9 / streamlink 8.5.0 / yt-dlp 2026.10.26），
+  manifest 改写为 linux-x86_64 真实描述后 deploy 转绿，**无需重建**。
+- **`uosc_danmaku.conf` 启用 `auto_fallback_search=yes`**：自动匹配失败自动弹搜索框
+  （FALLBACK_TRIGGER 命名 bug 已修，该特性首次实际可用）。
+- **`stats.conf`** 注释四个旧版 position 键（现行 mpv 不识别，仅产生警告噪音）。
+
+### 宿主机环境结论（distrobox-host-exec 实测）
+
+yt-dlp 2026.10.26 ✓、deno 2.9.8 ✓、wl-clipboard 2.3.0 ✓、vapoursynth 可导入 ✓、
+在线媒体 venv 健康 ✓。此前规划的「安装 deno / yt-dlp / vapoursynth / 重建 venv」全部
+不再需要；无剩余系统包待装项。
+
+### 验证
+
+- 本轮改动 Lua 全过 `luac5.1 -p`；宿主机 `mpv --idle` 5s 冒烟无任何 error/Lua 输出
+  （修复前有 history-bookmark.lua:88 崩溃）。
+- `deploy.py --check` 在线媒体 venv 项转绿。
+
 ## 2026-11-13 · 同步 Yaozhi V1.0.9-2（含 1.0.8-3 / 1.0.9 / 1.0.9-1 / 1.0.9-2 四个公告）
 
 来源：`~/Downloads/Yaoplayer-1.0.9-2/portable_config`（2026.11.06 版便携包，mpv 0.42.0 核心）。

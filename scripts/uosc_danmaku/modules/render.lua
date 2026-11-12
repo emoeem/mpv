@@ -1875,7 +1875,7 @@ local function layout_message(text)
     local displayarea = tonumber(options.displayarea) or 0
     if displayarea > 0 then
         local fullscreen = mp.get_property_native('fullscreen') == true
-        local top_aligned = tonumber(options.message_anlignment) and tonumber(options.message_anlignment) >= 7
+        local top_aligned = tonumber(options.message_alignment) and tonumber(options.message_alignment) >= 7
         if fullscreen and top_aligned then
             local picture_left, picture_top, _, picture_bottom = get_video_bounds(width, height)
             local picture_height = picture_bottom - picture_top
@@ -1926,7 +1926,7 @@ local function render_active_message()
     local message = string.format(
         "{\\an%d\\pos(%d,%d)\\fs%d\\fn%s\\b1\\c&HF2E655&"
             .. "\\3c&H160B04&\\3a&H00&\\bord%d\\blur0.35\\shad0\\q2}%s",
-        options.message_anlignment, x, y, font_size, options.fontname, border, active_message
+        options.message_alignment, x, y, font_size, options.fontname, border, active_message
     )
     message_overlay.res_x = width
     message_overlay.res_y = height

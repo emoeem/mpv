@@ -16,7 +16,8 @@
       "source": ".",
       "destination": "scripts/uosc_danmaku",
       "mode": "check",
-      "baseline": "d8c1cd8b4786c286a19079caef3f9ac9fa64933d"
+      "baseline": "d8c1cd8b4786c286a19079caef3f9ac9fa64933d",
+      "note": "2026-11-13 起弹幕主体为 Yaozhi V1.0.9-2 血统（三方合并，保留中文站点与本地特性），baseline d8c1cd8 仅作上游漂移参考；上游新修复需对照公告核对后手工移植（如 iqiyi 临时清理、message_alignment 拼写）"
     },
     {
       "name": "anime4k",

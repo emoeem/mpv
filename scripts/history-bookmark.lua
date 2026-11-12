@@ -85,7 +85,10 @@ elseif o.history_dir:find('^/:dir%%script%%') then
     history_dir = o.history_dir:gsub('/:dir%%script%%', mp.find_config_file('scripts'))
 elseif o.history_dir:find('/:var%%(.*)%%') then
     local os_variable = o.history_dir:match('/:var%%(.*)%%')
-    history_dir = o.history_dir:gsub('/:var%%(.*)%%', os.getenv(os_variable))
+    -- EmoPlay: 环境变量缺失（Linux 无 APPDATA）时回退 mpv 配置目录，
+    -- 避免 gsub 收到 nil 使整个脚本加载失败（上游 1.0.9-2 未防）。
+    local replacement = os.getenv(os_variable) or mp.find_config_file('.') or ''
+    history_dir = o.history_dir:gsub('/:var%%(.*)%%', replacement)
 else
     history_dir = mp.command_native({ "expand-path", o.history_dir }) -- Expands both ~ and ~~
 end

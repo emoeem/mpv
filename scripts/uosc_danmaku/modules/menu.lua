@@ -173,6 +173,8 @@ local function finalize_search_menu(ctx)
             show_message("", 0)
             input.terminate()
             mp.add_timeout(0.1, function()
+                -- 上游 #433 同类守卫：0.1s 窗口内已切新搜索则丢弃过期目录。
+                if not request_is_current(ctx.generation, ctx.menu_type) then return end
                 open_menu_select(final_items)
             end)
         end
