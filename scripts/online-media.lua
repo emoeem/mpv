@@ -320,6 +320,8 @@ local function publish()
     set_user_data('resolver', state.resolver)
     set_user_data('status', state.status)
     set_user_data('canonical-url', state.canonical_url)
+    -- 弹幕侧消费 canonical-url 前用它核对身份，防止上一条视频的残留值挂错弹幕。
+    set_user_data('source-url', state.source_url)
     set_user_data('quality', state.candidates and state.candidates[state.candidate_index]
         and state.candidates[state.candidate_index].quality or '')
     -- 主菜单那一行的摘要（档位 · 分辨率 · 帧率），完整标签仍走上面的 quality。

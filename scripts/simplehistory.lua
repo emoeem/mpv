@@ -269,7 +269,8 @@ elseif o.log_path:match('^/:dir%%script%%') then
 	o.log_path = o.log_path:gsub('/:dir%%script%%', mp.find_config_file('scripts'))
 elseif o.log_path:match('^/:var%%(.*)%%') then
 	local os_variable = o.log_path:match('/:var%%(.*)%%')
-	o.log_path = o.log_path:gsub('/:var%%(.*)%%', os.getenv(os_variable))
+	-- 环境变量缺失时 gsub(nil) 会崩（同 history-bookmark 2026-11-13 修法），兜底到配置目录。
+	o.log_path = o.log_path:gsub('/:var%%(.*)%%', os.getenv(os_variable) or mp.find_config_file('.'))
 end
 local log_fullpath = utils.join_path(o.log_path, o.log_file)
 

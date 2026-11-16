@@ -1534,6 +1534,7 @@ end
 
 -- 总集合弹幕菜单
 local total_menu_items_config = {
+    { title = i18n.t("开/关 弹幕显示"), action = "show_danmaku_keyboard" },
     { title = i18n.t("弹幕搜索"), action = "open_search_danmaku_menu" },
     { title = i18n.t("动漫弹幕搜索（152468）"), action = "open_anime_danmaku_menu", anime_only = true },
     { title = i18n.t("从源添加弹幕"), action = "open_add_source_menu" },
@@ -1549,9 +1550,16 @@ function open_add_total_menu_uosc()
 
     for _, config in ipairs(total_menu_items_config) do
         if not config.anime_only or #get_api_server_list(options.anime_api_server) > 0 then
+        local hint
+        if config.action == 'show_danmaku_keyboard' then
+            -- 开关项实时反映当前状态，与 uosc 按钮/右键菜单勾选保持一致。
+            hint = get_danmaku_visibility() and i18n.t("已开启") or i18n.t("已关闭")
+        elseif config.action == 'open-color-menu' then
+            hint = color_status()
+        end
         table.insert(items, {
             title = config.title,
-            hint = config.action == 'open-color-menu' and color_status() or nil,
+            hint = hint,
             value = { "script-message-to", mp.get_script_name(), config.action },
             keep_open = false,
             selectable = true,

@@ -26,6 +26,11 @@ local request_generation = 0
 local observing_time = false
 local mute_before_sponsor = false
 local muted_by_sponsorblock = false
+-- 会话级总开关：CTRL+ALT+b（toggle-sponsorblock 消息）切换。
+-- 发布到 user-data 供右键菜单 #@state= 勾选态读取。
+local enabled = true
+local SB_ENABLED_PROP = "user-data/sponsorblock/enabled"
+mp.set_property_bool(SB_ENABLED_PROP, enabled)
 
 local function positive_timeout(value, fallback)
     value = tonumber(value)
@@ -91,7 +96,7 @@ local function normalize_ranges(value)
 end
 
 local function skip_ads(_, pos)
-    if pos ~= nil and ranges ~= nil then
+    if pos ~= nil and enabled and ranges ~= nil then
         local in_mute_segment = false
         for _, v in pairs(ranges) do
             if v.actionType == "skip" and v.segment[1] <= pos and v.segment[2] > pos then
@@ -161,6 +166,8 @@ end
 local function file_loaded()
     reset_state()
 
+    if not enabled then return end
+
     local video_path = mp.get_property("path", "")
     local video_referer = mp.get_property("http-header-fields", ""):match("[Rr]eferer:%s*([^,\r\n]+)") or ""
     local purl = mp.get_property("metadata/by-key/PURL", "")
@@ -205,3 +212,23 @@ end
 
 mp.register_event("file-loaded", file_loaded)
 mp.register_event("end-file", end_file)
+
+-- input.conf 的「工具 > 广告跳过 > 开/关 SponsorBlock」入口（CTRL+ALT+b）。
+mp.register_script_message("toggle-sponsorblock", function()
+    enabled = not enabled
+    mp.set_property_bool(SB_ENABLED_PROP, enabled)
+    if enabled then
+        if ranges and #ranges > 0 then
+            -- 当前文件已有分段数据：直接恢复观察。
+            observing_time = true
+            mp.observe_property("time-pos", "native", skip_ads)
+        else
+            -- 重新武装当前文件（重置后重新抓取分段）。
+            file_loaded()
+        end
+        mp.osd_message("[sponsorblock] enabled")
+    else
+        reset_state()
+        mp.osd_message("[sponsorblock] disabled")
+    end
+end)

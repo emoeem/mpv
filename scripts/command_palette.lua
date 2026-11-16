@@ -80,7 +80,8 @@ function get_temp_dir()
     local is_windows = package.config:sub(1,1) == "\\"
 
     if is_windows then
-        return os.getenv("TEMP") .. "\\"
+        -- TEMP 未设置时 getenv 返回 nil，拼接会崩；兜底到 /tmp。
+        return (os.getenv("TEMP") or "/tmp") .. "\\"
     else
         return "/tmp/"
     end

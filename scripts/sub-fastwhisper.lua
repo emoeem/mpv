@@ -53,3 +53,5 @@ local function generate_subtitles()
 end
 
 mp.add_key_binding("Ctrl+w", "fastwhisper-gen", generate_subtitles)
+-- input.conf 的 ALT+f「生成 AI 字幕」入口（此前消息名无接收者，键位是死键）。
+mp.register_script_message("sub-fastwhisper", generate_subtitles)

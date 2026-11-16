@@ -18,11 +18,12 @@ function M.new(settings)
         publish(status or 'idle')
     end
     function self:reset()
-        self:cancel(); self.key=nil; self.approved=false; self.failure_code=nil
+        self:cancel(); self.key=nil; self.approved=false; self.failure_code=nil; self.spec=nil
     end
     function self:allow(spec)
         local key = key_for(spec)
         if self.key ~= key then self:reset(); self.key=key end
+        self.spec = spec
         if self.approved then return true end
         if self.status ~= 'idle' then return false end
         publish('preparing')
@@ -79,10 +80,33 @@ function M.new(settings)
     function self:restore(spec)
         local key = key_for(spec)
         if self.key ~= key then self:reset(); self.key=key end
+        self.spec = spec
         if self.status == 'idle' then publish('ready') end
     end
     function self:retry()
         self:cancel(); self.approved=false; self.failure_code=nil
+    end
+    -- Withdraw an approval after activation failed or was protected:
+    -- clears approval and returns to idle so allow() can prepare again.
+    function self:revoke()
+        self.approved = false
+        if self.status == 'enabled' then publish('idle') end
+        self.spec = nil
+    end
+    -- Mark the approved activation as fully committed (warm-up completed).
+    function self:commit()
+        self.approved = true
+    end
+    -- The playlist moved to the next file: keep an in-flight or completed
+    -- preparation alive so a same-spec file reuses it (allow() resets when
+    -- the spec differs). Returns the still-valid spec, or nil.
+    function self:next_file()
+        if self.spec and self.key and (self.status == 'preparing'
+            or self.status == 'ready' or self.status == 'enabled') then
+            return self.spec
+        end
+        self.spec = nil
+        return nil
     end
     publish('idle')
     return self

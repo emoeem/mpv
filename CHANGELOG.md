@@ -1,5 +1,161 @@
 # 更新记录
 
+## 2026-11-17（第三轮）· libass emoji 回退修复（fontconfig 侧）
+
+实机冒烟发现：视频标题含 emoji（🐋，U+1F40B）时 libass 反复告警
+「fontselect: failed to find any fallback with glyph 0x1F40B」且 OSD 里 emoji 空白。
+根因（读 libass 0.17.5 `ass_fontconfig.c` 确认）：回退列表 = `FcFontSort(sans-serif +
+outline=true, trim=true)`，按顺序取第一个含该字形的字体；纯位图的 Noto Color Emoji
+被拿到后轮廓渲染失败即告警（装不装 noto-fonts-emoji 都一样，mpv.conf 原注释
+「libass 不做 emoji 回退」说的就是这个）。fontconfig 的 `emoji` 通用族链也是
+Color 优先（/etc/fonts/conf.d/60-generic.conf），单色矢量字体永远轮不到。
+
+修复（均在仓库外字体环境，仓库内仅改一行过时注释）：
+- 下载 google/fonts 单色 Noto Emoji（矢量轮廓；VF 经宿主 fontTools 实例化
+  wght=400 为静态，规避 VF 命名实例的族名匹配异常）至
+  `~/.local/share/fonts/NotoEmoji/NotoEmoji-Regular.ttf`。
+- 新增 `~/.config/fontconfig/conf.d/96-mfga-emoji-outline.conf`：把 Noto Emoji 以
+  `append_last + binding=strong` 挂进 sans-serif 链尾。实测约束：`binding=weak`
+  会被 FcFontSort 的 trim 剔除（其字符集被排位更前的 Color 覆盖），必须 strong/same；
+  strong 后 Noto Emoji 升至排序第 4 位，成为回退扫描里第一个含 emoji 的轮廓字体。
+- 实测：mpv 渲染含 🐋 字幕，回退告警 23 → 0；回归检查 `fc-match sans-serif`
+  仍 MFGA、CJK 缺字回退仍 MFGA、显式请求 Noto Color Emoji 不受影响（桌面彩色
+  emoji 保持原样，仅 libass 场景改用单色轮廓版）。
+- `mpv.conf:99` 过时注释（「libass 不做 emoji 字体回退」）同步改写。
+
+### 回修（宿主机实测抓到）
+
+- **统计页第 2 页（渲染步骤与耗时）打开即崩**：卡片化改造时 `append_perfdata(nil,
+  nil, true, sections)` 传入空 header，而函数循环前的表头 prelude 无条件对 `h` 取
+  长度（`attempt to get length of local 'h' (a nil value)`）。修复：`sections_out`
+  模式跳过 prelude（表头/说明行已并入各 section）。带桩单测覆盖三种调用模式
+  （卡片化/常驻页/overview 回退路径）与卡片行内容（说明行并入、紧凑数字、合计行）。
+
+## 2026-11-17（第二轮）· 统计页可读性 + 死键修复 + 四项新功能
+
+实机截图暴露统计页可读性问题（轨道页打印原始 CDN URL、快捷键页原样输出 `#menu:`/`#@state=`
+注释、页眉左缘裁切），顺带全库体检后批量修复死键与隐患，并落地四项新功能。
+
+### A. 统计页可读性（`scripts/stats.lua` + `script-opts/stats.conf`）
+
+1. **翻译器加固**：`auto_translate_text` 模糊循环原先 `text:gsub(en, zh, 1)` 把英文键当
+   Lua 模式使用（未闭合 `(` 的键靠替换串不含 `%1` 侥幸通过，`[" sec)"]` 这类带孤立 `)`
+   的键命中即抛 `invalid pattern capture`，属潜在渲染炸点）。改为 plain `find` + 子串拼接。
+2. **轨道页 URL 缩短**：新增 `shorten_remote_name()`（剥 query、深层路径折叠为
+   `主机/…/文件名`、仍超长首尾省略），应用于轨道 title/external-filename 与文件名展示；
+   新选项 `track_url_max_length=96`。
+3. **快捷键页重构**（`get_kbinfo_lines`）：`#menu: A > B > C` 顶层段作分组标题、末段作
+   显示名（替代英文命令名分组），`#@state=` 等注解剥除；原始命令降级为标签色并截断
+   96 字节（`truncate_utf8` 保证多字节安全）。行不再超宽，解决页眉页脚左缘裁切的
+   主因（快捷键页是唯一全 `\q2` 不换行页面，超宽事件 bbox 会把整块内容撑出画布）。
+   键列每行重置正文字色，降色说明不泄漏。`/` 搜索仍按原始 key/cmd/comment 匹配。
+4. **轨道页卡片化**：`track_info` 改走概览页 `fit_overview` 管线（文件信息一节 + 每条
+   选中轨道一节，节标题按类型命名、多条同类型带序号；`add_track` 加 `no_header` 参数
+   避免类型头重复）；`fit_overview` 双栏分配推广为奇偶交替（对概览页 4 节行为完全等价）；
+   `print_page`/徽标的 `key_page_1` 门控改为按 `overview_panels`（每次渲染重建，天然按页
+   隔离），轨道页同样获得卡片底板与胶囊徽标。旧版外观路径保持原排版。
+5. **观影统计页（第 7 页）**：见功能段。页脚 entries 改显式键名映射（观影=7 插在轨道与
+   帮助之间），帮助页键位清单同步。
+6. **渲染/缓存/帮助页卡片化**（第二轮补齐，实机截图暴露这三页仍是一整块大卡片）：
+   `vo_stats` 新帧/重绘各一张卡（`append_perfdata` 增加 `sections_out` 卡片化输出分支；
+   数字列改紧凑 `241/277/296` 分隔并弃用 `%5d` 等宽补位：它依赖 font_mono，而本配置的
+   font_mono 是比例字体根本补不齐；单位说明行并入首卡）、`cache_stats` 缓存信息/范围
+   两张卡（顺带解决单面板回退把图表 bbox 一起框进去导致的"卡片比文字宽"）、
+   `troubleshooting_stats` 每个帮助主题一张卡；无数据/终端/旧版外观路径保持原排版。
+   stats.conf 图表配色从 Catppuccin（青填充紫描边）换成 Dracula（紫填充 #BD93F9、
+   描边 #44475A、底 #21222C）。第 0 页（内部性能信息）保留专用多栏布局未动。
+
+### B. 死键与隐患修复
+
+1. **`CTRL+ALT+b` SponsorBlock 开关复活**：`sponsorblock_minimal.lua` 此前全文无任何
+   message/binding 注册（静默死键）。补 `toggle-sponsorblock` 消息处理器（会话级开关 +
+   OSD 提示 + 重新武装当前文件），发布 `user-data/sponsorblock/enabled` 供右键菜单
+   `#@state=` 勾选；input.conf 去掉误导的「(默认已启用)」。
+2. **`ALT+f` 生成 AI 字幕复活**：`sub-fastwhisper.lua` 只注册了 `fastwhisper-gen` 键位，
+   input.conf 发的 `sub-fastwhisper` 消息无接收者。补 `register_script_message`。
+3. **getenv nil 防卫**：`simplehistory.lua`/`simplebookmark.lua` 的 `/:var%...%` 分支
+   （env 缺失时 `gsub(nil)` 崩溃，与 2026-11-13 修的 history-bookmark 同模式，兜底配置
+   目录）、`command_palette.lua` 的 Windows TEMP 分支（兜底 `/tmp`）。
+4. **README/FIRST-RUN 键位勘误**：TAB 实由 inputevent 接管为 uosc 播放菜单（保持现状）；
+   `CTRL+F` 已是 uosc 流质量菜单（quality-menu 从未分发），删除 `ALT+F` 音频格式菜单
+   残留行；删除已随死键清理移除的 `ALT+_` 检查更新行；删除已移除的 `pause` profile 行；
+   FIRST-RUN 的弹幕键（`CTRL+d` 开关/`CTRL+D` 综合）、`CTRL+f`（ASSRT）、`Ctrl+p`
+   （命令面板）大小写修正。
+
+### C. 新功能（3 项）
+
+1. **弹幕屏蔽词管理**（新 `scripts/danmaku-blocklist.lua` + `CTRL+SHIFT+L`）：读写
+   uosc_danmaku 的 `blacklist_path`（未配置时默认 `~~/files/danmaku-blacklist.txt`，
+   `uosc_danmaku.conf` 已激活该路径）；uosc 菜单列出词条（点击删除）+ 添加入口
+   （`mp.input` 输入，无该模块时提示手编）；`uosc_danmaku/modules/parse.lua` 新增
+   `reload-blacklist` 消息（本地改动记档），改词即时生效免重启。右键菜单
+   「工具 > 弹幕功能 > 弹幕屏蔽词管理」。
+2. **网速徽标**（新 `scripts/network-speed-badge.lua` + `script-opts/network_speed.conf`）：
+   `demuxer-via-network` 且 `demuxer-cache-speed` 达到阈值（默认 10 KB/s）时经 uosc
+   底栏显示 `↓ 速率`，本地文件/无流量自动隐藏（补齐 alist_speed_indicator 只覆盖
+   AList 的空缺）。
+3. **观影时长统计**（`stats.lua` 第 7 页 + 常驻采集器）：播放中每 30s 计入
+   `~~/files/watch-time.json`（dates 日累计 + titles 标题明细，明细只保留 30 天），
+   60s 节流落盘、shutdown/end-file 兜底；页面展示今日/昨日/本周（周一起）/本月/
+   最近 7 天 + 7 天明细 + 今日 TOP 标题。
+
+### 验证
+
+- `luac5.1 -p` 通过全部改动/新增 lua（stats.lua、sponsorblock_minimal.lua、
+  sub-fastwhisper.lua、simplehistory.lua、simplebookmark.lua、command_palette.lua、
+  network-speed-badge.lua、danmaku-blocklist.lua、parse.lua）；
+  en.json 合法且全表 2033 键严格码点排序（含修正上一轮「展开哔哩哔哩短链失败」词条的
+  错位：展 U+5C55 应在 峰 U+5CF0 之前）；stats.lua 主块局部变量 191/200。
+- 宿主机冒烟清单见对话（统计页 4/5/7、屏蔽词菜单、网速徽标、SponsorBlock
+  开关、ALT+f）。
+- 待机时钟功能（idle-clock.lua）曾在本轮实现并实机验证，随后按用户要求整体移除
+  （脚本与 conf 已删，无残留引用）。
+
+## 2026-11-17 · 统计页 Dracula 主题对齐 + B 站短链弹幕直连
+
+两个用户需求：统计信息页配色与全局 uosc Dracula 主题不搭；解析 B 站视频（b23.tv 短链为主）
+看不到对应弹幕。
+
+### A. 统计页外观（`scripts/stats.lua` + `script-opts/stats.conf`）
+
+- 新增主题配色选项（ASS/BGR 顺序，与本文件 `font_color`/`plot_*` 既有约定一致）：
+  `accent_color=F993BD`（Dracula 紫 #BD93F9）、`label_color=A47262`（#6272A4）、
+  `panel_color=2C2212`（#21222C）、`panel_alpha=33`、`panel_border_color=5A4744`（#44475A），
+  全部写入 stats.conf 文档；`read_options` 回调里 `theme_refresh()` 刷新快照，运行期改配置跟随。
+- 替换全部 4 处硬编码青色 `&HFFF070&`（页脚活动页/面板标题/版本徽标/滚动计数器）与卡片底
+  `&H3A2410&`；卡片底板加 1 逻辑像素 `#44475A` 描边、圆角 8→10，并抽出共用的
+  `round_rect_path()`（主块局部变量已达 Lua 5.1 的 200 上限，按本文件 `fit_overview` 等的
+  既有手法用全局赋值）。
+- 概览卡片标题下沿新增强调色短线（`fit_overview` 建面板时记录 `panel.divider_y`，
+  `show_stats_background` 绘制）；版本徽标在概览页包上强调色胶囊（复用既有 stats_measure
+  宽度测量，缓存进 `overview_layout.badge.width`，无法测量时退化为纯文字）。
+- 旧版外观开关 `panel_background=no` / `accent_colors=no` 语义不变，回归路径保持。
+
+### B. B 站弹幕（`scripts/uosc_danmaku/`，本地改动记档）
+
+- **b23.tv / bili2233 短链直连**（核心修复）：`main.lua load_danmaku_for_url` 原先只认
+  `bilibili.com`/`bilivideo.*`，短链掉进 dandanplay 按标题匹配基本失败。新增分支：优先读
+  `online-media.lua publish()` 已发布的 `user-data/online-media/canonical-url`（yt-dlp 解析
+  后即完整视频页；publish 同步新增 `source-url` 发布，弹幕侧仅在 `source-url == path` 时
+  信任 canonical，防止上一条视频的残留值挂错弹幕），否则 `sites/bilibili.lua` 新增的
+  `resolve_bilibili_short_link()` 用 `curl -sIL -o /dev/null -w '%{url_effective}' -m 12`
+  展开重定向（沿用 UA/cookie/proxy 约定），之后与普通页面链接共用
+  BV/av/ep/分P → cid → comment.bilibili.com 弹幕链路。
+- **开关入口**（默认关，按用户要求保持）：弹幕综合菜单（CTRL+D）顶部新增「开/关 弹幕显示」
+  项（复用 `show_danmaku_keyboard` 消息），uosc 菜单实时附「已开启/已关闭」状态 hint；
+  input.conf 右键菜单「字幕 > 字幕/弹幕 > 开/关 弹幕显示」补
+  `#@state=(p['user-data/uosc_danmaku/danmaku-switch-on'] and 'checked')` 勾选态（该属性
+  已由 persist_properties.conf 持久化）。
+- i18n：en.json 补「展开哔哩哔哩短链失败，无法获取对应弹幕」；「开/关 弹幕显示」「已开启」
+  「已关闭」词条已存在，直接复用。
+
+### 验证
+
+- `luac5.1 -p` 通过（stats.lua / uosc_danmaku main.lua / sites/bilibili.lua / modules/menu.lua
+  / online-media.lua）；HEAD 基线对比确认未顶爆 200 局部变量上限。
+- 宿主机冒烟待执行：b23.tv 短链 + www 链接各验一次弹幕自动加载；`i` 看统计页新外观；
+  CTRL+D 综合菜单与右键菜单验证开关状态。
+
 ## 2026-11-13（第三轮）· 优化收口：场景菜单着色器互斥与孤儿清理
 
 第二轮实机探测后的三个小收口，全部为低风险改动：

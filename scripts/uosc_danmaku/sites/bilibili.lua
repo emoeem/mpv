@@ -205,6 +205,38 @@ local function download_bilibili_danmaku(path, cid, from_menu, callback)
     end)
 end
 
+-- 展开 b23.tv / bili2233 等短链重定向，回调最终的 bilibili.com 页面地址。
+-- 与 build_curl_args 保持同一套 UA/cookie/proxy 约定，但需要跟随重定向链
+-- 并取回落地地址，因此单独拼参数（-o /dev/null 只吞掉各跳的响应头）。
+function resolve_bilibili_short_link(path, callback)
+    local args = {
+        'curl', '-sIL', '-o', '/dev/null', '-w', '%{url_effective}', '-m', '12',
+        '--user-agent', user_agent,
+    }
+    if options.cookie_file and options.cookie_file ~= '' then
+        table.insert(args, '-b')
+        table.insert(args, mp.command_native({'expand-path', options.cookie_file}))
+    end
+    if options.proxy and options.proxy ~= '' then
+        table.insert(args, '-x')
+        table.insert(args, options.proxy)
+    end
+    table.insert(args, path)
+    call_cmd_async(args, function(error, out)
+        local url = out and out:gsub('%s+', '') or ''
+        if error or not url:find('bilibili%.com') then
+            if error then
+                msg.warn("Failed to resolve bilibili short link: " .. tostring(error))
+            elseif url ~= '' then
+                msg.warn("Bilibili short link did not land on bilibili.com: " .. url)
+            end
+            callback(nil)
+            return
+        end
+        callback(url)
+    end)
+end
+
 -- 为 bilibli 网站的视频播放加载弹幕
 function load_danmaku_for_bilibili(path, callback)
     callback = callback or function() end

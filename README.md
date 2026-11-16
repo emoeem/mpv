@@ -23,7 +23,7 @@
 | | |
 |---|---|
 | 🎯 **内容自适应画质** | 按动画/真人 × SD/HD/4K × 帧率自动挂载 Anime4K / ArtCNN / FSRCNNX / SSimSuperRes 超分组，掉帧自动降档，HDR 与直播源自动避让 |
-| 💬 **全网弹幕** | uosc_danmaku：弹幕搜索/自动加载/自动关联剧集，B 站与爱腾优源，overlay 高刷渲染 |
+| 💬 **全网弹幕** | uosc_danmaku：弹幕搜索/自动加载/自动关联剧集，B 站与爱腾优源，b23.tv 短链直连，屏蔽词管理菜单改词即时生效，overlay 高刷渲染 |
 | 🔍 **在线中文字幕** | ASSRT 射手网 + Wyzie(TMDb) 双源搜索，AI 本地生成字幕（whisper），自动对时 |
 | 🎛️ **可视化均衡器** | 10 段 EQ 图形化拖拽，14 种预设，配置持久化；与比特流直通模式互锁 |
 | 🌐 **360° 全景视频** | mpv360 全套：等距柱状/双鱼眼/EAC 投影，键鼠自由视角 |
@@ -31,6 +31,8 @@
 | 🎨 **超分与插帧武器库** | Anime4K 全集 / AnimeJaNai / CuNNy / FSRCNNX / ArtCNN / ravu / RIFE 补帧，右键按需加载 |
 | 📺 **HDR 双引擎** | gpu-next 原生直通与 hdr-toys 着色器链双模式，SDR 内屏自动 tone-map |
 | 🔄 **自更新器** | manager.lua 第三方脚本/着色器检查更新，本地定制永不覆盖 |
+| 📊 **中文增强统计页** | 7 页卡片化布局（Dracula 主题可调），轨道页 URL 折叠、快捷键页按菜单分组，观影时长统计（今日/本周/最近 7 天） |
+| 📈 **实时网速徽标** | 网络流在 uosc 底栏显示下载速率，本地文件自动隐藏 |
 | 🖥️ **三平台自检** | deploy.py 部署自检与运行时准备，四态依赖报告 |
 
 <details>
@@ -408,7 +410,6 @@ HDR 源（pq/hlg）      → 不挂超分，交给 HDR 处理链
 | `fps-fix` | 高帧率视频改用音频同步，降低异常耗能 |
 | `8k-fix` | 8K 级别视频关闭高负载后处理并降低掉帧风险 |
 | `pgs-fix` | 修复超宽画面中 PGS 字幕的比例错位 |
-| `pause` | 暂停时取消置顶 |
 | `maximized` | 最大化时禁止自动调整窗口大小 |
 | `minimized` | 最小化时自动暂停 |
 | `end` | 播放结束后退出全屏和最大化 |
@@ -542,6 +543,7 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `uosc/` | 主播放界面、菜单、时间轴、顶栏、缩放和自定义按钮 |
 | `stats-indicator.lua` | 观察 `user-data/mpv-emo/stats-visible`，把 stats 面板开关状态映射到 uosc 按钮高亮与 tooltip |
 | `uosc_danmaku/` | 弹幕搜索、加载、延迟、保存、源管理和弹幕样式菜单 |
+| `danmaku-blocklist.lua` | 弹幕屏蔽词管理菜单（`CTRL+SHIFT+L`）：增删词写回 blacklist 文件并即时重载，免重启 |
 | `thumbfast.lua` | 时间轴缩略图预览，两阶段显示（先附近关键帧，再精确画面） |
 | `playlistmanager.lua` | 播放列表浏览、排序、移动、保存、随机和网络标题解析 |
 | `file-browser/` | OSD 文件浏览器、目录缓存、收藏和多选 |
@@ -596,7 +598,8 @@ uosc 快捷键面板由 `CTRL+ALT+u` 打开，界面开关由
 | `equalizer-gui.lua` | 可视化 10 段均衡器（`e` 键 / `音频` 菜单），14 种预设、配置持久化到 `script-opts/equalizer-gui.json`；与比特流直通互斥 |
 | `mpv360.lua` | 360° 全景视频（`视频 > 360°VR` 菜单），配合 `shaders/mpv360.glsl` 与 `script-opts/mpv360.conf`；键位仅 VR 激活期间生效 |
 | `music-mode.lua` | 音乐播放模式 |
-| `stats.lua` | 中文增强统计信息 |
+| `stats.lua` | 中文增强统计信息：7 页卡片化布局（主题配色见 `script-opts/stats.conf`），含观影时长统计页（`7`，数据在 `files/watch-time.json`）、轨道页 URL 折叠、快捷键页菜单分组 |
+| `network-speed-badge.lua` | 网络流在 uosc 底栏显示实时下载速率徽标，本地文件/无流量自动隐藏 |
 | `system-monitor.lua` | 系统监控 OSD：CPU/GPU 温度、功耗、内存、电池（对齐 Mpv∞ 的 Stats Page 6） |
 | `screenshot-to-clipboard.lua` | 截图并复制到剪贴板 |
 | `mpv-animated.lua` | 动图截取与导出 |
@@ -655,7 +658,7 @@ profile：着色器配置组（`[动画]`、`[AnimeJaNai]` 等）用 `glsl-shade
 | --- | --- |
 | `o` | 打开 uosc 内置文件浏览器 |
 | `CTRL+o` | 打开原生文件浏览器 |
-| `TAB` | 打开 OSD 文件浏览器并刷新 |
+| `TAB` | uosc 播放菜单 / 开关 UI（由 inputevent 接管；OSD 浏览器用 `o`） |
 | `` ` `` | 打开播放历史 |
 | `ALT+l` | 切换隐身历史模式 |
 | `CTRL+L` | 加载最后播放文件 |
@@ -665,8 +668,7 @@ profile：着色器配置组（`[动画]`、`[AnimeJaNai]` 等）用 `glsl-shade
 | `CTRL+N` | 添加文件书签 |
 | `ALT+C` | 打开剪贴菜单 |
 | `CTRL+c` | 复制文件路径和进度 |
-| `CTRL+F` | 打开 / 关闭 yt-dlp 视频格式菜单 |
-| `ALT+F` | 打开 / 关闭 yt-dlp 音频格式菜单 |
+| `CTRL+F` | 打开 uosc 流质量菜单 |
 | `CTRL+ALT+h` | 打开近期播放菜单 |
 
 ### 文件、窗口与播放状态
@@ -679,6 +681,7 @@ profile：着色器配置组（`[动画]`、`[AnimeJaNai]` 等）用 `glsl-shade
 | `ENTER` | 切换全屏 |
 | `i` | 临时显示统计信息 |
 | `I` | 常驻显示统计信息 |
+| `7` | 统计信息内：观影统计页（今日/本周/最近 7 天时长，`1`~`6`/`0` 切其他页） |
 | `l` | 设置或清除 A-B 片段循环 |
 | `L` | 切换单文件循环 |
 | `n` | 随机播放列表 |
@@ -897,7 +900,7 @@ profile：着色器配置组（`[动画]`、`[AnimeJaNai]` 等）用 `glsl-shade
 | `CTRL+ALT+d` | 弹幕延迟加 1 秒 |
 | `CTRL+ALT+a` | 弹幕延迟减 1 秒 |
 | `_` | 立即保存当前弹幕 |
-| `ALT+_` | 检查弹幕脚本更新 |
+| `CTRL+SHIFT+L` | 弹幕屏蔽词管理（增删词即时生效） |
 
 ### 鼠标、媒体键和退出
 

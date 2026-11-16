@@ -123,6 +123,13 @@ end
 local blacklist_file = mp.command_native({ "expand-path", options.blacklist_path })
 local black_patterns = load_blacklist_patterns(blacklist_file)
 
+-- 屏蔽词管理器（scripts/danmaku-blocklist.lua）改完文件后发该消息即时重载，
+-- 免重启。black_patterns 是本 chunk 的局部量，下方调用点经 upvalue 取到新值。
+mp.register_script_message("reload-blacklist", function()
+    black_patterns = load_blacklist_patterns(blacklist_file)
+    msg.info("弹幕屏蔽词已重载")
+end)
+
 -- 检查字符串是否在黑名单中
 function is_blacklisted(str, patterns)
     for _, pattern in ipairs(patterns) do

@@ -822,6 +822,26 @@ function load_danmaku_for_url(path)
         addon_danmaku(emby.dir,false)
         return
     end
+    if path:find('b23%.tv/') or path:find('bili2233%.com/') then
+        -- 短链本身带不出 BV/av：优先复用 online-media 已发布的规范地址
+        -- （source-url 与当前 path 一致才可信，防止上一条视频的残留值挂错弹幕），
+        -- 没有再自行展开重定向，之后与普通页面链接走同一条弹幕链路。
+        local canonical = mp.get_property_native('user-data/online-media/canonical-url', '')
+        local source_url = mp.get_property_native('user-data/online-media/source-url', '')
+        if canonical and source_url == path and canonical:find('bilibili%.com') then
+            load_danmaku_for_bilibili(canonical)
+            return
+        end
+        resolve_bilibili_short_link(path, function(resolved)
+            if resolved then
+                load_danmaku_for_bilibili(resolved)
+            else
+                show_message(i18n.t("展开哔哩哔哩短链失败，无法获取对应弹幕"), 3)
+                msg.warn("展开哔哩哔哩短链失败: " .. tostring(path))
+            end
+        end)
+        return
+    end
     if path:find('bilibili.com') or path:find('bilivideo.c[nom]+') then
         load_danmaku_for_bilibili(path)
         return

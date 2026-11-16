@@ -54,6 +54,7 @@ local o = {
     key_page_4 = "4",
     key_page_5 = "5",
     key_page_6 = "6",
+    key_page_7 = "7",
     key_page_0 = "0",
     -- For pages which support scrolling
     key_scroll_up = "UP",
@@ -72,9 +73,16 @@ local o = {
     -- 只影响配色与底板，不增删任何统计项、也不改布局与徽标等新功能。
     panel_background = true,         -- 统计卡片背景底板（旧版无此项）
     accent_colors = true,            -- 标题/标签/滚动提示使用主题色（旧版无此项）
+    -- 主题配色（ASS/BGR 顺序，与 uosc.conf 的 Dracula 主题保持一致）
+    accent_color = "F993BD",         -- 标题/徽标/页脚活动项强调色（RGB #BD93F9）
+    label_color = "A47262",          -- 字段标签颜色（RGB #6272A4）
+    panel_color = "2C2212",          -- 卡片底板填充色（RGB #21222C）
+    panel_alpha = "33",              -- 卡片底板透明度（ASS alpha：00 全显，ff 全隐）
+    panel_border_color = "5A4744",   -- 卡片底板描边色（RGB #44475A）
     filter_params_max_length = 100,  -- show one filter per line if list exceeds this length
     file_tag_max_length = 128,       -- only show file tags shorter than this length in bytes
     file_tag_max_count = 16,         -- only show the first x file tags
+    track_url_max_length = 96,       -- cap remote URLs shown as track titles / file names
     show_frame_info = false,         -- whether to show the current frame info
     term_clip = true,
     track_info_selected_only = true, -- only show selected track info
@@ -140,10 +148,23 @@ local o = {
     bindlist = "no",  -- print page 4 to the terminal on startup and quit mpv
 }
 
+-- 主题色快照：read_options 合并配置后刷新一次，运行期改配置也能跟随。
+-- 主块局部变量已到 Lua 5.1 的 200 上限，新增符号沿用本文件的全局赋值手法。
+theme = {}
+function theme_refresh()
+    theme.accent = o.accent_color ~= '' and o.accent_color or 'F993BD'
+    theme.label = o.label_color ~= '' and o.label_color or 'A47262'
+    theme.panel = o.panel_color ~= '' and o.panel_color or '2C2212'
+    theme.panel_border = o.panel_border_color ~= '' and o.panel_border_color or '5A4744'
+    theme.panel_alpha = o.panel_alpha ~= '' and o.panel_alpha or '33'
+end
+
 local update_scale
 require "mp.options".read_options(o, nil, function ()
+    theme_refresh()
     update_scale()
 end)
+theme_refresh()
 
 local format = string.format
 local max = math.max
@@ -310,6 +331,20 @@ local function it(t)
     return o.it1 .. t .. o.it0
 end
 
+
+-- 圆角矩形 ASS 矢量路径（\p1 用），c 为贝塞尔圆控制点系数。
+-- 徽标胶囊与卡片底板共用，须先于两者定义（主块局部变量已达上限，用全局赋值）。
+function round_rect_path(x0, y0, x1, y1, r)
+    local c = r * .55228475
+    return format('m %.3f %.3f l %.3f %.3f b %.3f %.3f %.3f %.3f %.3f %.3f '
+        ..'l %.3f %.3f b %.3f %.3f %.3f %.3f %.3f %.3f '
+        ..'l %.3f %.3f b %.3f %.3f %.3f %.3f %.3f %.3f '
+        ..'l %.3f %.3f b %.3f %.3f %.3f %.3f %.3f %.3f',
+        x0+r,y0,x1-r,y0,x1-r+c,y0,x1,y0+r-c,x1,y0+r,
+        x1,y1-r,x1,y1-r+c,x1-r+c,y1,x1-r,y1,
+        x0+r,y1,x0+r-c,y1,x0,y1-r+c,x0,y1-r,
+        x0,y0+r,x0,y0+r-c,x0+r-c,y0,x0+r,y0)
+end
 
 local function text_style()
     if not o.use_ass then
@@ -478,7 +513,7 @@ local function scroll_hint(search)
     return format(" {\\fs%s}%s{\\fs%s}", font_size * 0.66, hint, font_size)
 end
 
-local function append_perfdata(header, s, dedicated_page)
+local function append_perfdata(header, s, dedicated_page, sections_out)
     local vo_p = mp.get_property_native("vo-passes")
     if not vo_p then
         return
@@ -529,19 +564,23 @@ local function append_perfdata(header, s, dedicated_page)
         and not (o.custom_header and o.custom_header ~= '')
     local readable_table = dedicated_page and o.use_ass and o.auto_layout
         and not (o.custom_header and o.custom_header ~= '')
-    if readable_table then
-        h[#h+1] = bold(i18n.t('渲染耗时（μs）：')) .. o.nl .. o.indent .. o.indent
-            .. font_mono .. i18n.t(' 最近 /  平均 /  峰值 ') .. o.prefix_sep .. indent
-            .. i18n.t('占比') .. font .. o.prefix_sep .. o.prefix_sep .. i18n.t('渲染步骤')
-    elseif overview_columns then
-        h[#h+1] = o.nl .. o.indent .. bold(i18n.t("渲染耗时：")) .. o.prefix_sep
-            .. font_mono .. i18n.t(" 最近 /  平均 /  峰值  μs") .. font
-    else
-        h[#h+1] = format("%s%s%s%s%s%s%s%s",
-                         dedicated_page and "" or o.nl, dedicated_page and "" or o.indent,
-                         bold(i18n.t("渲染耗时：")), o.prefix_sep, font_small,
-                         i18n.t("（最近/平均/峰值 μs）"), font_normal,
-                         dedicated_page and scroll_hint() or "")
+    -- 卡片化模式（sections_out）不带 header/s：表头与说明行已并入各 section。
+    -- 此处必须跳过 prelude，否则对 nil 的 h 取长度直接崩（实测过）。
+    if not sections_out then
+        if readable_table then
+            h[#h+1] = bold(i18n.t('渲染耗时（μs）：')) .. o.nl .. o.indent .. o.indent
+                .. font_mono .. i18n.t(' 最近 /  平均 /  峰值 ') .. o.prefix_sep .. indent
+                .. i18n.t('占比') .. font .. o.prefix_sep .. o.prefix_sep .. i18n.t('渲染步骤')
+        elseif overview_columns then
+            h[#h+1] = o.nl .. o.indent .. bold(i18n.t("渲染耗时：")) .. o.prefix_sep
+                .. font_mono .. i18n.t(" 最近 /  平均 /  峰值  μs") .. font
+        else
+            h[#h+1] = format("%s%s%s%s%s%s%s%s",
+                             dedicated_page and "" or o.nl, dedicated_page and "" or o.indent,
+                             bold(i18n.t("渲染耗时：")), o.prefix_sep, font_small,
+                             i18n.t("（最近/平均/峰值 μs）"), font_normal,
+                             dedicated_page and scroll_hint() or "")
+        end
     end
 
     for index,frame in ipairs(sorted_keys(vo_p)) do  -- ensure fixed display order
@@ -550,7 +589,38 @@ local function append_perfdata(header, s, dedicated_page)
             or frame:gsub("^%l", string.upper)
         local f = "%s%s%s%s%s / %s / %s %s%s%s%s%s%s"
 
-        if dedicated_page then
+        if dedicated_page and sections_out then
+            -- 卡片化：每个 frame 一张卡；说明行并入首卡，数字列用紧凑分隔
+            -- （等宽补齐依赖 font_mono，而本配置的 font_mono 是比例字体，补不齐）。
+            local pp_c = function(i) return format("%d", i / 1000) end
+            local section = {title=label}
+            if index == 1 then
+                section[#section+1] = format("%s%s", o.indent,
+                    i18n.t("单位：微秒（μs），1000 μs = 1 ms。"))
+                section[#section+1] = format("%s%s", o.indent,
+                    format(i18n.t("仅含 VO 渲染计时，非端到端延迟；详见 %s 帮助。"), o.key_page_6))
+            end
+            section[#section+1] = format("%s%s%s%s%s%s%s%s", o.indent, font_mono,
+                i18n.t("最近/平均/峰值"), o.prefix_sep, i18n.t("占比"), font,
+                o.prefix_sep .. o.prefix_sep, i18n.t("渲染步骤"))
+            for _, pass in ipairs(data) do
+                section[#section+1] = format("%s%s%s/%s/%s %s%s%s%s%s",
+                    o.nl, o.indent, pp_c(pass["last"]), pp_c(pass["avg"]),
+                    pp_c(pass["peak"]), o.prefix_sep, p(pass["last"], last_s[frame]),
+                    font, o.prefix_sep, pass["desc"])
+                if o.plot_perfdata and o.use_ass then
+                    section[#section] = section[#section] ..
+                        generate_graph(pass["samples"], pass["count"],
+                                       pass["count"], pass["peak"],
+                                       pass["avg"], 0.9, 0.25)
+                end
+            end
+            section[#section+1] = format("%s%s%s/%s/%s %s%s%s%s%s",
+                o.nl, o.indent, pp_c(last_s[frame]), pp_c(avg_s[frame]),
+                pp_c(peak_s[frame]), o.prefix_sep, bold(i18n.t("合计")),
+                font, o.prefix_sep, "")
+            sections_out[#sections_out+1] = section
+        elseif dedicated_page then
             if readable_table and index>1 then s[#s+1]=o.nl end
             s[#s+1] = format("%s%s%s:", o.nl, o.indent,
                              bold(label))
@@ -644,6 +714,20 @@ local function keyname_cells(k)
     return klen
 end
 
+-- UTF-8 安全截断：超长时回退到完整字符边界，避免把多字节字符腰斩。
+function truncate_utf8(s, limit)
+    if #s <= limit then return s end
+    s = s:sub(1, limit)
+    local cut = #s
+    while cut > 0 do
+        local b = s:byte(cut)
+        if b < 0x80 then break end                  -- ASCII 边界，安全
+        if b >= 0xC0 then cut = cut - 1; break end  -- 残缺序列的首字节，丢弃
+        cut = cut - 1                               -- 连续字节，继续回退
+    end
+    return s:sub(1, cut) .. '…'
+end
+
 local function get_kbinfo_lines()
     -- active keys: only highest priority of each key, and not our (stats) keys
     local bindings = mp.get_property_native("input-bindings", {})
@@ -666,10 +750,26 @@ local function get_kbinfo_lines()
     end
 
     -- make an array, find max key len, add sort keys (.subject/.mods[_count])
+    -- 分组与显示名：优先 input.conf 的 #menu: 路径注释——顶层段作组标题、
+    -- 末段作显示名；#@state= 等脚本注解先行剥除；无菜单注释的绑定回退
+    -- 命令名分组（沿用 auto_translate 包装的翻译）。
     local ordered = {}
     local kspaces = ""  -- as many spaces as the longest key name
     for _, bind in pairs(active) do
-        bind.subject = cmd_subject(bind.cmd)
+        local comment = bind.comment or ""
+        local base = comment:match("^(.-)%s*#@") or comment
+        local menu = base:match("^menu:%s*(.-)%s*$")
+        if menu and menu ~= "" then
+            local parts = {}
+            for seg in menu:gmatch("[^>]+") do
+                parts[#parts+1] = seg:match("^%s*(.-)%s*$")
+            end
+            bind.subject = parts[1] or menu
+            bind.menu_leaf = parts[#parts] or menu
+        else
+            bind.subject = cmd_subject(bind.cmd)
+            bind.menu_leaf = nil
+        end
         if bind.subject ~= "ignore" then
             ordered[#ordered+1] = bind
             _,_, bind.mods = bind.key:find("(.*)%+.")
@@ -706,7 +806,9 @@ local function get_kbinfo_lines()
     -- word-wrapping is disabled for ass, or cut at 79 for the terminal
     local LTR = string.char(0xE2, 0x80, 0x8E)  -- U+200E Left To Right mark
     local term = not o.use_ass
-    local kpre = term and "" or format("{\\q2\\fn%s}%s", o.font_mono, LTR)
+    -- 每行键列重置正文字色：菜单叶名后的降色说明不会泄漏到下一行。
+    local normal_color = o.font_color ~= "" and o.font_color or "F8F8F2"
+    local kpre = term and "" or format("{\\q2\\fn%s\\1c&H%s&}%s", o.font_mono, normal_color, LTR)
     local kpost = term and " " or format(" {\\fn%s}", o.font)
     local spre = term and kspaces .. "   "
                        or format("{\\q2\\fn%s}%s   {\\fn%s}{\\fs%.3f\\u1}",
@@ -722,10 +824,19 @@ local function get_kbinfo_lines()
             append(info_lines, "", {})
             append(info_lines, "", { prefix = spre .. subject .. spost })
         end
-        if bind.comment then
-            bind.cmd = bind.cmd .. "  # " .. bind.comment
+        -- 快捷键页是唯一 \q2 不换行页面：超长命令行会把整个事件撑出画布
+        -- （页眉页脚左缘裁切的根因），这里统一封顶；完整命令仍可用 / 搜索到。
+        local cmd = truncate_utf8(bind.cmd, 96)
+        if bind.menu_leaf then
+            -- #menu: 路径的叶子作主显示名，原始命令降级为标签色说明（仅 ASS 模式）。
+            local dim_tag = term and "" or format("{\\1c&H%s&}", theme.label)
+            append(info_lines, cmd, {
+                prefix = kpre .. no_ASS(align_right(bind.key)) .. kpost
+                    .. no_ASS(bind.menu_leaf) .. "  " .. dim_tag,
+            })
+        else
+            append(info_lines, cmd, { prefix = kpre .. no_ASS(align_right(bind.key)) .. kpost })
         end
-        append(info_lines, bind.cmd, { prefix = kpre .. no_ASS(align_right(bind.key)) .. kpost })
     end
     return info_lines
 end
@@ -941,6 +1052,25 @@ local function get_safe_remote_title(media_title)
 end
 
 
+-- 远程地址展示限长：剥 query、深层路径折叠为 主机/…/文件名，仍超长则首尾省略。
+-- 仅作用于远程地址（scheme:// 或裸 *.ext?query 形态），本地路径原样返回。
+function shorten_remote_name(value, max)
+    if not value or value == '' then return value end
+    value = tostring(value)
+    local remote = is_remote_path(value)
+        or (value:find('?', 1, true) and value:match('^[%w%-%.]+%.%w+%?') ~= nil)
+    if not remote then return value end
+    value = value:gsub('[?#].*$', '')
+    if not max or #value <= max then return value end
+    local host, path = value:match('^%a[%w%+%.%-]*://([^/]+)(/.+)$')
+    if host then
+        local base = path:match('/([^/]+)$') or path
+        local folded = host .. '/…/' .. base
+        if #folded <= max then return folded end
+    end
+    return value:sub(1, max(1, max - 10)) .. '…' .. value:sub(-6)
+end
+
 local function get_display_filename()
     local filename = mp.get_property_osd("filename") or ""
     local media_title = mp.get_property_osd("media-title") or ""
@@ -953,7 +1083,8 @@ local function get_display_filename()
         return get_safe_remote_title(media_title) or "Remote media", media_title
     end
 
-    filename = filename:gsub("[?#].*$", ""):gsub(":[0-9]+$", "")
+    filename = shorten_remote_name(filename:gsub("[?#].*$", ""):gsub(":[0-9]+$", ""),
+        o.track_url_max_length)
     if remote and filename == "" then
         filename = get_safe_remote_title(media_title) or "Remote media"
     end
@@ -1493,13 +1624,19 @@ end
 
 local function stats_page_entries(ass)
     local entries = {}
-    for i,label in ipairs({i18n.t('概览'),i18n.t('渲染'),i18n.t('缓存'),i18n.t('快捷键'),i18n.t('轨道'),i18n.t('帮助')}) do
-        local key = o['key_page_'..i]
-        local text = format('%s %s',key,label)
+    -- 显式键名映射：观影统计的页键是 7，但展示顺序仍按页签排列。
+    local labels = {
+        {'key_page_1', '概览'}, {'key_page_2', '渲染'}, {'key_page_3', '缓存'},
+        {'key_page_4', '快捷键'}, {'key_page_5', '轨道'}, {'key_page_7', '观影'},
+        {'key_page_6', '帮助'},
+    }
+    for _, item in ipairs(labels) do
+        local key = o[item[1]]
+        local text = format('%s %s',key,i18n.t(item[2]))
         if ass then
             text = convert_osd_ass_controls(no_ASS(text))
             if key == curr_page then
-                local active = o.accent_colors and '\\1c&HFFF070&' or ''
+                local active = o.accent_colors and format('\\1c&H%s&',theme.accent) or ''
                 local normal = o.accent_colors and '\\1c&H'..(o.font_color~='' and o.font_color or 'FFFFFF')..'&' or ''
                 text = '{\\b1'..active..'}'..text..'{\\b0'..normal..'}'
             end
@@ -1622,8 +1759,20 @@ end
 
 -- Returns an ASS string with extended VO stats
 local function vo_stats()
-    local header, content = {}, {}
+    local stats = {}
     eval_ass_formatting()
+    if o.use_ass and o.auto_layout and not (o.custom_header and o.custom_header ~= '') then
+        -- 卡片化：新帧/重绘各一张卡（沿用概览页卡片引擎）；无 vo-passes 数据时
+        -- 落回原路径，由其输出"当前输出未提供渲染计时"提示。
+        if mp.get_property_native("vo-passes") then
+            local sections = {}
+            append_perfdata(nil, nil, true, sections)
+            if #sections > 0 then
+                return fit_overview(stats, sections)
+            end
+        end
+    end
+    local header, content = {}, {}
     add_header(header)
     append(header, "", {prefix=pages[o.key_page_2].desc, nl="", indent=""})
     local readable = o.use_ass and o.auto_layout and not (o.custom_header and o.custom_header~='')
@@ -1649,18 +1798,8 @@ end
 local function troubleshooting_stats()
     local header, content = {}, {}
     eval_ass_formatting()
-    add_header(header)
-    append(header, "", {prefix=pages[o.key_page_6].desc, nl="", indent=""})
     local topics={i18n.t('基本操作'),i18n.t('丢帧与同步'),i18n.t('渲染指标'),i18n.t('排障与限制')}
     local readable=o.use_ass and o.auto_layout and not (o.custom_header and o.custom_header~='')
-    append(header, format(i18n.t('帮助 %d/4：%s'),overlay_submissions.help_page,topics[overlay_submissions.help_page]), {indent=""})
-    if not readable then
-        append(header, format(i18n.t('%s/%s 切换帮助子页。'),
-            o.key_help_prev,o.key_help_next), {indent=""})
-        append(header, format(i18n.t("%s/%s 滚动；I（Shift+i）常驻开关。"),
-            o.key_scroll_up, o.key_scroll_down), {indent=""})
-    end
-    header[#header+1] = o.nl
     local sections = {
         {i18n.t("打开统计"), i18n.t("i：临时显示；I（Shift+i）：常驻开关。")},
         {i18n.t("关闭统计"), i18n.t("I（Shift+i）可关闭常驻统计。"),
@@ -1668,8 +1807,8 @@ local function troubleshooting_stats()
             format(i18n.t("也可按 %s 关闭。"), o.key_exit)},
         {i18n.t("切换页面"), i18n.t("显示统计时按页面键切换："),
             format(i18n.t("%s 概览 · %s 渲染 · %s 缓存"), o.key_page_1, o.key_page_2, o.key_page_3),
-            format(i18n.t("%s 快捷键 · %s 轨道 · %s 帮助 · %s 内部"),
-                o.key_page_4, o.key_page_5, o.key_page_6, o.key_page_0)},
+            format(i18n.t("%s 快捷键 · %s 轨道 · %s 观影 · %s 帮助 · %s 内部"),
+                o.key_page_4, o.key_page_5, o.key_page_7, o.key_page_6, o.key_page_0)},
         {i18n.t("累计丢帧"), i18n.t("观察播放中是否持续增长。"),
             i18n.t("启动、跳转的历史值不等于持续卡顿。")},
         {i18n.t("解码与输出"), i18n.t("解码丢帧：检查硬解与片源负载。"),
@@ -1691,12 +1830,32 @@ local function troubleshooting_stats()
         {i18n.t("缺失数据"), i18n.t("未提供的数据不代表零耗时。")},
     }
     local groups={{1,2,3},{4,5,6,9},{7,8},{10,11}}
+    if readable then
+        -- 卡片化：帮助子页内每个主题一张卡（沿用概览页卡片引擎）。
+        local cards = {}
+        for _, index in ipairs(groups[overlay_submissions.help_page]) do
+            local section=sections[index]
+            local card={title=section[1]}
+            for i=2,#section do
+                card[#card+1]=format('%s%s', o.indent, section[i])
+            end
+            cards[#cards+1]=card
+        end
+        return fit_overview({}, cards)
+    end
+    add_header(header)
+    append(header, "", {prefix=pages[o.key_page_6].desc, nl="", indent=""})
+    append(header, format(i18n.t('帮助 %d/4：%s'),overlay_submissions.help_page,topics[overlay_submissions.help_page]), {indent=""})
+    append(header, format(i18n.t('%s/%s 切换帮助子页。'),
+        o.key_help_prev,o.key_help_next), {indent=""})
+    append(header, format(i18n.t("%s/%s 滚动；I（Shift+i）常驻开关。"),
+        o.key_scroll_up, o.key_scroll_down), {indent=""})
+    header[#header+1] = o.nl
     for order, index in ipairs(groups[overlay_submissions.help_page]) do
         local section=sections[index]
-        if readable and order>1 then content[#content+1]=o.nl end
         append(content, "", {prefix=section[1], indent=""})
         for i=2,#section do
-            append(content, section[i], readable and {indent=o.prefix_sep,prefix_sep=''} or {})
+            append(content, section[i], {})
         end
     end
     return finalize_page({table.concat(header)}, content, true)
@@ -1743,19 +1902,22 @@ local function float2rational(x)
     return m00, m10
 end
 
-local function add_track(c, t, i)
+local function add_track(c, t, i, no_header)
     if not t then
         return
     end
 
     local type = t.image and "Image" or t["type"]:sub(1, 1):upper() .. t["type"]:sub(2)
-    append(c, "", {prefix=type .. ":", nl=o.nl .. o.nl, indent=""})
-    append(c, t["title"], {prefix_sep="", nl="", indent=""})
+    if not no_header then
+        append(c, "", {prefix=type .. ":", nl=o.nl .. o.nl, indent=""})
+    end
+    append(c, shorten_remote_name(t["title"], o.track_url_max_length),
+        {prefix_sep="", nl="", indent=""})
     append(c, t["id"], {prefix="ID:"})
     append(c, t["src-id"], {prefix="Demuxer ID:", nl="", indent=o.prefix_sep .. o.prefix_sep})
     append(c, t["program-id"], {prefix="Program ID:", nl="", indent=o.prefix_sep .. o.prefix_sep})
     append(c, t["ff-index"], {prefix="FFmpeg Index:", nl="", indent=o.prefix_sep .. o.prefix_sep})
-    append(c, t["external-filename"], {prefix="File:"})
+    append(c, shorten_remote_name(t["external-filename"], o.track_url_max_length), {prefix="File:"})
     append(c, "", {prefix="Flags:"})
     local flags = {"default", "forced", "dependent", "visual-impaired",
                    "hearing-impaired", "original", "commentary", "image",
@@ -1831,8 +1993,38 @@ local function add_track(c, t, i)
 end
 
 local function track_info()
-    local h, c = {}, {}
+    local stats = {}
     eval_ass_formatting()
+    if o.use_ass and o.auto_layout and not (o.custom_header and o.custom_header ~= '') then
+        -- 卡片化：文件信息一节、每条选中轨道一节，复用概览页的 fit_overview
+        -- 管线（卡片底板、标签列对齐、自动换行）。旧版/终端路径在下方保持原排版。
+        local sections = {{'', title=i18n.t('文件与系统')}}
+        add_file(sections[1], false, true)
+        local selected = {}
+        for i, track in ipairs(mp.get_property_native("track-list")) do
+            if track['selected'] or not o.track_info_selected_only then
+                selected[#selected+1] = {track=track, index=i-1}
+            end
+        end
+        local type_total = {}
+        for _, e in ipairs(selected) do
+            local kind = e.track['type'] or 'track'
+            type_total[kind] = (type_total[kind] or 0) + 1
+        end
+        local type_names = {video=i18n.t('视频'), audio=i18n.t('音频'), sub=i18n.t('字幕')}
+        local type_seen = {}
+        for _, e in ipairs(selected) do
+            local kind = e.track['type'] or 'track'
+            type_seen[kind] = (type_seen[kind] or 0) + 1
+            local title = type_names[kind] or kind
+            if type_total[kind] > 1 then title = title .. ' ' .. type_seen[kind] end
+            local section = {title=title}
+            add_track(section, e.track, e.index, true)
+            sections[#sections+1] = section
+        end
+        return fit_overview(stats, sections)
+    end
+    local h, c = {}, {}
     add_header(h)
     local desc = pages[o.key_page_5].desc
     append(h, "", {prefix=format("%s:%s", desc, scroll_hint()), nl="", indent=""})
@@ -1924,7 +2116,7 @@ local function show_release_badge(compose)
     end
     if w < h * 1.2 then y = max(4, position_y - font_size * 1.6) end
     local badge_panel
-    if curr_page==o.key_page_1 and overview_panels then
+    if overview_panels then
         for _,panel in ipairs(overview_panels) do
             if not badge_panel or panel.column>badge_panel.column then badge_panel=panel end
         end
@@ -1937,7 +2129,7 @@ local function show_release_badge(compose)
     end
     local label = mp.command_native({'escape-ass', tostring(release.name)..'  '..tostring(release.version)})
     local label_size = font_size * 1.05
-    if curr_page == o.key_page_1 and o.auto_layout then label_size=max(label_size,16*288/h) end
+    if overview_panels and o.auto_layout then label_size=max(label_size,16*288/h) end
     local badge_key=badge_panel and table.concat({x,y,label,label_size,border_size,o.font},':')
     local cached=badge_key and overview_layout and overview_layout.badge
     if cached and cached.key==badge_key then label,x=cached.label,cached.x end
@@ -1956,12 +2148,25 @@ local function show_release_badge(compose)
         stats_measure.data=badge_style..format('{\\an9\\pos(%.2f,%.2f)\\fs%.2f\\b1\\bord%.3f}%s',
             x,y,label_size,max(border_size,288/h),label)
         local b=stats_measure:update()
+        local pill_width
+        if b and b.x1 and b.x0 then pill_width=b.x1-b.x0 end
         if b and b.x1 then x=x-max(0,b.x1-badge_panel.x1+288/h) end
-        if overview_layout then overview_layout.badge={key=badge_key,label=label,x=x} end
+        if overview_layout then overview_layout.badge={key=badge_key,label=label,x=x,width=pill_width} end
     end
-    release_overlay.data = badge_style
+    -- 概览页把版本徽标包进一个强调色胶囊，与卡片圆角语言一致。
+    local pill=''
+    local pill_width=cached and cached.key==badge_key and cached.width or nil
+    if o.accent_colors and badge_panel and pill_width and pill_width>0 then
+        local px0,px1=x-pill_width-label_size*.5,x+label_size*.5
+        local py0,py1=y-label_size*.32,y+label_size*1.22+label_size*.32
+        pill=format('{\\an7\\pos(0,0)\\bord%.3f\\shad0\\3c&H%s&\\3a&H55&'
+            ..'\\1c&H%s&\\1a&H3C&\\p1}%s{\\p0}',
+            max(border_size,288/h)*.8,theme.panel_border,theme.accent,
+            round_rect_path(px0,py0,px1,py1,(py1-py0)/2))
+    end
+    release_overlay.data = (pill ~= '' and pill..'\n' or '') .. badge_style
         .. format('{\\an9\\pos(%.2f,%.2f)\\fs%.2f\\b1%s\\bord%.3f}%s',
-            x, y, label_size, o.accent_colors and '\\1c&HFFF070&\\1a&H00&' or '',
+            x, y, label_size, o.accent_colors and format('\\1c&H%s&\\1a&H00&',theme.accent) or '',
             max(border_size,288/h), label)
     if compose then
         hide_stats_overlay(release_overlay)
@@ -2244,10 +2449,12 @@ fit_overview = function(stats, sections)
         end
     end
     if columns == 2 then
-        -- File and source video on the left, display and audio output on the
-        -- right. Independent stacks use space without four rigid quadrants.
-        add_section(sections[1],1); add_section(sections[3],1)
-        add_section(sections[2],2); add_section(sections[4],2)
+        -- Alternate sections across the two columns. For the overview's four
+        -- sections this is exactly the old arrangement (1,3 left / 2,4 right);
+        -- other pages (e.g. tracks) reuse the same card system for free.
+        for idx,section in ipairs(sections) do
+            add_section(section, (idx % 2 == 1) and 1 or 2)
+        end
     else
         for _,section in ipairs(sections) do add_section(section,1) end
     end
@@ -2324,12 +2531,16 @@ fit_overview = function(stats, sections)
                 if not panel then
                     panel={x0=x,y0=y,x1=x+panel_width,y1=y+step,column=col,
                         pad_y=6*logical_pixel,pad_bottom=panel_bottom,heading=row.heading==true}
+                    if row.heading then
+                        -- 分隔线贴在标题行车道底部，底板层按它画强调色短线。
+                        panel.divider_y=y+step-max(2,3*logical_pixel)
+                    end
                     overview_panels[#overview_panels+1]=panel
                 else panel.y1=y+step end
                 local pos = format('{\\pos(%.4f,%.4f)}',x,y)
                 -- 旧版外观：关闭主题色后标题与标签不再染色，继承 text_style 的 font_color。
-                local heading_color = o.accent_colors and '\\1c&HFFF070&\\1a&H00&' or ''
-                local label_color = o.accent_colors and '\\1c&HEDE7D8&' or ''
+                local heading_color = o.accent_colors and format('\\1c&H%s&\\1a&H00&',theme.accent) or ''
+                local label_color = o.accent_colors and format('\\1c&H%s&',theme.label) or ''
                 local text = row.heading and
                     (format('{\\b1\\fs%.4f%s}',size*1.18,heading_color) .. mp.command_native({'escape-ass',row.text})) or row.text
                 local base=style:gsub('\\pos%b()','')
@@ -2399,25 +2610,34 @@ local function show_stats_background(overlay, panels, overlay_bounds)
         panels = b and b.x0 and b.x1 and {{x0=b.x0,y0=b.y0,x1=b.x1,y1=b.y1}} or {}
     end
     local _,h=mp.get_osd_size()
-    local pad=12*overlay.res_y/max(1,h)
-    local radius=8*overlay.res_y/max(1,h)
+    local pixel=overlay.res_y/max(1,h)
+    local pad=12*pixel
+    local radius=10*pixel
+    local line=max(1,pixel)
+    local divider_color=o.accent_colors and theme.accent or theme.panel_border
+    local divider_alpha=o.accent_colors and '22' or '44'
     local events={}
     for _,b in ipairs(panels) do
         local pad_y=b.pad_y or pad
         local x0,y0=max(0,b.x0-pad),max(0,b.y0-pad_y)
         local x1,y1=min(overlay.res_x,b.x1+pad),min(overlay.res_y,b.y1+(b.pad_bottom or pad_y))
         local r=min(radius,(x1-x0)/2,(y1-y0)/2)
-        local c=r*.55228475
         if x1>x0 and y1>y0 then
-            events[#events+1]=format('{\\an7\\pos(0,0)\\bord0\\shad0\\1c&H3A2410&\\1a&H33&\\p1}'
-                ..'m %.3f %.3f l %.3f %.3f b %.3f %.3f %.3f %.3f %.3f %.3f '
-                ..'l %.3f %.3f b %.3f %.3f %.3f %.3f %.3f %.3f '
-                ..'l %.3f %.3f b %.3f %.3f %.3f %.3f %.3f %.3f '
-                ..'l %.3f %.3f b %.3f %.3f %.3f %.3f %.3f %.3f{\\p0}',
-                x0+r,y0,x1-r,y0,x1-r+c,y0,x1,y0+r-c,x1,y0+r,
-                x1,y1-r,x1,y1-r+c,x1-r+c,y1,x1-r,y1,
-                x0+r,y1,x0+r-c,y1,x0,y1-r+c,x0,y1-r,
-                x0,y0+r,x0,y0+r-c,x0+r-c,y0,x0+r,y0)
+            events[#events+1]=format('{\\an7\\pos(0,0)\\bord%.3f\\shad0\\3c&H%s&\\3a&H44&'
+                ..'\\1c&H%s&\\1a&H%s&\\p1}%s{\\p0}',
+                line,theme.panel_border,theme.panel,theme.panel_alpha,round_rect_path(x0,y0,x1,y1,r))
+            -- 标题下沿的强调色短线：给卡片一个视觉锚点，宽度不超过面板内宽。
+            if b.divider_y then
+                local dy=min(max(y0+line,b.divider_y),y1-line)
+                local dx0=x0+pad
+                local dx1=min(dx0+44*pixel,x1-pad)
+                if dx1>dx0 then
+                    events[#events+1]=format('{\\an7\\pos(0,0)\\bord0\\shad0\\1c&H%s&\\1a&H%s&\\p1}'
+                        ..'m %.3f %.3f l %.3f %.3f l %.3f %.3f l %.3f %.3f{\\p0}',
+                        divider_color,divider_alpha,
+                        dx0,dy,dx1,dy,dx1,dy+line,dx0,dy+line)
+                end
+            end
         end
     end
     stats_background.res_x,stats_background.res_y=overlay.res_x,overlay.res_y
@@ -2519,19 +2739,29 @@ local function cache_stats()
     local stats = {}
 
     eval_ass_formatting()
-    add_header(stats)
-    append(stats, "", {prefix="Cache Info:", nl="", indent=""})
+    local readable = o.use_ass and o.auto_layout and not (o.custom_header and o.custom_header ~= '')
+    local sections, target
+    if readable then
+        -- 卡片化：缓存信息 / 范围 两张卡（沿用概览页卡片引擎）。
+        sections = {{'', title=i18n.t('缓存信息')}, {title=i18n.t('范围')}}
+        target = sections[1]
+    else
+        add_header(stats)
+        append(stats, "", {prefix="Cache Info:", nl="", indent=""})
+        target = stats
+    end
 
     local info = mp.get_property_native("demuxer-cache-state")
     if info == nil then
-        append(stats, "Unavailable.", {})
+        append(target, "Unavailable.", {})
+        if readable then return fit_overview(stats, sections) end
         return finalize_page({}, stats, false)
     end
 
     local a = info["reader-pts"]
     local b = info["cache-end"]
 
-    append(stats, opt_time(a) .. " - " .. opt_time(b), {prefix = "Packet Queue:"})
+    append(target, opt_time(a) .. " - " .. opt_time(b), {prefix = "Packet Queue:"})
 
     local r = nil
     if a ~= nil and b ~= nil then
@@ -2545,7 +2775,7 @@ local function cache_stats()
                                  nil, 0.8, 1)
         r_graph = o.prefix_sep .. r_graph
     end
-    append(stats, opt_time(r), {prefix = "Readahead:", suffix = r_graph})
+    append(target, opt_time(r), {prefix = "Readahead:", suffix = r_graph})
 
     -- These states are not necessarily exclusive. They're about potentially
     -- separate mechanisms, whose states may be decoupled.
@@ -2560,7 +2790,7 @@ local function cache_stats()
     elseif info["idle"]  == true then
         state = "inactive"
     end
-    append(stats, state, {prefix = "State:"})
+    append(target, state, {prefix = "State:"})
 
     local speed = info["raw-input-rate"] or 0
     local speed_graph = nil
@@ -2570,12 +2800,12 @@ local function cache_stats()
                                      nil, 0.8, 1)
         speed_graph = o.prefix_sep .. speed_graph
     end
-    append(stats, utils.format_bytes_humanized(speed) .. "/s", {prefix="Speed:",
+    append(target, utils.format_bytes_humanized(speed) .. "/s", {prefix="Speed:",
         suffix=speed_graph})
 
-    append(stats, utils.format_bytes_humanized(info["total-bytes"]),
+    append(target, utils.format_bytes_humanized(info["total-bytes"]),
            {prefix = "Total RAM:"})
-    append(stats, utils.format_bytes_humanized(info["fw-bytes"]),
+    append(target, utils.format_bytes_humanized(info["fw-bytes"]),
            {prefix = "Forward RAM:"})
 
     local fc = info["file-cache-bytes"]
@@ -2584,25 +2814,30 @@ local function cache_stats()
     else
         fc = "(disabled)"
     end
-    append(stats, fc, {prefix = "Disk Cache:"})
+    append(target, fc, {prefix = "Disk Cache:"})
 
-    append(stats, info["debug-low-level-seeks"], {prefix = "Media Seeks:"})
-    append(stats, info["debug-byte-level-seeks"], {prefix = "Stream Seeks:"})
+    append(target, info["debug-low-level-seeks"], {prefix = "Media Seeks:"})
+    append(target, info["debug-byte-level-seeks"], {prefix = "Stream Seeks:"})
 
-    append(stats, "", {prefix="Ranges:", nl=o.nl .. o.nl, indent=""})
+    if readable then
+        target = sections[2]
+    else
+        append(stats, "", {prefix="Ranges:", nl=o.nl .. o.nl, indent=""})
+    end
 
-    append(stats, info["bof-cached"] and "yes" or "no",
+    append(target, info["bof-cached"] and "yes" or "no",
            {prefix = "Start Cached:"})
-    append(stats, info["eof-cached"] and "yes" or "no",
+    append(target, info["eof-cached"] and "yes" or "no",
            {prefix = "End Cached:"})
 
     local ranges = info["seekable-ranges"] or {}
     for n, range in ipairs(ranges) do
-        append(stats, mp.format_time(range["start"]) .. " - " ..
+        append(target, mp.format_time(range["start"]) .. " - " ..
                       mp.format_time(range["end"]),
                {prefix = "Range " .. n .. ":"})
     end
 
+    if readable then return fit_overview(stats, sections) end
     return finalize_page({}, stats, false)
 end
 
@@ -2628,12 +2863,136 @@ cache_recorder_timer:kill()
 
 -- Current page and <page key>:<page function> mapping
 curr_page = o.key_page_1
+-- ==================== 观影时长统计（第 7 页 + 常驻采集器） ====================
+-- 数据存 ~~/files/watch-time.json：dates[YYYY-MM-DD]=秒，titles[日期][标题]=秒。
+-- 播放中每 30s 计入一次，60s 节流落盘，shutdown/end-file 兜底 flush。
+-- 主块局部变量逼近上限，本段沿用全局赋值手法。
+watch_time = { loaded = false, path = nil, dates = {}, titles = {}, dirty = false }
+
+function watch_time_load()
+    if watch_time.loaded then return end
+    watch_time.loaded = true
+    watch_time.path = mp.command_native({'expand-path', '~~/files/watch-time.json'})
+    local file = io.open(watch_time.path, 'r')
+    if file then
+        local data = file:read('*a')
+        file:close()
+        local json = data and data ~= '' and utils.parse_json(data) or nil
+        if type(json) == 'table' then
+            watch_time.dates = type(json.dates) == 'table' and json.dates or {}
+            watch_time.titles = type(json.titles) == 'table' and json.titles or {}
+        end
+    end
+end
+
+function watch_time_flush()
+    if not watch_time.dirty then return end
+    watch_time_load()
+    -- 标题明细只保留最近 30 天防止无限增长；日累计全量保留。
+    local cutoff = os.date('%Y-%m-%d', os.time() - 30 * 86400)
+    for date, _ in pairs(watch_time.titles) do
+        if date < cutoff then watch_time.titles[date] = nil end
+    end
+    local file = io.open(watch_time.path, 'w')
+    if file then
+        file:write(utils.format_json({dates=watch_time.dates, titles=watch_time.titles}) or '{}')
+        file:close()
+    end
+    watch_time.dirty = false
+end
+
+function watch_time_tick()
+    if mp.get_property_bool('pause', true)
+        or mp.get_property_bool('core-idle', true)
+        or not mp.get_property('path') then
+        return
+    end
+    watch_time_load()
+    local date = os.date('%Y-%m-%d')
+    local title = mp.get_property_osd('media-title')
+        or mp.get_property('filename') or i18n.t('未知')
+    watch_time.dates[date] = (watch_time.dates[date] or 0) + 30
+    watch_time.titles[date] = watch_time.titles[date] or {}
+    watch_time.titles[date][title] = (watch_time.titles[date][title] or 0) + 30
+    watch_time.dirty = true
+end
+
+function watch_time_date_key(offset_days)
+    return os.date('%Y-%m-%d', os.time() - offset_days * 86400)
+end
+
+function watch_time_fmt(secs)
+    secs = math.floor(secs or 0)
+    if secs < 60 then return format('%d %s', secs, i18n.t('秒')) end
+    local minutes = math.floor(secs / 60)
+    if minutes < 60 then return format('%d %s', minutes, i18n.t('分钟')) end
+    return format('%d %s %02d %s', math.floor(minutes / 60), i18n.t('小时'), minutes % 60, i18n.t('分'))
+end
+
+function watch_time_sum(from_offset, to_offset)
+    local total = 0
+    for i = from_offset, to_offset do
+        total = total + (watch_time.dates[watch_time_date_key(i)] or 0)
+    end
+    return total
+end
+
+function watch_stats()
+    local header, content = {}, {}
+    eval_ass_formatting()
+    add_header(header)
+    local page = pages[o.key_page_7]
+    append(header, "", {prefix=format("%s:%s", page.desc, scroll_hint()), nl="", indent=""})
+    header = {table.concat(header)}
+    watch_time_load()
+    local today = watch_time_date_key(0)
+    append(content, format('%s：%s', i18n.t('今日'),
+        watch_time_fmt(watch_time.dates[today] or 0)), {indent=""})
+    append(content, format('%s：%s', i18n.t('昨日'),
+        watch_time_fmt(watch_time.dates[watch_time_date_key(1)] or 0)))
+    -- 本周按周一为起点：os.date('%w') 0=周日。
+    local days_since_monday = (tonumber(os.date('%w')) + 6) % 7
+    append(content, format('%s：%s', i18n.t('本周'),
+        watch_time_fmt(watch_time_sum(0, days_since_monday))))
+    local month_prefix = os.date('%Y-%m')
+    local month_total = 0
+    for date, secs in pairs(watch_time.dates) do
+        if date:sub(1, #month_prefix) == month_prefix then month_total = month_total + secs end
+    end
+    append(content, format('%s：%s', i18n.t('本月'), watch_time_fmt(month_total)))
+    append(content, format('%s：%s', i18n.t('最近 7 天'),
+        watch_time_fmt(watch_time_sum(0, 6))))
+    append(content, i18n.t('—— 最近 7 天明细 ——'), {indent=""})
+    for i = 6, 0, -1 do
+        local key = watch_time_date_key(i)
+        append(content, format('%s  %s', key:sub(6):gsub('-', '/'),
+            watch_time_fmt(watch_time.dates[key] or 0)), {indent=o.indent})
+    end
+    local top_title, top_secs = nil, 0
+    for title, secs in pairs(watch_time.titles[today] or {}) do
+        if secs > top_secs then top_title, top_secs = title, secs end
+    end
+    if top_title then
+        append(content, format('%s：%s（%s）', i18n.t('今日最多'),
+            top_title, watch_time_fmt(top_secs)), {indent=""})
+    else
+        append(content, i18n.t('今日还没有观看记录，播放开始后每 30 秒计入一次。'), {indent=""})
+    end
+    return finalize_page(header, content, true)
+end
+
+mp.add_periodic_timer(30, watch_time_tick)
+mp.add_periodic_timer(60, watch_time_flush)
+mp.register_event('shutdown', watch_time_flush)
+mp.register_event('end-file', watch_time_flush)
+
 pages = {
     [o.key_page_1] = { idx = 1, f = default_stats, desc = i18n.t("播放概览"), scroll = true },
     [o.key_page_2] = { idx = 2, f = vo_stats, desc = i18n.t("渲染步骤与耗时"), scroll = true },
     [o.key_page_3] = { idx = 3, f = cache_stats, desc = i18n.t("缓存统计"), scroll = true },
     [o.key_page_4] = { idx = 4, f = keybinding_info, desc = i18n.t("当前快捷键"), scroll = true },
     [o.key_page_5] = { idx = 5, f = track_info, desc = i18n.t("媒体轨道"), scroll = true },
+    [o.key_page_7] = { idx = 7, f = watch_stats, desc = i18n.t("观影统计"), scroll = true },
     [o.key_page_6] = { idx = 6, f = troubleshooting_stats, desc = i18n.t("统计说明与排障"), scroll = true },
     [o.key_page_0] = { idx = 0, f = perf_stats, desc = i18n.t("内部性能信息"), scroll = true },
 }
@@ -2710,20 +3069,23 @@ local function print_page(page, after_scroll)
     overview_panels = nil
     local ass_content = fit_stats_page(page, after_scroll)
     local scale = pages[page].render_scale or 1
-    local compose = page==o.key_page_1 and overview_panels and scale==1
+    -- 卡片化页面（概览/轨道）每次渲染由 fit_overview 重建 overview_panels，
+    -- 其余页面在此处保持 nil，因此以下门控不再需要逐页判 key_page_1。
+    local overview_cards = overview_panels
+    local compose = overview_cards and scale==1
     local badge = show_release_badge(compose)
     if o.use_ass and has_vo_window() then
         local w, h = mp.get_osd_size()
         stats_overlay.res_x, stats_overlay.res_y = 288 * w / h / scale, 288 / scale
         stats_overlay.data = convert_osd_ass_controls(ass_content)
-        stats_overlay.compute_bounds = o.panel_background and not (page==o.key_page_1 and overview_panels)
+        stats_overlay.compute_bounds = o.panel_background and not overview_cards
         if badge then stats_overlay.data = stats_overlay.data .. '\n' .. badge end
         local state = pages[page]
         local navigation_footer = o.auto_layout and state.idx~=0
             and not (o.custom_header and o.custom_header~='')
         local scrolling = (state.max_offset or 1) > 1
         if navigation_footer or (o.auto_layout and scrolling) then
-            local footer_size=page==o.key_page_1 and state.overview_font_size
+            local footer_size=overview_cards and state.overview_font_size
                 and max(font_size*.75,state.overview_font_size*.8) or font_size*.75
             stats_scroll_overlay.res_x, stats_scroll_overlay.res_y = stats_overlay.res_x, 288
             local footer_style = text_style():gsub('\\pos%b()', ''):gsub('\\an%d', '')
@@ -2732,7 +3094,7 @@ local function print_page(page, after_scroll)
                 state.offset or 1, state.visible_last or 1, state.total_rows or 1)
             local footer_bottom
             if navigation_footer then
-                local footer = stats_page_footer(page==o.key_page_1 and state.overview_font_size or font_size,state.total_rows)
+                local footer = stats_page_footer(overview_cards and state.overview_font_size or font_size,state.total_rows)
                 footer_style,footer_size,footer_border = footer.style,footer.size,footer.border
                 if footer.help_hint~='' then
                     footer_text=footer.help_hint .. (scrolling and footer.help_separator..footer_text or '')
@@ -2755,7 +3117,7 @@ local function print_page(page, after_scroll)
             stats_scroll_overlay.data = footer_style
                 .. format('{%s\\an1\\pos(%.2f,%.2f)\\fs%.2f%s\\bord%.3f}%s',
                     navigation_footer and '\\q2' or '', position_x, stats_safe_bottom() - footer_border - footer_bottom,
-                    footer_size, not navigation_footer and o.accent_colors and '\\1c&HFFF070&\\1a&H00&' or '',
+                    footer_size, not navigation_footer and o.accent_colors and format('\\1c&H%s&\\1a&H00&',theme.accent) or '',
                     footer_border, footer_text)
             if compose then
                 hide_stats_overlay(stats_scroll_overlay)
@@ -2767,8 +3129,7 @@ local function print_page(page, after_scroll)
             hide_stats_overlay(stats_scroll_overlay)
         end
         local stats_bounds = submit_stats_overlay(stats_overlay)
-        show_stats_background(stats_overlay, page==o.key_page_1 and overview_panels or nil,
-            stats_bounds)
+        show_stats_background(stats_overlay, overview_cards, stats_bounds)
     elseif o.persistent_overlay then
         hide_stats_overlay(stats_overlay)
         hide_stats_overlay(stats_scroll_overlay)
@@ -3398,10 +3759,14 @@ local function auto_translate_text(text)
         return result
     end
     
-    -- 模糊匹配（跳过过短的键，防止破坏包含短英文单词的文本）
+    -- 模糊匹配（跳过过短的键，防止破坏包含短英文单词的文本）。
+    -- 表键含 ( ) % [ 等字符，绝不能当 Lua 模式传给 gsub：一律 plain find + 子串拼接。
     for en, zh in pairs(translations) do
-        if #en >= 4 and text:find(en, 1, true) then
-            text = text:gsub(en, zh, 1)
+        if #en >= 4 then
+            local s, e = text:find(en, 1, true)
+            if s then
+                text = text:sub(1, s - 1) .. zh .. text:sub(e + 1)
+            end
         end
     end
     
