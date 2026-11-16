@@ -5,129 +5,266 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>mpv-Emo · 深度定制的 mpv 播放器配置</title>
 <meta name="description" content="开箱即用的 mpv 深度定制配置：全网弹幕、在线中文字幕、内容自适应 AI 增强、360° 全景、可视化均衡器、全平台统一右键菜单。">
+<meta name="theme-color" content="#eef2f1">
 <style>
+  /* ===== 设计层：移植自 emoeem 博客（Butterfly design layer） ===== */
   :root {
-    --bg: #282a36; --bg-alt: #21222c; --panel: #343746;
-    --fg: #f8f8f2; --muted: #b7bcc9;
-    --purple: #bd93f9; --pink: #ff79c6; --green: #50fa7b;
-    --cyan: #8be9fd; --orange: #ffb86c; --red: #ff5555;
+    --accent: #2f6f6b;
+    --accent-strong: #245a56;
+    --ink: #20252b;
+    --muted: #69727d;
+    --line: rgba(32, 37, 43, .10);
+    --surface: rgba(255, 255, 255, .86);
+    --surface-solid: #fbfdfc;
+    --bg: #f3f6f5;
+    --shadow: 0 14px 40px rgba(31, 35, 41, .08);
+    --hero: radial-gradient(720px 320px at 82% 12%, rgba(47, 111, 107, .13), transparent 62%),
+            linear-gradient(180deg, #dfe8e5 0%, var(--bg) 100%);
+    --code-bg: #1d292a;
+  }
+  html[data-theme='dark'] {
+    --accent: #79b8b2;
+    --accent-strong: #9ed0ca;
+    --ink: #e7e9eb;
+    --muted: #aab1b8;
+    --line: rgba(255, 255, 255, .10);
+    --surface: rgba(31, 35, 40, .84);
+    --surface-solid: #1d2328;
+    --bg: #15191d;
+    --shadow: 0 18px 46px rgba(0, 0, 0, .22);
+    --hero: radial-gradient(720px 320px at 78% 16%, rgba(121, 184, 178, .16), transparent 62%),
+            linear-gradient(180deg, #1d292a 0%, var(--bg) 100%);
+    --code-bg: #10161a;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: var(--bg); color: var(--fg); font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; line-height: 1.7; }
-  a { color: var(--cyan); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  .container { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  html { scroll-behavior: smooth; scroll-padding-top: 74px; }
+  body {
+    background: var(--bg); color: var(--ink); line-height: 1.7;
+    font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    transition: background .25s ease, color .25s ease;
+  }
+  a { color: var(--accent); text-decoration: none; text-decoration-thickness: .08em; }
+  a:hover { color: var(--accent-strong); }
+  .container { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
 
-  /* hero */
-  .hero { text-align: center; padding: 88px 0 56px; background: linear-gradient(180deg, #21222c 0%, var(--bg) 100%); }
-  .hero h1 { font-size: 44px; letter-spacing: 1px; }
-  .hero h1 .accent { color: var(--purple); }
-  .hero .tagline { margin: 18px 0 26px; font-size: 18px; color: var(--muted); }
-  .hero .tagline b { color: var(--pink); font-weight: 600; }
-  .badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 34px; }
-  .badge { padding: 4px 14px; border-radius: 999px; font-size: 13px; border: 1px solid #44475a; background: var(--panel); }
-  .badge.p { color: var(--purple); } .badge.c { color: var(--cyan); } .badge.g { color: var(--green); } .badge.o { color: var(--orange); }
-  .cta { display: inline-block; margin: 0 8px 8px; padding: 12px 28px; border-radius: 10px; font-weight: 600; font-size: 15px; }
-  .cta.primary { background: var(--purple); color: #191a21; }
-  .cta.primary:hover { background: #d6acff; text-decoration: none; }
-  .cta.ghost { border: 1px solid #6272a4; color: var(--fg); }
-  .cta.ghost:hover { border-color: var(--purple); text-decoration: none; }
-  .hero-shot { margin-top: 52px; border-radius: 14px; border: 1px solid #44475a; box-shadow: 0 24px 80px rgba(0,0,0,.55); max-width: 760px; width: 92%; }
+  /* ===== 导航：毛玻璃 + 细线 ===== */
+  .nav {
+    position: sticky; top: 0; z-index: 50;
+    background: color-mix(in srgb, var(--bg) 78%, transparent);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav-inner { display: flex; align-items: center; gap: 22px; height: 58px; max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+  .brand { font-weight: 760; letter-spacing: -.02em; font-size: 17px; color: var(--ink); }
+  .brand em { color: var(--accent); font-style: normal; }
+  .nav-links { display: flex; gap: 20px; margin-left: auto; align-items: center; }
+  .nav-links a { color: var(--muted); font-size: 14.5px; font-weight: 550; }
+  .nav-links a:hover { color: var(--accent); }
+  .theme-toggle {
+    border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+    color: var(--muted); width: 34px; height: 34px; font-size: 15px; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; transition: color .2s, border-color .2s;
+  }
+  .theme-toggle:hover { color: var(--accent); border-color: var(--accent); }
 
-  /* sections */
-  section { padding: 64px 0; }
-  section.alt { background: var(--bg-alt); }
-  h2 { font-size: 28px; margin-bottom: 8px; }
-  h2 .k { color: var(--green); }
-  .sub { color: var(--muted); margin-bottom: 34px; }
+  /* ===== Hero ===== */
+  .hero { background: var(--hero); border-bottom: 1px solid var(--line); }
+  .hero-inner { max-width: 980px; margin: 0 auto; padding: 86px 28px 64px; text-align: center; }
+  .kicker { color: var(--accent); font-size: .82em; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+  .hero h1 { font-size: clamp(2.4rem, 6vw, 3.4rem); letter-spacing: -.035em; font-weight: 760; margin: 10px 0 0; }
+  .hero h1 em { color: var(--accent); font-style: normal; }
+  .hero .tagline { max-width: 720px; margin: 18px auto 0; font-size: 17.5px; color: var(--muted); line-height: 1.85; }
+  .hero .tagline b { color: var(--ink); font-weight: 650; }
+  .chips { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin: 24px 0 30px; }
+  .chip { display: inline-flex; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); font-size: .82em; color: var(--muted); }
+  .cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .cta { display: inline-flex; align-items: center; gap: 8px; padding: 11px 26px; border-radius: 12px; font-weight: 650; font-size: 15px; transition: transform .2s ease, box-shadow .2s ease, border-color .2s; }
+  .cta.primary { background: var(--accent); color: #fff; box-shadow: 0 10px 28px color-mix(in srgb, var(--accent) 32%, transparent); }
+  .cta.primary:hover { background: var(--accent-strong); transform: translateY(-2px); text-decoration: none; }
+  .cta.ghost { border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+  .cta.ghost:hover { border-color: var(--accent); transform: translateY(-2px); text-decoration: none; }
+  .hero-shot {
+    display: block; width: min(820px, 94%); margin: 56px auto 0;
+    border: 1px solid var(--line); border-radius: 16px; background: var(--surface);
+    box-shadow: var(--shadow);
+  }
 
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
-  .card { background: var(--panel); border: 1px solid #44475a; border-radius: 12px; padding: 22px 24px; }
-  .card .icon { font-size: 26px; }
-  .card h3 { font-size: 17px; margin: 8px 0 6px; }
-  .card p { color: var(--muted); font-size: 14.5px; }
+  /* ===== 区块 ===== */
+  section { padding: 72px 0; }
+  section.alt { background: color-mix(in srgb, var(--accent) 4%, var(--bg)); border-block: 1px solid var(--line); }
+  h2 { font-size: 1.72rem; letter-spacing: -.025em; font-weight: 760; }
+  .sub { color: var(--muted); margin: 8px 0 34px; line-height: 1.85; }
 
-  .gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
-  .gallery figure { background: var(--panel); border: 1px solid #44475a; border-radius: 12px; overflow: hidden; }
+  /* ===== 卡片网格（emo-grid / emo-card 同款） ===== */
+  .emo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 18px; }
+  .emo-card {
+    padding: 22px; border: 1px solid var(--line); border-radius: 14px;
+    background: var(--surface); box-shadow: var(--shadow);
+    transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease;
+  }
+  .emo-card:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--accent) 34%, var(--line)); }
+  .emo-card h3 { margin: 10px 0 8px; font-size: 1.12rem; letter-spacing: -.015em; font-weight: 720; }
+  .emo-card p { color: var(--muted); line-height: 1.8; font-size: 14.5px; }
+  .emo-card .icon { font-size: 24px; }
+  .emo-meta { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+  .emo-meta .chip { font-size: .78em; }
+
+  /* ===== 截图画廊 ===== */
+  .gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 18px; }
+  .gallery figure {
+    border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    background: var(--surface); box-shadow: var(--shadow);
+    transition: transform .22s ease, box-shadow .22s ease;
+  }
+  .gallery figure:hover { transform: translateY(-3px); }
   .gallery img { width: 100%; display: block; }
-  .gallery figcaption { padding: 10px 16px; color: var(--muted); font-size: 14px; }
+  .gallery figcaption { padding: 12px 16px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); }
 
-  pre { background: #191a21; border: 1px solid #44475a; border-radius: 10px; padding: 18px 22px; overflow-x: auto; font-size: 14px; color: #e2e2dc; }
-  pre .c { color: #6272a4; }
-  .keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px 28px; }
-  .keys li { list-style: none; display: flex; justify-content: space-between; border-bottom: 1px dashed #44475a; padding: 7px 2px; font-size: 15px; }
-  kbd { background: var(--panel); border: 1px solid #6272a4; border-radius: 6px; padding: 1px 9px; font-size: 13px; color: var(--cyan); }
+  /* ===== 代码块 + 复制按钮（emo-code-copy 同款） ===== */
+  .code-wrap { position: relative; }
+  pre {
+    position: relative; overflow-x: auto; background: var(--code-bg); color: #dbe4e2;
+    border: 1px solid var(--line); border-radius: 14px; padding: 20px 24px;
+    font-size: 14px; line-height: 1.9; box-shadow: var(--shadow);
+  }
+  pre .c { color: #7d9a96; }
+  pre .p { color: #9ed0ca; }
+  .code-copy {
+    position: absolute; top: 10px; right: 10px; z-index: 2; padding: 5px 10px;
+    border: 1px solid rgba(255,255,255,.14); border-radius: 7px;
+    background: rgba(0,0,0,.45); color: #fff; font-size: .72rem; cursor: pointer;
+    opacity: 0; transition: opacity .15s ease;
+  }
+  .code-wrap:hover .code-copy, .code-wrap:focus-within .code-copy { opacity: 1; }
+  @media (max-width: 768px) { .code-copy { opacity: 1; } }
 
-  footer { border-top: 1px solid #44475a; padding: 34px 0 44px; color: var(--muted); font-size: 14px; text-align: center; }
-  footer .links a { margin: 0 8px; }
+  /* ===== 快捷键（timeline/列表风） ===== */
+  .keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px 26px; }
+  .keys li {
+    list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px;
+    background: var(--surface); font-size: 14.5px; color: var(--muted);
+  }
+  .keys kbd {
+    background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--accent-strong);
+    border: 1px solid var(--line); border-radius: 7px; padding: 2px 10px;
+    font-size: 12.5px; font-weight: 650; white-space: nowrap;
+  }
+  html[data-theme='dark'] .keys kbd { color: var(--accent-strong); }
+
+  footer { border-top: 1px solid var(--line); padding: 36px 0 44px; color: var(--muted); font-size: 14px; text-align: center; }
+  footer .links { margin-top: 8px; }
+  footer .links a { margin: 0 7px; font-weight: 550; }
+
+  @media (max-width: 768px) {
+    .hero-inner { padding: 56px 22px 44px; }
+    .nav-links a:not(.keep) { display: none; }
+    section { padding: 52px 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .emo-card, .gallery figure, .cta { transition: none; }
+  }
 </style>
 </head>
 <body>
 
-<header class="hero">
-  <div class="container">
-    <h1>mpv-<span class="accent">Emo</span></h1>
-    <p class="tagline">开箱即用的 <b>mpv 深度定制配置</b> —— 把播放器调成你想要的样子</p>
-    <div class="badges">
-      <span class="badge c">mpv v0.41+</span>
-      <span class="badge p">uosc · Dracula</span>
-      <span class="badge g">Linux / Windows / macOS</span>
-      <span class="badge o">LGPL-3.0</span>
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="#top">mpv-<em>Emo</em></a>
+    <div class="nav-links">
+      <a href="#features">特性</a>
+      <a href="#preview">预览</a>
+      <a href="#quickstart">快速开始</a>
+      <a href="#keys">快捷键</a>
+      <a class="keep" href="https://github.com/emoeem/mpv" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-toggle" id="theme-toggle" title="切换明暗主题" aria-label="切换明暗主题">🌙</button>
     </div>
-    <a class="cta primary" href="https://github.com/emoeem/mpv">GitHub 仓库</a>
-    <a class="cta ghost" href="https://github.com/emoeem/mpv/releases">下载懒人包</a>
-    <br>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="hero-inner">
+    <div class="kicker">mpv · Linux / Windows / macOS</div>
+    <h1>把播放器调成<em>你想要的样子</em></h1>
+    <p class="tagline">mpv-Emo 是一份<b>开箱即用的 mpv 深度定制配置</b>：全网弹幕、在线中文字幕、
+      内容自适应 AI 增强、HDR 双引擎、可视化均衡器与全平台统一右键菜单——每个功能都带中文菜单注解。</p>
+    <div class="chips">
+      <span class="chip">mpv v0.41+</span>
+      <span class="chip">uosc · Dracula</span>
+      <span class="chip">全网弹幕 · b23.tv 短链直连</span>
+      <span class="chip">LGPL-3.0</span>
+    </div>
+    <div class="cta-row">
+      <a class="cta primary" href="https://github.com/emoeem/mpv">GitHub 仓库</a>
+      <a class="cta ghost" href="https://github.com/emoeem/mpv/releases">下载懒人包</a>
+      <a class="cta ghost" href="#quickstart">30 秒快速开始</a>
+    </div>
     <img class="hero-shot" src="assets/main.png" alt="mpv-Emo 主界面截图">
   </div>
 </header>
 
-<section>
+<section id="features">
   <div class="container">
-    <h2><span class="k">✨</span> 特性</h2>
-    <p class="sub">每一个功能都带中文菜单注解，右键即可触达。</p>
-    <div class="grid">
-      <div class="card"><div class="icon">🎯</div><h3>内容自适应画质</h3><p>按动画/真人 × SD/HD/4K × 帧率自动挂载 Anime4K / ArtCNN / FSRCNNX / SSimSuperRes 超分组，掉帧自动降档，HDR 与直播自动避让。</p></div>
-      <div class="card"><div class="icon">💬</div><h3>全网弹幕</h3><p>uosc_danmaku：搜索、自动加载、剧集自动关联，B 站与爱腾优源，独立 overlay 高刷渲染不占字幕轨。</p></div>
-      <div class="card"><div class="icon">🔍</div><h3>在线中文字幕</h3><p>ASSRT 射手网 + Wyzie(TMDb) 双源搜索；whisper 本地生成字幕；自动时轴对齐。</p></div>
-      <div class="card"><div class="icon">🎛️</div><h3>可视化均衡器</h3><p>10 段 EQ 图形化拖拽、14 种预设、配置持久化，与比特流直通模式智能互锁。</p></div>
-      <div class="card"><div class="icon">🌐</div><h3>360° 全景视频</h3><p>mpv360 全套：等距柱状 / 双鱼眼 / EAC 投影，键鼠自由视角与 FOV 控制。</p></div>
-      <div class="card"><div class="icon">🖱️</div><h3>全平台统一右键菜单</h3><p>十余个分类、数百项功能的菜单体系，动态轨道/章节/配置组注入，档位勾选态可视化。</p></div>
-      <div class="card"><div class="icon">📺</div><h3>HDR 双引擎</h3><p>gpu-next 原生直通与 hdr-toys 着色器链双模式切换，SDR 屏自动 tone-map，峰值动态计算。</p></div>
-      <div class="card"><div class="icon">🔄</div><h3>自更新器</h3><p>manager.lua 检查 uosc / 弹幕插件 / Anime4K 等上游更新——只报告，永不覆盖本地定制。</p></div>
+    <h2>特性</h2>
+    <p class="sub">每一个功能都带中文菜单注解，右键即可触达；统计、弹幕、画质全部围绕统一的设计语言。</p>
+    <div class="emo-grid">
+      <div class="emo-card"><div class="icon">🎯</div><h3>内容自适应画质</h3><p>按动画/真人 × SD/HD/4K × 帧率自动挂载 Anime4K / ArtCNN / FSRCNNX / SSimSuperRes 超分组，掉帧自动降档，HDR 与直播自动避让。</p><div class="emo-meta"><span class="chip">CTRL+ALT+c</span><span class="chip">8 档配置组</span></div></div>
+      <div class="emo-card"><div class="icon">💬</div><h3>全网弹幕</h3><p>uosc_danmaku：搜索、自动加载、剧集自动关联，B 站与爱腾优源，b23.tv 短链直连；独立 overlay 高刷渲染不占字幕轨。</p><div class="emo-meta"><span class="chip">CTRL+d 开关</span><span class="chip">CTRL+SHIFT+L 屏蔽词</span></div></div>
+      <div class="emo-card"><div class="icon">🔍</div><h3>在线中文字幕</h3><p>ASSRT 射手网 + Wyzie(TMDb) 双源搜索；whisper 本地生成字幕；自动时轴对齐。</p><div class="emo-meta"><span class="chip">CTRL+f</span><span class="chip">ALT+F</span></div></div>
+      <div class="emo-card"><div class="icon">🎛️</div><h3>可视化均衡器</h3><p>10 段 EQ 图形化拖拽、14 种预设、配置持久化，与比特流直通模式智能互锁。</p><div class="emo-meta"><span class="chip">e</span></div></div>
+      <div class="emo-card"><div class="icon">🌐</div><h3>360° 全景视频</h3><p>mpv360 全套：等距柱状 / 双鱼眼 / EAC 投影，键鼠自由视角与 FOV 控制。</p><div class="emo-meta"><span class="chip">视频 &gt; 360°VR</span></div></div>
+      <div class="emo-card"><div class="icon">🖱️</div><h3>全平台统一右键菜单</h3><p>十余个分类、数百项功能的菜单体系，动态轨道/章节/配置组注入，档位勾选态可视化。</p><div class="emo-meta"><span class="chip">播放区右键</span></div></div>
+      <div class="emo-card"><div class="icon">📺</div><h3>HDR 双引擎</h3><p>gpu-next 原生直通与 hdr-toys 着色器链双模式切换，SDR 屏自动 tone-map，峰值动态计算。</p><div class="emo-meta"><span class="chip">ALT+h</span></div></div>
+      <div class="emo-card"><div class="icon">🔄</div><h3>自更新器</h3><p>manager.lua 检查 uosc / 弹幕插件 / Anime4K 等上游更新——只报告，永不覆盖本地定制。</p><div class="emo-meta"><span class="chip">只读检查</span></div></div>
     </div>
   </div>
 </section>
 
-<section class="alt">
+<section class="alt" id="preview">
   <div class="container">
-    <h2><span class="k">📷</span> 界面预览</h2>
-    <p class="sub">uosc Dracula 主题 · 顶栏进度胶囊 · 底栏语境控件带。</p>
+    <h2>界面预览</h2>
+    <p class="sub">uosc Dracula 主题 · 顶栏进度胶囊 · 底栏语境控件带 · 与统计页同一套设计语言。</p>
     <div class="gallery">
-      <figure><img src="assets/contextmenu.png" alt="右键菜单"><figcaption>全功能右键菜单（十余个分类）</figcaption></figure>
-      <figure><img src="assets/equalizer.png" alt="可视化均衡器"><figcaption>可视化 10 段均衡器</figcaption></figure>
-      <figure><img src="assets/supermenu.png" alt="超分与补帧"><figcaption>超分与补帧控制面板</figcaption></figure>
-      <figure><img src="assets/stats.png" alt="中文 stats"><figcaption>中文增强 stats 页</figcaption></figure>
+      <figure><img src="assets/contextmenu.png" alt="右键菜单" loading="lazy"><figcaption>全功能右键菜单（十余个分类）</figcaption></figure>
+      <figure><img src="assets/equalizer.png" alt="可视化均衡器" loading="lazy"><figcaption>可视化 10 段均衡器</figcaption></figure>
+      <figure><img src="assets/supermenu.png" alt="超分与补帧" loading="lazy"><figcaption>超分与补帧控制面板</figcaption></figure>
+      <figure><img src="assets/stats.png" alt="中文 stats" loading="lazy"><figcaption>中文增强 stats 页</figcaption></figure>
     </div>
   </div>
 </section>
 
-<section>
+<section id="quickstart">
   <div class="container">
-    <h2><span class="k">🚀</span> 30 秒快速开始</h2>
-    <p class="sub">mpv 0.41+ · 一个 git clone 就绪。</p>
-<pre><span class="c"># 依赖自检（自动报告缺失项）</span>
+    <h2>30 秒快速开始</h2>
+    <p class="sub">mpv 0.41+ · 一个 git clone 就绪，部署自检会自动报告缺失项。</p>
+    <div class="code-wrap">
+      <button class="code-copy" data-copy>复制</button>
+<pre><span class="c"># 克隆到 mpv 配置目录</span>
 git clone https://github.com/emoeem/mpv.git ~/.config/mpv
+
+<span class="c"># 依赖自检（自动报告缺失项，四态报告）</span>
 python3 ~/.config/mpv/deploy.py --check
 
 <span class="c"># UI 字体按 UI-FONTS.md 放入 fonts/MFGA/（授权未定，需自备）</span>
 <span class="c"># 然后播放任意视频，右键打开菜单</span></pre>
-    <h2 style="margin-top:44px"><span class="k">⌨️</span> 常用快捷键</h2>
+    </div>
+  </div>
+</section>
+
+<section class="alt" id="keys">
+  <div class="container">
+    <h2>常用快捷键</h2>
+    <p class="sub">完整的 900+ 键位见仓库 README 快捷键全表；以下是最常被按到的那几个。</p>
     <ul class="keys">
       <li><span>右键菜单</span><kbd>鼠标右键</kbd></li>
-      <li><span>弹幕开关 / 菜单</span><kbd>CTRL+D / CTRL+SHIFT+D</kbd></li>
-      <li><span>ASSRT 在线字幕</span><kbd>CTRL+F</kbd></li>
-      <li><span>内容类型切换（动画/真人/自动）</span><kbd>CTRL+ALT+C</kbd></li>
-      <li><span>可视化均衡器</span><kbd>E</kbd></li>
+      <li><span>统计信息（临时 / 常驻）</span><kbd>i / I</kbd></li>
+      <li><span>观影时长统计页</span><kbd>7</kbd></li>
+      <li><span>弹幕开关 / 综合菜单</span><kbd>CTRL+d / CTRL+D</kbd></li>
+      <li><span>弹幕屏蔽词管理</span><kbd>CTRL+SHIFT+L</kbd></li>
+      <li><span>ASSRT 在线字幕</span><kbd>CTRL+f</kbd></li>
+      <li><span>内容类型切换（动画/真人/自动）</span><kbd>CTRL+ALT+c</kbd></li>
+      <li><span>可视化均衡器</span><kbd>e</kbd></li>
       <li><span>画质配置组切换</span><kbd>ALT+1~8</kbd></li>
     </ul>
   </div>
@@ -147,5 +284,37 @@ python3 ~/.config/mpv/deploy.py --check
   </div>
 </footer>
 
+<script>
+  // 明暗主题：跟随系统 + 手动切换（与博客 darkmode 行为一致，localStorage 记忆）
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById('theme-toggle');
+    var icon = function (t) { return t === 'dark' ? '☀️' : '🌙'; };
+    var apply = function (t) {
+      root.setAttribute('data-theme', t);
+      btn.textContent = icon(t);
+      var meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', t === 'dark' ? '#15191d' : '#eef2f1');
+    };
+    var saved = localStorage.getItem('theme');
+    var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    apply(saved || (prefersDark ? 'dark' : 'light'));
+    btn.addEventListener('click', function () {
+      var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      localStorage.setItem('theme', next);
+      apply(next);
+    });
+  })();
+  // 代码复制（与博客 emo-code-copy 行为一致）
+  document.querySelectorAll('[data-copy]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var pre = btn.closest('.code-wrap').querySelector('pre');
+      navigator.clipboard.writeText(pre.innerText).then(function () {
+        btn.textContent = '已复制 ✓';
+        setTimeout(function () { btn.textContent = '复制'; }, 1600);
+      });
+    });
+  });
+</script>
 </body>
 </html>
